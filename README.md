@@ -8,6 +8,8 @@ _by NoRain_
 
 ### 前言
 
+项目名字，不如叫 蜘蛛丝 吧？因为我正在听。
+
 其实总也忍不住挖坑，这个项目其实是[filesync](https://github.com/NoRainLand/filesync)的完全重构版本。
 
 项目会大量使用AI辅助。
