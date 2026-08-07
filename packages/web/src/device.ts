@@ -38,13 +38,28 @@ export function deviceFingerprint(): string {
 /** miku 色板（按 hash 取模，稳定头像色） */
 const PALETTE = ["#047878", "#86cecb", "#e12885", "#4a90d9", "#e5a53d", "#7a5fd0"];
 
+/** 昵称规则：仅大小写字母/下划线/数字，最长 10 位（与协议 rename 帧一致） */
+const NICK_RE = /^[A-Za-z0-9_]{1,10}$/;
+
+/** 生成默认昵称 user_XXXX（四位数字，按设备指纹哈希取模） */
+function defaultName(id: string): string {
+  return `user_${String(Number.parseInt(id.slice(0, 4), 16) % 10000).padStart(4, "0")}`;
+}
+
 /** 读取/创建本机设备身份（localStorage 持久化） */
 export function getDevice(): DeviceInfoT {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const d = JSON.parse(raw) as DeviceInfoT;
-      if (d && d.deviceId) return d;
+      // 兼容旧昵称（用户-XXXX 等不符合新规则）：重置为 user_XXXX
+      if (d && d.deviceId) {
+        if (!NICK_RE.test(d.deviceName ?? "")) {
+          d.deviceName = defaultName(d.deviceId);
+          saveDevice(d);
+        }
+        return d;
+      }
     }
   } catch {
     /* noop */
@@ -52,7 +67,7 @@ export function getDevice(): DeviceInfoT {
   const id = deviceFingerprint();
   const device: DeviceInfoT = {
     deviceId: id,
-    deviceName: `用户-${String(Number.parseInt(id.slice(0, 4), 16) % 10000).padStart(4, "0")}`,
+    deviceName: defaultName(id),
     color: PALETTE[Number.parseInt(id.slice(0, 2), 16) % PALETTE.length] ?? PALETTE[0]!,
     platform: detectPlatform(),
   };

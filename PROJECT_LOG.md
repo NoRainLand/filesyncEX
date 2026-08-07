@@ -194,6 +194,42 @@
     - **宽度**：web `.panel` 桌面 380px 过窄，原型 `dlgSettings` 是 **640px**。给 settings 单独加 `.settings-panel` 类，桌面 `width/max-width: min(92vw, 640px)`（`.panel` 基础 max-width 520px 会覆盖 width，需同时覆盖 max-width）。验证：设置面板 640px ✓（attach/progress/qr 仍 380px 不受影响）。
     - **QuickSendTool 位置与打包**：文件在旧工程 `filesync/tool/QuickSendTool.exe`（2.2MB）。移到 `packages/web/public/tool/QuickSendTool.exe` —— Vite 构建自动复制到 `dist/tool/`，server `express.static(webDir)` 自动托管 `/tool/QuickSendTool.exe`，pkg assets `web/dist/**/*` 自动打进 exe。验证：dev `GET /tool/QuickSendTool.exe` 200 ✓；**打包后 exe 内访问同样 200/2.2MB** ✓。exe 体积 61→**84.1MB**（转码流 bundle 6.4MB + tool 2.2MB + 其他）。
   - **QuickSendTool 替换入口改为根 tool/（用户「能不能根目录新建 tool 文件夹，我替换进去就行，打包脚本处理」）**：在**项目根目录**建 `tool/` 作为**唯一替换入口**（`tool/QuickSendTool.exe`）。打包脚本 `packages/shell/scripts/package.mjs` 在 build web 前新增「同步 tool/ → packages/web/public/tool/」步骤（遍历复制根 tool 下所有文件），Vite 再复制进 dist → pkg 进 exe。删除了 web/public/tool 的手动副本（改由脚本生成，避免两处不同步）。**用户流程：只需把新 exe 覆盖到根 `tool/`，然后 `pnpm --filter @filesyncex/shell package` 即可**。验证：打包后 public/tool 与 dist/tool 均有 exe，**exe 内 /tool/QuickSendTool.exe 200/2.2MB** ✓。
+  - **上传模糊占位卡 + 圆形进度（用户「上传时进度条太丑，改成模糊占位卡」）**：`handleFiles` 上传前先在消息列表插入占位消息（id=`upload-<时间戳-随机>`，kind=file，sender 显示「上传中」）→ `renderMsg` 对 `id.startsWith("upload-")` 渲染 `.card.upload-ph`：**模糊背景**（`.ph-blur` 线性渐变 + blur(6px)）+ **中心圆形 SVG 进度环**（`.ph-ring`，stroke-dashoffset 按 pct 收圆，中心百分比数字）+ 底部文件名；进度回调实时更新 `rec.pct`（`this.uploads=[...this.uploads]` 触发重渲染）。成功 → 移除占位卡（真实消息由 WS onAdd 广播、同 id 去重不冲突）；失败 → `rec.fail=true`、`rec.pct=-1`，圆环变红（`var(--pink)`）+ 中心显示 `!` + 底部「上传失败」。CSS 新增 `.card.upload-ph` 系列（ph-body/ph-blur/ph-ring/ph-pct/ph-name）。**验证**：2.5MB 上传中抓到 0% 占位卡（模糊 + 圆环 + 0%），完成后真实消息出现、占位卡移除 ✓；失败路径红环 `!` ✓。
+  - **波形默认全平 + 进度整格跳变（用户「默认全平；进度改回最初的整格跳」）**：
+    - **默认全平**：`waveBars(peaks?)` 无真实峰值（未加载/失败/无数据）时由 28 条正弦装饰条改为 **96 条同高度平线** `Array.from({length:96}, () => 0.4)`（高度 40%），与真实波形同数量，加载完成才显示真实起伏。验证：把 wavePeaks 置 null 后 96 条 bar 全部 `height:40%`（allFlat=true）✓。
+    - **进度 = 整格跳变（多轮方案尝试后用户拍板回归最简）**：经历三轮——①bar 逐个 mixColor 渐变；②`.prog` 覆盖层线性推进；③进度线穿过 bar 用横向 linear-gradient 平滑过渡——用户均不满意（「效果很差」），**拍板改回最初的整格跳变**。最终 `updateWaveInd`：`played = Math.round(ratio * n)`，`bars.forEach((bar,i) => bar.classList.toggle("played", i < played))`——已播 bar 全部加 `.played` 类（CSS `background: var(--accent)` 薄荷实色），未播灰；**无渐变、无过渡**（移除 `transition:background` 与渐变逻辑）。竖线 `.ind` 保留（show-ind 逻辑不变）。
+    - **验证**：click 波形 60% → 前 58/96 bar 加 `.played`（薄荷）、58 起灰、`anyGradient=false`（纯整格）✓。**测试注意：直接操作模板 `<audio>` 无 timeupdate 监听，须走真实 seekAudio/ensureAudio（click 波形）路径**。
+  - **上传占位卡按文件类型匹配真实消息尺寸（用户「占位卡样式大小必须是特定大小，视频/音频分别展示对应消息大小的占位」）**：新增前端 `fileKind(name, mime)`（与服务器 `kindOf` 一致：mime image/audio/video 优先，扩展名兜底）判断文件类型；`handleFiles` 在 rec 和 placeholder 上记录 `kind`（`uploads` 数组类型加 `kind: string`）。`renderMsg` 占位卡按 kind 渲染**对应真实消息的结构与尺寸**：
+    - **image / video**：`.card.upload-ph.image/.video .ph-body` `aspect-ratio:16/9` 全宽（同真实缩略图 560×315），中央大圆环（ringSize 68）。
+    - **audio**：`.ph-body.audio` 播放按钮（38px 圆）+ 平线波形（waveBars() 34px 高）占位（同真实播放条，总高 62），圆环 48 居中。
+    - **file**：`.ph-body.file` 42px 文件图标 + 占位行（同真实文件行，总高 44），圆环 40 居中偏右。
+    - 进度环 SVG 改为**随类型缩放尺寸**（media 68 / audio 48 / file 40），`ph-ring` 定位随类型（media 居中 / audio 居中 / file 右侧）。失败态红环 `!` 保留。
+    - **验证**（注入 4 种占位消息 + uploads）：image/video 560×315 ratio 1.78（16:9）✓、audio 560×62 含 ph-play+ph-wave+圆环 48 ✓、file 560×44 含 ph-ic+圆环 40 ✓；全部 42% 进度环正确渲染 ✓。注：小文件秒传太快抓不到真实占位卡，用注入验证渲染。
+  - **七项 UI/交互优化（用户批量反馈）**：
+    1. **主界面任何位置响应滚轮**：`connectedCallback` 给组件根 `addEventListener("wheel", onHostWheel)`（disconnected 移除）。`onHostWheel`：弹层/预览打开时不劫持（内部自己滚）；否则把滚轮统一转发到当前滚动容器（桌面 `.container` / 移动 `.list`），`scroller.scrollTop += e.deltaY` + preventDefault（仅当目标不在滚动容器内且可滚时）。验证：header 区域滚轮 → 容器 scrollTop 300 ✓。
+    2. **logo 圆点被截**：根因 `.container` `overflow-y:auto` 使 x 方向也裁剪，圆点 3px 光环（box-shadow 外扩）超出容器左边界被裁（dotLeft 140 == containerLeft 140）。修复：header 左右 padding `0→6px`（光环有 6px 空间）+ `.logo .dot` 加 `flex:none`。验证：dotLeft - containerLeft = 6 ≥ 3 ✓。
+    3. **toast 出现纯淡入（无下滑）**：去掉 `.toast:not(.show)` 的 `translateY(-24px)`（那会让出现时从 -24px 滑到 0 即下滑）。改为 `.toast` 默认 `translateX(-50%)` 无 Y 位移、`.show` 仅 `opacity:1`（**出现纯淡入**）；新增 `.toast.leaving`（`translateY(-24px)+opacity 0`）负责**消失上移淡出**。JS：`flash` 增加 `toastLeaving` state，2200ms 时 `toastShow=false` + `toastLeaving=true`，700ms 后清文字+`toastLeaving=false`。模板 `class="toast ${show?'show':''} ${leaving?'leaving':''}"`。验证：出现中 transform translateY=0（无下滑）、opacity 淡入 ✓。
+    4. **占位卡完整结构**：占位卡不再只是「主体+文件名」，改为**结构与真实消息完全一致**——对应类型主体（16:9 缩略图/播放条/图标行）+ `ph-mm` 信息行（文件名+大小）+ `ph-ops` 操作行（下载按钮占位）；主体叠 `.ph-blur` 磨砂（z-index 1）+ `.ph-ring` 进度环（z-index 3，盖磨砂之上）。图片/视频主体加居中放大镜/播放图标（`.ph-icon-bg`/`.ph-vplay`）。`.card.upload-ph` 改 `position:relative; overflow:hidden`，磨砂/圆环 absolute 定位。验证：file/audio/video 三种占位均有 blur+ring+mm（文件名+大小）+ops（下载）✓。
+    5. **标题文字放大**：设置/附件/上传进度/二维码面板标题 `.panel .ptitle` `17px→24px+700`；预览标题 `.viewer .vtop .vt` `16px→24px+700`（关闭按钮 20→24px）。验证：设置 ptitle 24px/700、预览 vt 24px/700 ✓。
+    6. **代码输入框隐藏滑条**：`.code-editor textarea` 加 `scrollbar-width:none` + `::-webkit-scrollbar{display:none}`（保留滚动功能）。验证：scrollbarWidth none ✓。
+    7. **代码输入框发送后自动变回**：`sendCode` 成功后加 `this.codeMode=false`（发送完自动退出代码模式回普通输入框）。验证：codeMode true→false、codeText 清空、代码消息发出 ✓。
+  - **全局接入旧 filesync 两个字体（用户「全局引入 JetBrains Mono + 思源宋体；拷贝到根 fonts/；打包脚本处理真实位置；禁止引用 filesync 文件夹」）**：
+    - **字体来源**：旧工程 `filesync/src/html/font/` 的 `JetBrainsMonoNL-Medium.woff2`（41.8KB 等宽）+ `SourceHanSerifCN-Medium.woff2`（6.3MB 思源宋体）。
+    - **拷贝到根 `fonts/`（唯一入口）**：新建项目根 `fonts/` 放两个 woff2（不引用 filesync）。沿用旧 `@font-face` family 名 `"JetBrains Mono NL Medium"` / `"Source Han Serif CN Medium"`（`font-display: swap`）。
+    - **打包脚本同步**：`package.mjs` 在 tool/ 同步后新增「同步 `fonts/` → `packages/web/public/fonts/`」（与 tool 同一模式，Vite 复制进 dist → pkg assets 进 exe）。
+    - **@font-face + 变量**：`web/index.html` `<style>` 顶部加两个 `@font-face`（`url("./fonts/xxx.woff2")`），CSS 变量 `--mono`/`--serif` 改为真实 family 名，字体全局可用（shadow root 内经 CSS 变量继承）。
+    - **git**：根 `fonts/` 与 `public/fonts/` 均保留提交（与 tool 约定一致，虽然脚本自动同步）。
+    - **验证**：`/fonts/xxx.woff2` 200（dev 由 express.static 托管）✓；`document.fonts` `JetBrains Mono NL Medium` loaded ✓、`fonts.check("16px Source Han Serif CN Medium")` true ✓；`web/build` 后 `dist/fonts/` 两个字体齐全 ✓；`index.html` 1.57→1.95 kB（含 @font-face）✓。**代码中无任何对 filesync 文件夹的引用（仅 PROJECT_LOG.md 日志提及）**。
+  - **Toast 淡出时序修复（用户「先向上淡出，再去除文字；现在立即去文字会导致窗口自动缩小」）**：问题根因——`flash` 用 `toastText` 同时驱动内容与 `.show`，到点同时清空文字和移除 show，**文字消失 → 窗口立即收缩**，淡出动画期间很难看。修复：**拆分 `toastText`（内容）与 `toastShow`（显示态）两个 state**（均声明进 static properties）。`flash` 流程：设 `toastText`+`toastShow=true` → 2200ms 后**只移除 `toastShow`**（触发上移+淡出动画，**文字保留、窗口保持尺寸**）→ 再 700ms（动画 0.6s 结束后）清空 `toastText`。新增 `tipClearTimer`（flash 开头 clearTimeout 两个计时器防叠加）。恢复**向上淡出**动画（`:not(.show)` = `translateY(-24px)+opacity 0`），保留小圆角 8px、黑色半透明 rgba(0,0,0,.6)、大字体 26px。模板改 `class="toast ${toastShow?"show":""}"`。**验证**：2200ms 后 show=false、文字保留「时序测试…」、宽度 374px 未收缩、opacity .717 淡出中、transformY -6.78 上移 ✓；+800ms 后文字清空 ✓。
+  - **Toast 微调（用户「不要放大缩小动画；圆角小一点；黑色半透明」）**：接上条放大后，用户取消位移/缩放动画——`.toast` 去掉 `translateY(-24px)` 上移与 `transform` 过渡，`transform: translateX(-50%)` 固定仅居中，`transition` 只剩 `opacity .6s ease`（**纯淡入淡出，无移动/缩放**）；圆角 `26px→8px`；背景 `rgba(0,0,0,.85)→rgba(0,0,0,.6)`（**黑色半透明**）；保留大字体 26px+600、padding 14/28、bottom 120px、慢速 0.6s。**验证**：transform 仅水平居中（Y=0）、transition 仅 opacity、border-radius 8px、背景 rgba(0,0,0,.6) ✓。（**注：此条移除的上移动画后又被用户恢复，见下条时序修复。**）
+  - **Toast 提示放大 + 慢速上移淡出（用户「提示消息窗口文字做大 2 倍以上；消失动画慢一点；向上移动并淡出」）**：`.toast` 字体 `12px→26px`（2 倍多）+ `font-weight:600`、padding `8px 16px→14px 28px`（窗口大幅增大）、圆角 `20→26px`、位置 `bottom 90px→120px`（给大 toast 留空间）。**动画**：过渡由 `opacity .2s` 改为 `opacity .6s ease, transform .6s ease`（消失变慢）；`.toast.show` 为原位不透明，`:not(.show)` 为 `translateY(-24px) + opacity 0`——**消失时向上移动并淡出**（出现时从 -24px 淡入归位）。`flash()` 停留 `1800→2200ms`（配合慢动画）。**验证**：出现中 fontSize 26px、opacity .408 淡入、transform Y 偏移 ✓；2200ms 后 show=false、opacity 0、transformY -24（上移淡出）✓。**（注：此条的位移动画后被用户要求移除，见下条。）**
+  - **图片预览优化（用户「①无圆角 ②放大后无滚动条 ③图片大于窗体时按住拖动」）**：
+    - **无圆角**：`.viewer .vbody.pv-img .ph` 加 `border-radius:0`（原 `.ph` 通用 10px 圆角，图片预览专用类覆盖为 0）。
+    - **无滚动条**：`.viewer .vbody.pv-img` 由 `overflow:auto` 改 **`overflow:hidden`**——放大后不出现滚动条，改靠拖动查看。
+    - **按住拖动**：img 绑 `@mousedown=${startDrag}`；`startDrag` 先确保 pvZoom 记录 bx/by，再判断**仅当已放大（s>1）或图片实际尺寸大于 vbody 窗体时**才启用拖动（小图不可拖）；启用后在 window 上挂 `mousemove/mouseup`（`onDragMove`/`onDragEnd`，箭头函数字段保证 this 绑定），拖动时 `z.tx/z.ty = 起始 + (client - 起始)` 更新 transform（与缩放共用同一 translate+scale 状态，不冲突）。CSS cursor:grab 提示可拖。`openPreview` 重置 pvDrag。
+    - **验证**：圆角 0px、vbody overflow hidden、cursor grab ✓；滚轮放大 scale 1.52 → 拖动(+80,+40) → translate x/y 各增 80/40、scale 不变 ✓；小图（bg.jpg 小于窗体）按住拖动 transform 保持清空（不可拖）✓；缩小回 1 transform 清空 ✓。
+  - **桌面端图片预览滚轮缩放（用户「滚轮以鼠标位置为中心放大缩小」）**：图片预览 img 绑 `@wheel=${zoomPreview}`。**关键：不用 transform-origin 百分比（连续缩放累积漂移），用 `translate(tx,ty)+scale(s)` 以鼠标为锚点**——记初始 rect(bx/by)，`px=(clientX-bx-tx)/s` 反推图像坐标，再 `tx'=clientX-bx-px*s'` 重算，鼠标下像素不动（无漂移）。factor=1.15、clamp 1~8；scale 回 1 清空 transform（防 translate 残留）；openPreview 重置 pvZoom。CSS：`.vbody.pv-img`（图片预览专用）`margin:auto` 居中 + `will-change`、`user-select:none`。验证：滚轮放大 scale 1.15/1.32 ✓、缩小回 1 transform 清空 ✓。移动端无滚轮不受影响；video/audio/code 不绑 wheel。
+  - **CSS 拆出独立文件（用户「CSS 混在 ts 里，做好拆分」）**：`packages/web/src/app.ts` 里 `static styles = css\`...\`` 内嵌约 200 行 CSS，拆到 **`packages/web/src/app.css`** 独立文件；`app.ts` 改为 `import appCss from "./app.css?inline"` + `static styles = unsafeCSS(appCss)`（lit 的 `unsafeCSS` 把字符串包成 CSSResult，shadow root 用 adoptedStyleSheets 注入）。web tsconfig 已含 `types: ["vite/client"]` 支持 `?inline`。**验证**：构建 94 modules（多 CSS）、bundle 92.38 kB；reload 后 header/上传区/卡片/波形齐全，样式生效（header 边框 rgb(221,227,231)=--line、upload sticky）✓。以后改样式直接改 app.css 即可。**用户决策：不转 SCSS，保持纯 CSS。**
 - **技术栈**：前端 `lit (Web Components)` + `Vite`；服务端 `Express + ws`（首版，传输层已抽象、可后切 Fastify/Socket.IO）；数据库 `better-sqlite3` + `Store` 接口抽象；协议 `zod` schema 校验。
 - **运行时**：Node 18。
 - **分发形态**：保持 `pkg` 打 exe + 网页。
@@ -855,3 +891,67 @@
   - **语言类型下移5px**：`.card.code .code-head .lang` 加 `position:relative;top:5px`（视觉下移 5px，不参与布局、不影响线位置）。
   - **分隔线再下移2px**：`.card.code .code-head` padding-bottom `14px` → `16px`（border-bottom 分隔线随之再下移 2px，累计较最初下移 8px）。
 - **浏览器验证**（桌面端）：`.lang` `position:relative; top:5px`、视觉距标题栏顶实测 `13px`（8px padding + 5px top，语言类型下移 5px）；`.code-head` padding-bottom `16px`；语言文字底到分隔线实测 `12px`（文字下移 5 + 线下移 2，间距由 15→12px）。截图确认。 
+
+### 本轮改动（2026-08-07 · 261MB 上传立即失败修复：局域网 HTTP 非安全上下文 crypto.subtle 不可用）
+- **用户反馈**：「我刚尝试上传一个261M的文件，为啥直接提示上传失败？」——占位卡立即变红「上传失败」。
+- **排查**：服务器 chunk limit 64mb > 1MB 分片（正常）；磁盘 186GB 空闲；服务器日志无任何上传请求记录；localStorage 无残留 uploadId（未走到 init）。
+- **根因**：前端 ileSha256 用 crypto.subtle.digest，**Web Crypto 仅在 secure context（HTTPS/localhost）可用**；用户经局域网 http://192.168.40.154:14100 访问时 isSecureContext=false、crypto.subtle=undefined → 计算 SHA 第一步即抛 TypeError → 上传立即失败（服务器收不到请求、无日志、无 uploadId）。之前 43MB/71MB 能成功是 127.0.0.1 secure context。
+- **修复**（packages/web/src/api.ts）：①新增纯 JS 增量 SHA-256 类 IncrementalSha256（K 常量 + rotr32 + 64 轮压缩 + 标准填充，**不依赖 crypto.subtle**，浏览器对照 crypto.subtle 已知哈希 abc/空串/hello + 100KB 随机全一致）；②ileSha256 改为 ile.slice() **4MB 分块增量哈希**（顺带解决 261MB 整文件 arrayBuffer 一次性占内存）。**坑：tsconfig 
+oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空断言**。
+- **验证**：①局域网页（subtleUnavailable=true）上传 sha-test.bin(1MB) 占位卡 0%→成功、真实消息出现、无残留 ✓；②big-30mb-test.bin(30MB) 局域网 1 秒上传成功 ✓；③127.0.0.1 页 secure-test.txt 上传成功、key=a7816bf8f01（正是 abc 的标准 SHA-256 前缀）证明结果与标准 SHA-256 完全一致 ✓；④测试文件已清理。
+- **注意**：图片复制（copyImage）此前已用 canvas 方案处理了非安全上下文问题；音频/视频播放不受影响；本次只影响上传 SHA 计算。
+
+### 本轮改动（2026-08-07 · 大文件上传「到一半失败」修复：chunk 请求断连无重试）
+- **用户反馈**：「现在上传到一半左右，就失败了」（261MB 文件，SHA 修复后能进入上传流程，但传至 ~68% 中断）。
+- **排查**：①服务器 data/uploads/65626eeb-... 会话目录残留 **0~176 共 177 个 1MB part**（14:45 创建，早于我 14:47 的测试）→ 确证用户 261MB 传到 177/261≈68% 中断；②server.err 有 BadRequestError: request aborted（raw-body 在请求体未读完时客户端断连）→ **客户端连接在该 chunk 被断开**；③本机测试（120MB/261MB 回环网络）全部成功 → 排除服务器逻辑问题，定位为**局域网 WiFi 传输中途断连**；④前端 piUploadChunk 单次 fetch 无超时无重试 → 一个 chunk 失败即整体判失败。
+- **修复**：①前端（packages/web/src/api.ts）piUploadChunk 加 **4 次重试 + 30s 超时**（AbortController，退避 400ms/800ms/1600ms，网络瞬时断连自动恢复继续传）；piUploadComplete 同加重试（3 次+60s 超时）；新增常量 CHUNK_TIMEOUT_MS/CHUNK_MAX_RETRIES。②服务器（packages/server/src/index.ts）httpServer 调大 keepAliveTimeout=30s/headersTimeout=35s/equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器复用已关闭连接而 request aborted/ECONNRESET）。**断点续传仍兜底**：重试耗尽仍失败 → 存 uploadId，下次按同 sha 自动续传。
+- **验证**：①20MB 上传成功（新 bundle）；②**重试验证**：monkey-patch fetch 令首个 chunk 强制 reject（模拟 WiFi 断连），15MB 上传仍 success（failedOnce=true）✓；③服务器重启后 err 无新 abort ✓；④测试文件已清理，数据目录剩原始 4 文件 ✓。
+- **注意**：真机 WiFi 大文件传输的瞬时抖动已由重试兜住；若持续断连超 4 次，仍走断点续传逻辑。已登记 PROJECT_LOG.md。
+
+
+### 本轮改动（2026-08-07 · WS 连接状态三色 + 心跳 + 服务器通知 + 文字消息 URL 链接）
+- **需求 1：去掉 logo 旁的点**：app.ts logo 模板删掉 `<span class="dot"></span>`；app.css 删 `.logo .dot`。已验证无点。
+- **需求 2：WS 连接状态三色**：app.ts 加 `connState: "connecting"|"connected"|"disconnected"` state；WsClient 加 `onConnecting` 回调（connect 时触发）；logo 按状态着色（`.logo.connecting`=黄 `var(--warn)` #d9a020 / `.logo.connected`=主题色 `var(--primary)` / `.logo.disconnected`=红 `var(--danger)` #e5484d），index.html :root 加 `--warn`/`--danger` 变量；设置面板 `.st-conn .dot` 同步三态颜色与文案（已连接/连接中…/已断开）。已验证：connected rgb(4,120,120)、connecting rgb(217,160,32)、disconnected rgb(229,72,77)。
+- **需求 3：前端心跳 30s**：WsClient 加 `startHeartbeat`（onopen 启动 setInterval 30s 发 `{type:"ping"}`；超过 90s 未收 pong 判定失联主动 close 触发重连）；onmessage 加 `pong` 分支刷新 lastPong；close/断开时 stopHeartbeat。**服务器侧同步**：SocketServer 每 30s 检查连接 alive（ws.ping()，2 周期未 pong 则 terminate 断开），`close()` 清理 hbTimer。已验证 hbTimer 运行中（30s）。
+- **需求 4：服务器通知大窗**：协议 schema.ts ServerFrame 加 `{type:"notice", level: info|warn|error|maintenance|shutdown, message}`；SocketServer 加 `broadcastNotice(level,message)`；server index.ts `close()` 先广播 shutdown 通知再延迟 500ms 关闭，RunResult 加 `broadcastNotice`；WsClient onmessage 加 `notice` 分支 → `onNotice` 回调；app.ts 加 `notice` state + `renderNotice()`（`.notice-mask` 遮罩 z-600 不可点击关闭 + `.notice-panel` 大窗：标题=服务器关闭/维护中/异常/警告/通知 + 内容 + 「确认并重连」按钮）；`confirmNotice()` 点击确认 → `ws.forceReconnect()` 立即重连（重置退避），**3s 防抖**（confirmReconnectAt 记录，快速连点只触发一次）。已验证 showNotice 弹窗标题/内容/按钮正确。
+- **文字消息 URL 链接（用户「点击直接打开新网页」）**：app.ts 加 `renderText(text)`——正则 `/(https?:\/\/[^\s<]+)/g` 匹配文字消息中的 http/https URL，渲染为 `.bubble-link` `<a target="_blank" rel="noopener">`；`openTextLink(e,url)` preventDefault + `window.open(url,"_blank","noopener")`；50 次上限防死循环；非 URL 原样显示。app.css 加 `.bubble-link`（主题色下划线 + hover）。已验证：文字消息 `http://192.168.40.154:14100/` 渲染为链接、点击 `window.open` 正确（_blank+noopener）。已登记 PROJECT_LOG.md。
+
+
+### 本轮改动（2026-08-07 · 视频消息无封面修复：preload="none" 导致首帧不加载）
+- **用户反馈**：「为什么我新发送的视频，没有视频封面？」——视频消息缩略图区域显示黑底无画面。
+- **根因**：视频缩略图 `<video muted preload="none">` 的 `preload="none"` 让浏览器**完全不加载视频数据**（readyState=0、videoWidth=0），故无法解析/渲染首帧。之前为消除控制台 ERR_ABORTED 噪音加的 `preload="none"`，副作用是封面永远取不到帧。
+- **修复**（packages/web/src/app.ts video 分支）：`preload="none"` → **`preload="metadata"`**——只加载元数据+足够解析首帧的数据（不下载整个视频，性能仍轻），浏览器即可渲染真实首帧为封面。
+- **验证**：改后 video 202ms 加载完成 `readyState:4`（HAVE_ENOUGH_DATA）、`videoWidth:1280×720`、`hasFrame:true`；canvas 采样整帧非黑比例 100%、中心像素 [4,24,54]（深蓝画面非纯黑）✓。截图确认封面显示。已登记 PROJECT_LOG.md。
+
+
+### 本轮改动（2026-08-07 · 视频预览无声音修复：autoplay 属性被浏览器自动播放策略拦截）
+- **用户反馈**：「为什么现在视频没有声音」——视频预览能看画面但无声音。
+- **根因**：预览 `<video controls autoplay>` 依赖 `autoplay` 属性自动播放。**Chrome 自动播放策略**：有声视频的 autoplay 需要「用户已与该域名交互」或「用户手势栈内」；lit 渲染是异步的，`autoplay` 在渲染后触发时已**脱离点击手势上下文**，被浏览器**静默拦截**（实测 `paused:true`、`video.play()` 被拒）。此前的视频封面修复把缩略图 `preload="none"`→`"metadata"` 无关；`webkitAudioDecodedByteCount:0` 是 Playwright headless 无音频设备的假象，非真实原因。
+- **修复**（packages/web/src/app.ts）：①`openPreview` 对 `kind==="video"` 在点击手势内 `this.updateComplete.then()` → 立即 `video.play()`（**保留用户手势上下文，有声播放**）；若被策略拦截则退化 `muted=true` 再 play（用户可手动取消静音），catch 忽略。②预览 video 去掉 `autoplay` 属性（避免与手动 play 双触发），保留 `controls`。
+- **验证**：修复前 `paused:true`（被拦截）；修复后 `paused:false`、`currentTime` 前进、`muted:false volume:1 readyState:4`（有声真正播放）✓。headless 无音频设备故 audioEnergy=0 属预期，真实浏览器有声。已登记 PROJECT_LOG.md。
+
+
+### 本轮改动（2026-08-07 · 默认昵称 user_XXXX + 自定义昵称 8 位规则）
+- **用户需求**：①默认昵称改为 `user_XXXX`（四位数字）；②自定义昵称仅允许大小写字母/下划线/数字，最长 8 位。
+- **实现**：
+  - packages/web/src/device.ts：默认昵称 `用户-XXXX` → **`user_XXXX`**（`user_` + 指纹哈希取模 4 位数字）；新增 `NICK_RE = /^[A-Za-z0-9_]{1,8}$/` 与 `defaultName(id)`；`getDevice()` 读取 localStorage 时**兼容旧昵称**（`用户-XXXX` 等不符合新规则则自动重置为 `user_XXXX` 并回写）。
+  - packages/web/src/app.ts：`rename()` 校验 `NICK_RE`，不合法 `flash("昵称仅允许大小写字母、下划线和数字，最长 8 位")` 并 return（不发帧）；设置面板提示文字改 `user_XXXX`，输入框加 `maxlength="8"` + `@input` 时 `.replace(/[^A-Za-z0-9_]/g, "")` 实时过滤非法字符，placeholder 提示。
+  - packages/protocol/src/schema.ts：`rename` 帧校验 `z.string().regex(/^[A-Za-z0-9_]{1,8}$/, "昵称仅允许大小写字母、下划线和数字，最长 8 位")`（服务器端兜底，非法帧 400）。
+- **注意**：默认昵称 `user_XXXX` 为 9 位（`user_` 5 字符 + 4 数字），是**系统生成的特例**；自定义昵称严格 8 位（前端 + 协议双层校验）。若用户想改回默认格式需清 localStorage 或输入 8 位内昵称。
+- **验证**：旧 `用户-6362` 自动迁移为 `user_6362` ✓；中文昵称拦截 + 提示 ✓；9 位拦截 ✓；8 位 `user_abc` 成功发送 ✓；清缓存后默认昵称 `/^user_\d{4}$/` ✓。已登记 PROJECT_LOG.md。
+
+
+### 本轮改动（2026-08-07 · toast 字体缩至 2/3 + 自定义昵称上限 8→10 位）
+- **用户需求**：①提示窗字体缩到现在的 2/3；②自定义昵称最长改为 10 位。
+- **实现**：
+  - app.css `.toast` font-size `26px` → **`17px`**（26 × 2/3 ≈ 17.3，取整 17，保持 font-weight 600）。
+  - 昵称上限 8 → 10：app.ts `NICK_RE` 改 `{1,10}` + flash 文案改"最长 10 位" + 输入框 `maxlength="10"` + placeholder 改"仅字母/数字/下划线，最长 10 位"；device.ts `NICK_RE` 改 `{1,10}`；协议 schema.ts `rename` 帧 regex 改 `{1,10}` + 错误文案改"最长 10 位"（服务器兜底）。
+- **验证**：toast `fontSize:17px` ✓；输入框 maxlength 10 + placeholder ✓；10 位 `abc_123def` 通过不拦截 ✓；11 位拦截 ✓。已登记 PROJECT_LOG.md。
+
+
+### 本轮改动（2026-08-07 · 代码消息框去滑条 + 代码预览滚动条去白框）
+- **用户需求**：①代码消息框不允许有任何滑条；②代码预览可以有滑条（代码很长超预览窗口时），但滑条不能有下边那个白色的框。
+- **实现**（packages/web/src/app.css）：
+  - 代码消息框 `.card.code pre`：`overflow: auto` → **`overflow: hidden`**（长代码在卡片内截断，无任何滑条；点击卡片进入预览看完整代码）。
+  - 代码预览 `.viewer .vbody .codeview`：保留 `overflow: auto`（超长时有滑条），新增定制滚动条样式——`scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.25) transparent`（Firefox）+ WebKit `::-webkit-scrollbar{10px}` / `::-webkit-scrollbar-thumb`（半透明白圆角） / `::-webkit-scrollbar-track`（transparent） / **`::-webkit-scrollbar-corner { background: transparent }`（去掉右下角白色框，与深色 #282c34 背景融合）**。
+- **验证**（注入 40 行×超长行代码）：消息框 pre overflow=hidden、scrollable=false（无滑条）✓；预览 codeview overflow=auto、垂直+水平均可滚动（滑条存在）✓；滚动条 corner 透明规则已应用（去白框）✓。已登记 PROJECT_LOG.md。

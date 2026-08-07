@@ -4,7 +4,7 @@ import { parse, ClientFrame, ServerFrame, MsgData } from "@filesyncex/protocol";
 import { SyncEngine } from "@filesyncex/core";
 import { randomUUID } from "node:crypto";
 
-type Conn = { ws: WebSocket; device?: DeviceInfoT };
+type Conn = { ws: WebSocket; device?: DeviceInfoT; alive: boolean };
 
 /**
  * WebSocket 传输层：把客户端帧接入 SyncEngine，并把引擎事件广播为服务端帧。
@@ -15,6 +15,7 @@ export class SocketServer {
   private wss: WebSocketServer;
   private conns = new Map<WebSocket, Conn>();
   private offs: (() => void)[] = [];
+  private hbTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(engine: SyncEngine, wss: WebSocketServer) {
     this.engine = engine;
@@ -28,11 +29,39 @@ export class SocketServer {
     }));
     this.offs.push(engine.events.on("deleted", ({ id }) => this.broadcast({ type: "del", id })));
     this.offs.push(engine.events.on("peers", ({ peers }) => this.broadcast({ type: "peers", peers })));
+
+    // 服务器侧心跳：每 30s 检查，超过 2 个周期未响应 pong 的连接判定失联并断开
+    this.hbTimer = setInterval(() => {
+      for (const c of this.conns.values()) {
+        if (!c.alive) {
+          try {
+            c.ws.terminate();
+          } catch {
+            /* noop */
+          }
+          this.conns.delete(c.ws);
+          if (c.device) this.engine.setPeers(this.peerList());
+          continue;
+        }
+        c.alive = false;
+        try {
+          if (c.ws.readyState === c.ws.OPEN) c.ws.ping();
+        } catch {
+          /* noop */
+        }
+      }
+    }, 30_000);
+    this.hbTimer.unref?.();
   }
 
   private handleConnection(ws: WebSocket): void {
-    const conn: Conn = { ws };
+    const conn: Conn = { ws, alive: true };
     this.conns.set(ws, conn);
+
+    ws.on("pong", () => {
+      const c = this.conns.get(ws);
+      if (c) c.alive = true;
+    });
 
     ws.on("message", async (raw) => {
       let frame;
@@ -120,7 +149,13 @@ export class SocketServer {
     }
   }
 
+  /** 向所有在线客户端广播通知（异常/维护/关闭等），前端弹不可关闭大窗 */
+  broadcastNotice(level: "info" | "warn" | "error" | "maintenance" | "shutdown", message: string): void {
+    this.broadcast({ type: "notice", level, message });
+  }
+
   close(): void {
+    if (this.hbTimer) clearInterval(this.hbTimer);
     this.offs.forEach((off) => off());
     this.wss.close();
   }

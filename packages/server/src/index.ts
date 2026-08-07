@@ -17,6 +17,8 @@ export interface RunResult {
   wsUrl: string;
   engine: SyncEngine;
   close: () => Promise<void>;
+  /** 广播通知（异常/维护/关闭），前端弹不可关闭大窗 */
+  broadcastNotice: (level: "info" | "warn" | "error" | "maintenance" | "shutdown", message: string) => void;
 }
 
 export interface RunOptions {
@@ -97,6 +99,11 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   const app = createHttpApp(cfg, engine, uploads);
 
   const httpServer = http.createServer(app);
+  // 局域网大文件分片上传：调大 keep-alive 空闲超时，避免服务器在 chunk 间隙关闭连接池，
+  // 导致浏览器复用已关闭连接而触发 request aborted / ECONNRESET。
+  httpServer.keepAliveTimeout = 30_000;
+  httpServer.headersTimeout = 35_000;
+  httpServer.requestTimeout = 120_000;
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
   wss.on("error", () => {
     /* server error 已由下方 httpServer error 处理，此处吞掉避免 unhandled 崩溃 */
@@ -133,6 +140,9 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   const close = async (): Promise<void> => {
     if (closed) return;
     closed = true;
+    // 关闭前广播通知（异常/维护/关闭），让前端弹不可关闭大窗提示
+    wsServer.broadcastNotice("shutdown", "服务器即将关闭，请稍后重新连接");
+    await new Promise((r) => setTimeout(r, 500)); // 留时间让通知送达客户端
     wsServer.close();
     await new Promise<void>((r) => httpServer.close(() => r()));
     await engine.close();
@@ -145,6 +155,6 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
     }
   };
 
-  return { httpPort: cfg.httpPort, wsPort: cfg.httpPort, httpUrl, wsUrl, engine, close };
+  return { httpPort: cfg.httpPort, wsPort: cfg.httpPort, httpUrl, wsUrl, engine, close, broadcastNotice: (level, message) => wsServer.broadcastNotice(level, message) };
 }
 

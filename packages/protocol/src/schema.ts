@@ -119,7 +119,8 @@ export const ClientFrame = z.discriminatedUnion("type", [
   /** 删除消息 */
   z.object({ type: z.literal("del"), id: z.string() }),
   /** 修改昵称 */
-  z.object({ type: z.literal("rename"), name: z.string().min(1).max(40) }),
+  /** 修改昵称（仅允许大小写字母/下划线/数字，最长 10 位） */
+  z.object({ type: z.literal("rename"), name: z.string().regex(/^[A-Za-z0-9_]{1,10}$/, "昵称仅允许大小写字母、下划线和数字，最长 10 位") }),
   z.object({ type: z.literal("ping") }),
 ]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
@@ -135,6 +136,9 @@ export const ServerFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("peers"), peers: z.array(DeviceInfo) }),
   /** 某设备改名 */
   z.object({ type: z.literal("renamed"), device: DeviceInfo }),
+  /** 心跳回应 */
   z.object({ type: z.literal("pong") }),
+  /** 服务器通知：异常 / 维护 / 关闭（前端弹不可关闭大窗，确认后重连） */
+  z.object({ type: z.literal("notice"), level: z.enum(["info", "warn", "error", "maintenance", "shutdown"]), message: z.string() }),
 ]);
 export type ServerFrame = z.infer<typeof ServerFrame>;

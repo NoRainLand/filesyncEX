@@ -1,10 +1,11 @@
-import { html, css, LitElement, nothing } from "lit";
+import { html, unsafeCSS, LitElement, nothing } from "lit";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import QRCode from "qrcode";
 import type { DeviceInfoT, MsgDataT } from "@filesyncex/protocol";
 import { getDevice, saveDevice } from "./device.js";
 import { WsClient } from "./ws.js";
 import { uploadFile } from "./api.js";
+import appCss from "./app.css?inline";
 
 /* ================= helpers ================= */
 
@@ -48,10 +49,23 @@ function fmtType(name: string, mime?: string): string {
   if (mime?.startsWith("video/")) return "视频";
   return map[ext ?? ""] ?? "文件";
 }
+/** 文件类型 → 消息 kind（与服务器 kindOf 一致）：用于上传占位卡匹配真实消息尺寸 */
+function fileKind(name: string, mime?: string): "image" | "audio" | "video" | "file" {
+  if (mime) {
+    if (mime.startsWith("image/")) return "image";
+    if (mime.startsWith("audio/")) return "audio";
+    if (mime.startsWith("video/")) return "video";
+  }
+  const ext = name.split(".").pop()?.toLowerCase();
+  if (ext && ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"].includes(ext)) return "image";
+  if (ext && ["mp3", "wav", "ogg", "m4a", "flac", "aac"].includes(ext)) return "audio";
+  if (ext && ["mp4", "webm", "mov", "mkv", "avi"].includes(ext)) return "video";
+  return "file";
+}
 
-/** 波形条：优先用服务器生成的真实峰值；无则回退正弦装饰条 */
+/** 波形条：优先用服务器生成的真实峰值；无数据时默认全部平线（同高度） */
 const waveBars = (peaks?: number[] | null) => {
-  const arr = peaks && peaks.length ? peaks : Array.from({ length: 28 }, (_, i) => (10 + Math.abs(Math.sin(i * 1.05)) * 24) / 100);
+  const arr = peaks && peaks.length ? peaks : Array.from({ length: 96 }, () => 0.4);
   return arr.map((v) => html`<i style="height:${Math.max(6, Math.round(v * 100))}%"></i>`);
 };
 
@@ -123,209 +137,29 @@ const I_TRASH = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" v
 /* ================= 主组件 ================= */
 
 export class FilesyncApp extends LitElement {
-  static styles = css`
-    :host { display: flex; justify-content: center; height: 100dvh; font-family: var(--mono); color: var(--ink); background: var(--bg); }
-    .container { width: 100%; max-width: 1000px; display: flex; flex-direction: column; height: 100%; overflow-y: auto; padding: 0 0 30px; box-sizing: border-box; scrollbar-width: none; }
-    .container::-webkit-scrollbar { display: none; }
-    /* ---------- Header ---------- */
-    header.app { display: flex; align-items: center; gap: 14px; margin-top: 20px; padding: 12px 0 16px; border-bottom: 1px solid var(--line); margin-bottom: 16px; flex: none; }
-    .logo { font-size: 22px; font-weight: 700; letter-spacing: .5px; color: var(--primary); display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
-    .logo .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 3px var(--accent); }
-    .logo small { font-size: 12px; font-weight: 400; color: var(--muted); }
-    .spacer { flex: 1; }
-    .iconbtn { width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex: none; }
-    .iconbtn:hover { background: var(--surface-2); color: var(--primary); border-color: var(--primary); }
-    /* ---------- 上传区（桌面：顶部卡片 sticky） ---------- */
-    .upload { flex: none; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; box-shadow: var(--shadow); position: sticky; top: 12px; z-index: 20; transition: border-color .15s, background .15s; }
-    .upload.dragover { border-color: var(--primary); border-style: dashed; background: var(--bubble); }
-    .upload-row { display: flex; gap: 10px; align-items: center; position: relative; }
-    .btn { border: 0; border-radius: 10px; padding: 10px 18px; font-family: var(--mono); font-size: 14px; cursor: pointer; background: var(--primary); color: #fff; transition: .15s; white-space: nowrap; flex: none; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
-    .btn:hover { background: var(--primary-hover); }
-    .btn:active { background: var(--primary-active); }
-    .btn.secondary { background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); }
-    .btn.secondary:hover { border-color: var(--primary); color: var(--primary); }
-    .btn.pink { background: var(--pink); }
-    .btn.btn-file { background: var(--surface-2); color: var(--primary); border: 1px solid var(--line); display: inline-flex; align-items: center; gap: 6px; }
-    .btn.btn-file:hover { border-color: var(--primary); }
-    .upload-row input { flex: 1; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 58px 10px 12px; color: var(--ink); font-family: var(--mono); font-size: 14px; outline: none; min-width: 0; }
-    .upload-row input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(4,120,120,.15); }
-    /* 花括号按钮：absolute 悬浮输入框右上角（发送按钮左侧） */
-    .bracebtn { position: absolute; top: 0; right: 84px; z-index: 5; flex: none; width: 38px; height: 40px; border: 0; background: transparent; color: var(--muted); font-family: var(--mono); font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; transition: .15s; }
-    .bracebtn:hover { color: var(--primary); }
-    .bracebtn.on { background: transparent; color: var(--primary); }
-    /* 代码模式：隐藏文件按钮+输入框；发送按钮压右上角；编辑器撑满卡片 */
-    .upload-row.code-mode .btn-file, .upload-row.code-mode .input { display: none; }
-    .upload-row.code-mode .send { position: absolute; top: 0; right: 0; z-index: 5; }
-    .code-editor { display: none; flex: 1; min-width: 0; flex-direction: column; background: var(--surface); border: 0; border-radius: 10px; overflow: hidden; transform-origin: top center; }
-    .upload-row.code-mode .code-editor { margin: -10px -12px; }
-    .code-editor.open { display: flex; animation: codeIn .22s ease; }
-    @keyframes codeIn { from { opacity: 0; transform: scaleY(.45); } to { opacity: 1; transform: scaleY(1); } }
-    .ce-top { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--surface); }
-    .ce-top label { font-size: 12px; color: var(--muted); flex: none; }
-    .ce-top select { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; color: var(--ink); font-family: var(--mono); font-size: 12px; padding: 5px 8px; outline: none; }
-    .code-editor textarea { width: 100%; flex: 1; min-height: 150px; max-height: 360px; resize: vertical; margin-top: 8px; border: 0; outline: none; background: #282c34; color: #abb2bf; font-family: var(--mono); font-size: 13px; line-height: 1.6; padding: 12px; tab-size: 2; box-sizing: border-box; }
-    /* 上传队列 */
-    .queue { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
-    .qitem { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; align-items: center; gap: 12px; }
-    .qinfo { flex: 1; min-width: 0; }
-    .qname { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; gap: 8px; align-items: center; }
-    .qname small { color: var(--muted); }
-    .qbar { height: 6px; background: var(--surface-2); border-radius: 3px; margin-top: 6px; overflow: hidden; }
-    .qbar i { display: block; height: 100%; background: linear-gradient(90deg, var(--primary), var(--accent)); }
-    .qmeta { font-size: 11px; color: var(--muted); margin-top: 4px; display: flex; justify-content: space-between; }
-    .qactions { display: flex; gap: 6px; }
-    .mini { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; font-size: 13px; font-family: var(--mono); }
-    /* ---------- 日期分组 + 消息列表 ---------- */
-    .day { display: flex; align-items: center; gap: 12px; margin: 22px 0 12px; color: var(--muted); font-size: 12px; }
-    .day::before, .day::after { content: ""; flex: 1; height: 1px; background: var(--line); }
-    .list { flex: none; padding-bottom: 14px; scrollbar-width: none; }
-    .list::-webkit-scrollbar { display: none; }
-    .empty { text-align: center; color: var(--muted); margin-top: 70px; font-size: 13px; }
-    .msg { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 16px; }
-    .msg .avatar { width: 36px; height: 36px; border-radius: 50%; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex: none; background: var(--primary) !important; }
-    .msg .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-    .msg .head { display: flex; gap: 8px; align-items: baseline; font-size: 12px; margin-bottom: 4px; color: var(--muted); }
-    .msg .head .who { color: var(--primary); font-weight: 700; }
-    .msg .head time { color: var(--muted); }
-    .me { background: var(--primary); color: #fff; font-size: 10px; padding: 1px 6px; border-radius: 6px; letter-spacing: .5px; flex: none; }
-    .bubble { display: inline-block; background: var(--bubble); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; font-size: 14px; line-height: 1.6; max-width: 78%; white-space: pre-wrap; word-break: break-word; align-self: flex-start; }
-    .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; max-width: 560px; overflow: hidden; box-shadow: var(--shadow); position: relative; }
-    /* 卡片右上角删除角标 */
-    .del-corner { position: absolute; top: 8px; right: 8px; z-index: 3; width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; background: var(--surface); border: 1px solid var(--line); color: var(--muted); opacity: .8; transition: .15s; }
-    .del-corner:hover { opacity: 1; color: var(--pink); border-color: var(--pink); background: var(--surface-2); }
-    .del-corner svg { width: 14px; height: 14px; }
-    /* 文本卡片：主体在卡片内，最多 4 行省略 */
-    .card.text .bubble { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; background: none; border: 0; border-radius: 0; padding: 12px 14px 0; font-size: 14px; line-height: 1.6; max-width: 100%; overflow: hidden; white-space: pre-wrap; word-break: break-word; }
-    /* 文件 */
-    .card .file { display: flex; align-items: center; gap: 12px; padding: 12px 14px; cursor: pointer; }
-    .card .file .ic { width: 42px; height: 42px; border-radius: 10px; background: var(--bubble); color: var(--primary); display: flex; align-items: center; justify-content: center; flex: none; }
-    .card .file .ic svg { width: 22px; height: 22px; }
-    .card .file .meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-    .card .file .name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .card .file .sub { font-size: 12px; color: var(--muted); }
-    /* 图片/视频：整卡 16:9 缩略图 + 底部渐变覆盖层 + 中间放大/播放图标 */
-    .card.img .thumb, .card.video .vthumb { position: relative; width: 100%; aspect-ratio: 16 / 9; cursor: pointer; overflow: hidden; }
-    .card.img .thumb { background: var(--surface-2); }
-    .card.img .thumb img, .card.video .vthumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
-    .card.video .vthumb { background: #000; display: flex; align-items: center; justify-content: center; color: #fff; }
-    .card.img .ovl, .card.video .ovl { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; display: flex; flex-direction: column; gap: 8px; padding: 22px 14px 12px; background: linear-gradient(transparent, rgba(0,0,0,.7)); }
-    .ovl .mm { display: flex; align-items: center; gap: 10px; font-size: 12px; color: #fff; }
-    .ovl .mm .name { color: #fff; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
-    .ovl .mm .size { color: rgba(255,255,255,.85); flex: none; white-space: nowrap; }
-    .ovl .ops { display: flex; gap: 8px; padding: 0; }
-    .card.img .thumb::after, .card.video .vthumb::after { content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 52px; height: 52px; z-index: 1; pointer-events: none; background-color: transparent; background-position: center; background-repeat: no-repeat; }
-    .card.img .thumb::after { background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="white" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path stroke-linecap="round" d="m20 20-3.5-3.5M8 11h6M11 8v6"/></svg>'); background-size: 26px; }
-    .card.video .vthumb::after { background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="white" d="M8 5.5v13l11-6.5z"/></svg>'); background-size: 26px; background-position: center 1px; }
-    /* 音频：播放按钮 + 波形条 + 信息行 */
-    .card.audio .ap { display: flex; align-items: center; gap: 12px; padding: 12px 42px 12px 14px; }
-    .card.audio .play { width: 38px; height: 38px; border-radius: 50%; background: var(--primary); color: #fff; border: 0; cursor: pointer; display: flex; align-items: center; justify-content: center; flex: none; }
-    .card.audio.playing .play { background: var(--pink); }
-    .card.audio .wave { flex: 1; height: 34px; display: flex; align-items: center; gap: 2px; cursor: pointer; position: relative; }
-    .card.audio .wave i { flex: 1; background: var(--muted); border-radius: 2px; opacity: .85; transition: background .15s; }
-    .card.audio .wave i.played { background: var(--accent); }
-    /* 播放进度指示竖线：有进度（0<x<1）时显示，未播放/播完隐藏 */
-    .card.audio .wave .ind { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: #000; opacity: 0; border-radius: 1px; pointer-events: none; z-index: 2; transition: opacity .15s; }
-    .card.audio .wave.show-ind .ind { opacity: .85; }
-    .card.audio .mm { display: flex; align-items: center; gap: 10px; padding: 0 14px 12px; font-size: 12px; }
-    .card.audio .mm .name { color: var(--ink); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
-    .card.audio .mm .size { color: var(--muted); flex: none; white-space: nowrap; }
-    .card.audio audio { display: none; }
-    /* 代码（One Dark） */
-    .card.code { max-width: 640px; background: #282c34; border-color: #3e4451; }
-    .card.code .code-head { display: flex; align-items: center; gap: 8px; padding: 8px 14px 16px; border-bottom: 1px solid #3e4451; font-size: 12px; color: #7f848e; }
-    .card.code .code-head .lang { color: #61afef; font-weight: 700; position: relative; top: 5px; }
-    .card.code pre { margin: 0; padding: 12px 14px; overflow: auto; font-size: 13px; line-height: 1.7; color: #abb2bf; font-family: var(--mono); white-space: pre; tab-size: 2; cursor: pointer; }
-    .tok-kw { color: #c678dd; } .tok-str { color: #98c379; } .tok-num { color: #d19a66; } .tok-fn { color: #61afef; } .tok-com { color: #5c6370; font-style: italic; } .tok-typ { color: #e5c07b; } .tok-var { color: #e06c75; } .tok-prop { color: #d19a66; } .tok-op { color: #56b6c2; } .tok-attr { color: #e5c07b; }
-    /* 操作行（卡片底部，左对齐） */
-    .ops { display: flex; gap: 8px; padding: 10px 14px 12px; }
-    .ops .btn { padding: 6px 12px; font-size: 12px; }
-    /* ---------- 底部输入区（移动端） ---------- */
-    footer.composer { flex: none; display: none; border-top: 1px solid var(--line); padding: 8px 10px; background: var(--bg); position: relative; flex-direction: column; gap: 8px; }
-    .composer-inner { display: flex; align-items: center; gap: 8px; }
-    .addbtn { width: 40px; height: 40px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--primary); display: flex; align-items: center; justify-content: center; cursor: pointer; flex: none; }
-    .composer input { flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 11px 14px; color: var(--ink); font-family: var(--mono); font-size: 14px; outline: none; min-width: 0; }
-    .composer input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(4,120,120,.15); }
-    .sendbtn { width: 40px; height: 40px; border-radius: 50%; background: var(--primary); color: #fff; border: 0; flex: none; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-    .composer .code-editor { margin-top: 8px; }
-    /* ---------- 弹层 ---------- */
-    .mask { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; justify-content: center; z-index: 100; }
-    .panel { background: var(--surface); border-radius: 16px 16px 0 0; width: 100%; max-width: 520px; padding-bottom: 14px; color: var(--ink); max-height: 88vh; overflow-y: auto; }
-    .panel .handle { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 8px auto 4px; }
-    .panel .ptitle { font-size: 17px; color: var(--primary); text-align: center; padding: 6px 0 10px; cursor: pointer; }
-    .attach-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 8px 16px 12px; }
-    .att { display: flex; flex-direction: column; align-items: center; gap: 6px; background: transparent; border: 0; font-family: var(--mono); color: var(--ink); cursor: pointer; font-size: 11px; }
-    .att .ai { width: 52px; height: 52px; border-radius: 14px; display: flex; align-items: center; justify-content: center; background: var(--bubble); color: var(--primary); border: 1px solid var(--line); }
-    .att .ai.pink { color: var(--pink); }
-    .qlist { display: flex; flex-direction: column; gap: 10px; padding: 4px 16px 12px; }
-    .qitem-row { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
-    .panel label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 6px; }
-    .panel .field { width: 100%; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 9px 12px; color: var(--ink); font-family: var(--mono); margin-bottom: 10px; box-sizing: border-box; }
-    .panel .fp { font-size: 11px; color: var(--muted); word-break: break-all; }
-    .panel .save { width: 100%; border: 0; background: var(--primary); color: #fff; padding: 10px; border-radius: 10px; cursor: pointer; margin-top: 6px; font-family: var(--mono); }
-    /* 设置面板（对齐原型 desktop.html dlgSettings） */
-    .settings { display: flex; flex-direction: column; gap: 8px; padding: 2px 16px 12px; }
-    .settings .st-sec { margin: 2px 0 4px; font-weight: 700; font-size: 13px; color: var(--ink); }
-    .settings .st-conn { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-    .settings .st-conn .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 3px var(--accent); }
-    .settings .muted { margin: 0 0 4px; font-size: 12px; color: var(--muted); }
-    .settings .muted code { background: var(--surface-2); padding: 1px 6px; border-radius: 4px; color: var(--primary); word-break: break-all; }
-    .settings .st-note { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
-    .settings hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
-    .settings .field { margin-bottom: 8px; }
-    .settings code.fp { display: inline-block; padding: 4px 8px; background: var(--surface-2); border-radius: 6px; color: var(--primary); font-size: 11px; word-break: break-all; }
-    .settings .btn.tool { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; justify-content: center; margin-bottom: 2px; }
-    .settings .btn.tool.secondary { background: transparent; border: 1px solid var(--line); color: var(--ink); }
-    .qrbox { width: 200px; height: 200px; margin: 0 auto 12px; background: #fff; border-radius: 8px; padding: 10px; display: flex; align-items: center; justify-content: center; }
-    .qrbox img { width: 100%; height: 100%; display: block; }
-    .qrbox .qr-loading { color: var(--muted); font-size: 12px; }
-    .panel.qr p { text-align: center; font-size: 12px; color: var(--muted); margin: 0 0 12px; word-break: break-all; }
-    /* ---------- 全屏预览 ---------- */
-    .viewer { position: fixed; inset: 0; z-index: 400; background: rgba(0,0,0,.94); color: #fff; display: none; flex-direction: column; }
-    .viewer.open { display: flex; }
-    .viewer .vtop { display: flex; align-items: center; padding: 12px 16px; font-size: 14px; flex: none; }
-    .viewer .vtop .vt { font-size: 16px; color: var(--primary); font-weight: 700; }
-    .viewer .vtop .close { margin-left: auto; border: 0; background: none; color: #fff; font-size: 20px; cursor: pointer; font-family: var(--mono); }
-    .viewer .vbody { flex: 1; display: flex; align-items: center; justify-content: center; padding: 10px; overflow: hidden; }
-    .viewer .vbody .ph { max-width: 92vw; max-height: 70vh; border-radius: 10px; }
-    .viewer .vbody .codeview { width: fit-content; max-width: 92vw; max-height: 72vh; overflow: auto; background: #282c34; color: #abb2bf; padding: 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; white-space: pre; border-radius: 10px; }
-    .viewer .vfoot { display: flex; gap: 10px; justify-content: center; padding: 12px 16px; flex: none; }
-    .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: rgba(0,0,0,.8); color: #fff; padding: 8px 16px; border-radius: 20px; font-size: 12px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 500; }
-    .toast.show { opacity: 1; }
-    /* ---------- 响应式 ---------- */
-    @media (min-width: 641px) {
-      footer.composer { display: none; }
-      .mask { align-items: center; }
-      .panel { border-radius: 14px; width: min(92vw, 380px); }
-      .panel.settings-panel { width: min(92vw, 640px); max-width: min(92vw, 640px); } /* 对齐原型 dlgSettings 640px */
-      .panel .handle { display: none; }
-    }
-    @media (max-width: 640px) {
-      .container { padding: 0; overflow: hidden; }
-      .upload { display: none; }
-      footer.composer { display: flex; }
-      header.app { padding: 8px 10px; margin-bottom: 0; }
-      .list { flex: 1; overflow-y: auto; padding: 0 10px 10px; }
-      .msg .body { max-width: 82%; }
-      .del-corner { display: none; }
-    }
-  `;
+  static styles = unsafeCSS(appCss);
 
   static properties = {
     msgs: { state: true }, peers: { state: true }, self: { state: true }, connected: { state: true },
+    connState: { state: true }, notice: { state: true },
     text: { state: true }, codeMode: { state: true }, codeLang: { state: true }, codeText: { state: true },
     uploads: { state: true }, sheet: { state: true }, preview: { state: true }, nick: { state: true },
-    httpUrl: { state: true }, theme: { state: true }, toastText: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, wavePeaks: { state: true },
+    httpUrl: { state: true }, theme: { state: true }, toastText: { state: true }, toastShow: { state: true }, toastLeaving: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, wavePeaks: { state: true },
   };
 
   msgs: MsgDataT[] = [];
   peers: DeviceInfoT[] = [];
   self: DeviceInfoT | null = null;
   connected = false;
+  /** WS 连接状态：connecting 连接中 / connected 正常 / disconnected 断开 */
+  connState: "connecting" | "connected" | "disconnected" = "connecting";
+  /** 服务器通知（异常/维护/关闭）：非空时弹不可关闭大窗 */
+  notice: { level: string; message: string } | null = null;
   text = "";
   codeMode = false;
   codeLang = "ts";
   codeText = "";
-  uploads: { name: string; pct: number; size: number }[] = [];
+  uploads: { key: string; name: string; pct: number; size: number; kind: string; fail?: boolean }[] = [];
   playingId: string | null = null;
   sheet: "attach" | "progress" | "settings" | "qr" | null = null;
   preview: { kind: string; msg: MsgDataT } | null = null;
@@ -334,9 +168,12 @@ export class FilesyncApp extends LitElement {
   qrDataUrl = "";
   theme: "light" | "dark" = "light";
   toastText = "";
+  toastShow = false;
+  toastLeaving = false;
 
   private ws: WsClient | null = null;
   private tipTimer: number | undefined;
+  private tipClearTimer: number | undefined;
   private audioEl: HTMLAudioElement | null = null;
   private audioMsgId: string | null = null;
   /** 音频波形缓存：msg.id → 峰值数组（null = 加载失败/不支持） */
@@ -362,8 +199,10 @@ export class FilesyncApp extends LitElement {
       })
       .catch(() => { /* 保持 location.host */ });
     this.ws = new WsClient(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`, {
-      onOpen: () => { this.connected = true; if (this.self) this.ws?.send({ type: "hello", device: this.self }); },
-      onClose: () => { this.connected = false; },
+      onConnecting: () => { this.connState = "connecting"; },
+      onOpen: () => { this.connected = true; this.connState = "connected"; if (this.self) this.ws?.send({ type: "hello", device: this.self }); },
+      onClose: () => { this.connected = false; this.connState = "disconnected"; },
+      onNotice: (level, message) => { this.showNotice(level, message); },
       onWelcome: (_s, msgs, peers) => { this.msgs = msgs; this.peers = peers; this.scrollToLatest(); },
       onAdd: (msg) => { if (!this.msgs.some((m) => m.id === msg.id)) { this.msgs = [...this.msgs, msg]; this.scrollToLatest(); } },
       onDel: (id) => { this.msgs = this.msgs.filter((m) => m.id !== id); },
@@ -375,9 +214,22 @@ export class FilesyncApp extends LitElement {
     });
     this.ws.connect();
     window.addEventListener("resize", this.onResize);
+    // 主界面任何位置滚轮都转发到滚动容器（桌面 .container / 移动 .list）
+    this.addEventListener("wheel", this.onHostWheel);
   }
-  disconnectedCallback(): void { window.removeEventListener("resize", this.onResize); this.ws?.close(); super.disconnectedCallback(); }
+  disconnectedCallback(): void { window.removeEventListener("resize", this.onResize); this.removeEventListener("wheel", this.onHostWheel); this.ws?.close(); super.disconnectedCallback(); }
   private onResize = (): void => { this.requestUpdate(); this.scrollToLatest(); };
+  /** 全局滚轮：弹层/预览打开时不劫持；否则把滚轮统一转发到当前滚动容器 */
+  private onHostWheel = (e: WheelEvent): void => {
+    if (this.sheet || this.preview) return; // 弹层/预览内部自己滚
+    const scroller = this.shadowRoot?.querySelector<HTMLElement>(window.innerWidth <= 640 ? ".list" : ".container");
+    if (!scroller) return;
+    const inScroller = scroller.contains(e.target as Node);
+    if (!inScroller && scroller.scrollHeight > scroller.clientHeight) {
+      scroller.scrollTop += e.deltaY;
+      e.preventDefault();
+    }
+  };
 
   /* 滚动到最新消息：桌面端最新在顶部（scrollTop=0），移动端最新在底部（scrollHeight） */
   private scrollToLatest(): void {
@@ -403,6 +255,7 @@ export class FilesyncApp extends LitElement {
     this.ws?.send({ type: "send", msg: { kind: "code", code: { lang: this.codeLang, content: c } } });
     this.codeText = "";
     this.clearComposer();
+    this.codeMode = false; // 发送后自动退出代码模式，变回普通输入
   }
   private clearComposer(): void {
     const r = this.shadowRoot;
@@ -484,7 +337,8 @@ export class FilesyncApp extends LitElement {
     this.updateWaveInd(m.id, ratio);
     if (a.paused) { this.playingId = m.id; void a.play().catch(() => { this.playingId = null; this.audioEl = null; this.audioMsgId = null; }); }
   }
-  /** 更新波形播放进度指示线 + 已播放/未播放着色（直接改 DOM，不经 lit 重渲染） */
+  /** 更新波形进度：已播 bar 变薄荷、未播灰；进度线穿过的 bar 用横向渐变平滑过渡（线性前进，非整格跳变）+ 竖线 .ind 定位 */
+  /** 更新波形播放进度：已播 bar 整根变薄荷（.played 类），未播灰；竖线 .ind 定位（直接改 DOM，不经 lit 重渲染） */
   private updateWaveInd(msgId: string, forced?: number): void {
     const wave = this.shadowRoot?.querySelector<HTMLElement>(`.card.audio[data-id="${msgId}"] .wave`);
     if (!wave) return;
@@ -492,16 +346,23 @@ export class FilesyncApp extends LitElement {
     const ratio = forced ?? (a && a.duration ? a.currentTime / a.duration : 0);
     const ind = wave.querySelector(".ind") as HTMLElement | null;
     if (ind) ind.style.left = `${Math.round(ratio * 100)}%`;
-    // 已播放部分主色，未播放灰色
-    const bars = Array.from(wave.querySelectorAll("i:not(.ind)"));
-    const playedCount = Math.round(ratio * bars.length);
-    bars.forEach((bar, i) => bar.classList.toggle("played", i < playedCount));
+    // 整格跳变：已播 bar 全加 .played（薄荷），未播移除（灰）
+    const bars = Array.from(wave.querySelectorAll("i:not(.ind):not(.prog)"));
+    const n = bars.length;
+    const played = Math.round(ratio * n);
+    bars.forEach((bar, i) => bar.classList.toggle("played", i < played));
     // 暂停/播放中（进度 0<x<1）指示器保持显示；未播放/播完隐藏
     wave.classList.toggle("show-ind", ratio > 0 && ratio < 1);
   }
+  /** 昵称规则：仅大小写字母/下划线/数字，最长 10 位 */
+  private static readonly NICK_RE = /^[A-Za-z0-9_]{1,10}$/;
   private rename(): void {
     const n = this.nick.trim();
     if (!n) return;
+    if (!FilesyncApp.NICK_RE.test(n)) {
+      this.flash("昵称仅允许大小写字母、下划线和数字，最长 10 位");
+      return;
+    }
     this.ws?.send({ type: "rename", name: n });
     if (this.self) { const d = { ...this.self, deviceName: n }; this.self = d; saveDevice(d); }
     this.sheet = null;
@@ -521,21 +382,111 @@ export class FilesyncApp extends LitElement {
   private async handleFiles(files: FileList | File[] | null): Promise<void> {
     if (!files) return;
     for (const file of Array.from(files as File[])) {
-      const rec = { name: file.name, pct: 0, size: file.size };
+      const key = `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const kind = fileKind(file.name, file.type);
+      const rec: { key: string; name: string; pct: number; size: number; kind: string; fail?: boolean } = { key, name: file.name, pct: 0, size: file.size, kind };
       this.uploads = [...this.uploads, rec];
+      // 在消息列表插入「按类型尺寸的占位卡」（16:9 图片视频 / 播放条音频 / 图标行文件）；真实消息经 WS 广播后替换
+      const placeholder: MsgDataT = {
+        id: key, kind, sender: this.self ?? { deviceId: "", deviceName: "上传中", color: "#047878", platform: "other" },
+        ts: Date.now(), file: { name: file.name, size: file.size },
+      };
+      this.msgs = [...this.msgs, placeholder];
+      this.scrollToLatest();
       try {
         await uploadFile(file, (sent, total) => { rec.pct = Math.round((sent / total) * 100); this.uploads = [...this.uploads]; });
-        // 上传完成：从队列移除（避免堆积 100% 残留）；进行中仍显示进度，失败保留红色提示
+        // 上传成功：移除占位卡（真实消息由 WS onAdd 广播，同 id 去重不冲突）
+        this.msgs = this.msgs.filter((m) => m.id !== key);
         this.uploads = this.uploads.filter((x) => x !== rec);
-      } catch (e) { rec.pct = -1; console.error("上传失败:", e); this.uploads = [...this.uploads]; }
+      } catch (e) {
+        rec.fail = true; rec.pct = -1; console.error("上传失败:", e); this.uploads = [...this.uploads];
+        // 失败：占位卡保持显示（renderMsg 用 rec.fail 显示「上传失败」+ 红色圆环）
+        this.msgs = [...this.msgs];
+      }
     }
     this.scrollToLatest();
   }
   private onDrop(e: DragEvent): void { e.preventDefault(); void this.handleFiles(e.dataTransfer?.files ?? null); }
 
   /* ---------- 预览 ---------- */
-  private openPreview(kind: string, msg: MsgDataT): void { this.preview = { kind, msg }; }
+  private pvZoom = { s: 1, tx: 0, ty: 0, bx: 0, by: 0, init: false };
+  private pvDrag = { active: false, sx: 0, sy: 0, stx: 0, sty: 0 };
+  private openPreview(kind: string, msg: MsgDataT): void {
+    this.pvZoom = { s: 1, tx: 0, ty: 0, bx: 0, by: 0, init: false };
+    this.pvDrag.active = false;
+    this.preview = { kind, msg };
+    // 视频：在用户点击手势内立即播放（autoplay 属性会被浏览器自动播放策略拦截，导致无声音）
+    if (kind === "video") {
+      void this.updateComplete.then(() => {
+        const v = this.shadowRoot?.querySelector<HTMLVideoElement>(".viewer video.ph");
+        if (v) {
+          // 有声音播放：若被策略拦截则退化静音播放，用户可手动取消静音
+          void v.play().catch(() => {
+            v.muted = true;
+            void v.play().catch(() => { /* 忽略 */ });
+          });
+        }
+      });
+    }
+  }
   private closePreview(): void { this.preview = null; }
+  /** 图片预览滚轮缩放：以鼠标位置为锚点（translate + scale，无 transform-origin 累积漂移） */
+  private zoomPreview(e: WheelEvent): void {
+    e.preventDefault();
+    const img = e.currentTarget as HTMLElement;
+    const z = this.pvZoom;
+    if (!z.init) {
+      const r = img.getBoundingClientRect();
+      z.bx = r.left; z.by = r.top; z.init = true;
+    }
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const s2 = Math.min(8, Math.max(1, z.s * factor));
+    // 鼠标点的图像坐标（未变换坐标系）
+    const px = (e.clientX - z.bx - z.tx) / z.s;
+    const py = (e.clientY - z.by - z.ty) / z.s;
+    z.s = s2;
+    z.tx = e.clientX - z.bx - px * z.s;
+    z.ty = e.clientY - z.by - py * z.s;
+    // 回到原始尺寸：直接清空 transform（避免 translate 残留）
+    if (z.s <= 1.001) {
+      z.tx = 0; z.ty = 0; z.s = 1; z.init = false;
+      img.style.transform = "";
+      return;
+    }
+    img.style.transform = `translate(${z.tx}px, ${z.ty}px) scale(${z.s})`;
+  }
+  /** 图片按住拖动查看（仅图片放大或大于窗体时） */
+  private startDrag(e: MouseEvent): void {
+    e.preventDefault();
+    const img = e.currentTarget as HTMLElement;
+    const z = this.pvZoom;
+    if (!z.init) {
+      const r = img.getBoundingClientRect();
+      z.bx = r.left; z.by = r.top; z.init = true;
+    }
+    // 仅当放大 或 图片大于窗体时可拖动
+    const vr = img.parentElement?.getBoundingClientRect();
+    const ir = img.getBoundingClientRect();
+    const big = z.s > 1.001 || (!!vr && (ir.width > vr.width + 1 || ir.height > vr.height + 1));
+    if (!big) return;
+    this.pvDrag = { active: true, sx: e.clientX, sy: e.clientY, stx: z.tx, sty: z.ty };
+    window.addEventListener("mousemove", this.onDragMove);
+    window.addEventListener("mouseup", this.onDragEnd);
+  }
+  private onDragMove = (e: MouseEvent): void => {
+    const d = this.pvDrag;
+    if (!d.active) return;
+    const z = this.pvZoom;
+    z.tx = d.stx + (e.clientX - d.sx);
+    z.ty = d.sty + (e.clientY - d.sy);
+    const img = this.shadowRoot?.querySelector(".viewer.open .vbody .ph");
+    if (img instanceof HTMLElement) img.style.transform = `translate(${z.tx}px, ${z.ty}px) scale(${z.s})`;
+  };
+  private onDragEnd = (): void => {
+    this.pvDrag.active = false;
+    window.removeEventListener("mousemove", this.onDragMove);
+    window.removeEventListener("mouseup", this.onDragEnd);
+  };
   private previewAction(): void {
     const p = this.preview;
     if (!p) return;
@@ -546,7 +497,56 @@ export class FilesyncApp extends LitElement {
       this.flash("（原型）已开始下载");
     }
   }
-  private flash(t: string): void { this.toastText = t; clearTimeout(this.tipTimer); this.tipTimer = window.setTimeout(() => (this.toastText = ""), 1800); }
+  private flash(t: string): void {
+    this.toastText = t;
+    this.toastShow = true;
+    this.toastLeaving = false;
+    clearTimeout(this.tipTimer);
+    clearTimeout(this.tipClearTimer);
+    this.tipTimer = window.setTimeout(() => {
+      // 先移除 show（触发淡出动画，文字保留、窗口不收缩），并加上移标记
+      this.toastShow = false;
+      this.toastLeaving = true;
+      this.tipClearTimer = window.setTimeout(() => { this.toastText = ""; this.toastLeaving = false; }, 700);
+    }, 2200);
+  }
+
+  /* ---------- 服务器通知（异常/维护/关闭） ---------- */
+  private noticeLevelLabel(level: string): string {
+    switch (level) {
+      case "shutdown": return "服务器关闭";
+      case "maintenance": return "服务器维护中";
+      case "error": return "服务器异常";
+      case "warn": return "服务器警告";
+      default: return "服务器通知";
+    }
+  }
+  private showNotice(level: string, message: string): void {
+    // 更新内容；若已弹出不可关闭大窗则复用，否则新弹
+    this.notice = { level, message };
+  }
+  private confirmReconnectAt = 0;
+  private confirmNotice(): void {
+    // 防抖：确认按钮快速连点只触发一次重连
+    const now = Date.now();
+    if (now - this.confirmReconnectAt < 3000) return;
+    this.confirmReconnectAt = now;
+    const n = this.notice;
+    this.notice = null;
+    this.connState = "connecting";
+    this.ws?.forceReconnect();
+    this.flash(n?.level === "shutdown" ? "正在尝试重新连接…" : "正在重新连接…");
+  }
+
+  private renderNotice() {
+    if (!this.notice) return nothing;
+    const n = this.notice;
+    return html`<div class="notice-mask"><div class="notice-panel ${n.level}">
+      <div class="ntitle">${this.noticeLevelLabel(n.level)}</div>
+      <div class="nbody">${n.message}</div>
+      <button class="btn" @click=${this.confirmNotice}>确认并重连</button>
+    </div></div>`;
+  }
   private copyText(t: string): void { if (navigator.clipboard) navigator.clipboard.writeText(t).catch(() => this.flash("复制失败，请手动复制")); }
   private copyCode(m: MsgDataT): void { if (navigator.clipboard) navigator.clipboard.writeText(m.code?.content ?? "").then(() => this.flash("代码已复制")).catch(() => this.flash("复制失败，请手动复制")); }
 
@@ -565,8 +565,79 @@ export class FilesyncApp extends LitElement {
     return out;
   }
 
+  /** 文字消息渲染：将 http/https URL 转为可点击链接（点击新窗口打开）；非 URL 原样显示 */
+  private renderText(text: string): unknown {
+    const urlRe = /(https?:\/\/[^\s<]+)/g;
+    const parts: unknown[] = [];
+    let last = 0;
+    let m: RegExpExecArray | null;
+    let i = 0;
+    while ((m = urlRe.exec(text)) !== null) {
+      if (m.index > last) parts.push(text.slice(last, m.index));
+      const url = m[0];
+      parts.push(html`<a class="bubble-link" href="${url}" target="_blank" rel="noopener" @click=${(e: MouseEvent) => this.openTextLink(e, url)}>${url}</a>`);
+      last = m.index + url.length;
+      i++;
+      if (i > 50) break; // 极端情况防死循环
+    }
+    if (last < text.length) parts.push(text.slice(last));
+    return parts.length ? parts : text;
+  }
+
+  private openTextLink(e: MouseEvent, url: string): void {
+    e.preventDefault();
+    e.stopPropagation();
+    window.open(url, "_blank", "noopener");
+  }
+
   private renderMsg(m: MsgDataT) {
     const f = m.file;
+    // 上传占位卡：结构与真实消息完全一致（对应类型主体 + mm 信息行 + ops 操作行），主体叠磨砂层 + 中心圆形进度环
+    if (m.id.startsWith("upload-")) {
+      const rec = this.uploads.find((u) => u.key === m.id);
+      const pct = rec ? Math.max(0, Math.min(100, rec.pct)) : 0;
+      const failed = !!rec?.fail;
+      // 按文件类型决定占位卡结构与尺寸（匹配真实消息）：image/video=16:9，audio=播放条，file=图标行
+      const uk = (rec?.kind ?? m.kind) as string;
+      const media = uk === "image" || uk === "video";
+      const R = media ? 30 : uk === "audio" ? 20 : 16;
+      const C = 2 * Math.PI * R;
+      const ringSize = media ? 68 : uk === "audio" ? 48 : 40;
+      const ring = html`<div class="ph-ring ${failed ? "fail" : ""}">
+        <svg viewBox="0 0 ${ringSize} ${ringSize}" width="${ringSize}" height="${ringSize}">
+          <circle cx="${ringSize / 2}" cy="${ringSize / 2}" r="${R}" fill="none" stroke="var(--line)" stroke-width="5"/>
+          <circle cx="${ringSize / 2}" cy="${ringSize / 2}" r="${R}" fill="none" stroke="${failed ? "var(--pink)" : "var(--primary)"}" stroke-width="5" stroke-linecap="round"
+            stroke-dasharray="${C}" stroke-dashoffset="${failed ? 0 : C * (1 - pct / 100)}" transform="rotate(-90 ${ringSize / 2} ${ringSize / 2})"/>
+        </svg>
+        <span class="ph-pct">${failed ? "!" : pct + "%"}</span>
+      </div>`;
+      // 磨砂层（盖主体区）——由 CSS .ph-blur 提供
+      const blur = html`<div class="ph-blur"></div>`;
+      // 主体内容（对应真实消息的缩略图 / 播放条 / 图标行骨架）
+      let phBody: unknown;
+      if (media) {
+        phBody = html`<div class="ph-body">${blur}<span class="ph-icon-bg">${uk === "video" ? html`<span class="ph-vplay">▶</span>` : I_IMG}</span>${ring}</div>`;
+      } else if (uk === "audio") {
+        phBody = html`<div class="ph-body audio">${blur}<div class="ph-ap"><span class="ph-play">${I_PLAY}</span><div class="ph-wave">${waveBars()}</div></div>${ring}</div>`;
+      } else {
+        phBody = html`<div class="ph-body file">${blur}<span class="ph-ic">${I_FILE}</span>${ring}</div>`;
+      }
+      // 信息行（同真实消息 .mm：文件名 + 大小）
+      const mm = html`<div class="ph-mm"><span class="name">${failed ? "上传失败" : f?.name ?? "上传中…"}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>`;
+      // 操作行（同真实消息 .ops：下载占位按钮）
+      const ops = html`<div class="ph-ops"><span class="btn secondary ph-down">${I_DOWN}下载</span></div>`;
+      return html`<div class="msg">
+        <div class="avatar">${(m.sender.deviceName[0] ?? "?").toUpperCase()}</div>
+        <div class="body">
+          <div class="head"><span class="who">${m.sender.deviceName}</span><time>${fmtTime(m.ts)}</time></div>
+          <div class="card upload-ph ${uk}">
+            ${phBody}
+            ${mm}
+            ${ops}
+          </div>
+        </div>
+      </div>`;
+    }
     const delBtn = html`<button class="del-corner" title="删除" @click=${() => this.deleteMsg(m.id)}>${I_TRASH}</button>`;
     const copyBtn = html`<button class="btn" @click=${() => this.copyText(m.text ?? "")}>${I_COPY}复制</button>`;
     const copyCodeBtn = html`<button class="btn" @click=${() => this.copyCode(m)}>${I_COPY}复制</button>`;
@@ -577,7 +648,7 @@ export class FilesyncApp extends LitElement {
     let content: unknown;
     switch (m.kind) {
       case "text":
-        content = html`<div class="card text"><div class="bubble">${m.text}</div><div class="ops">${copyBtn}</div>${delBtn}</div>`;
+        content = html`<div class="card text"><div class="bubble">${this.renderText(m.text ?? "")}</div><div class="ops">${copyBtn}</div>${delBtn}</div>`;
         break;
       case "code":
         content = html`<div class="card code"><div class="code-head"><span class="lang">${m.code?.lang ?? "code"}</span></div><pre @click=${() => this.openPreview("code", m)}>${unsafeHTML(highlightCode(m.code?.content ?? "", m.code?.lang ?? "ts"))}</pre><div class="ops">${copyCodeBtn}</div>${delBtn}</div>`;
@@ -590,7 +661,7 @@ export class FilesyncApp extends LitElement {
         break;
       case "video":
         content = html`<div class="card video">
-            <div class="vthumb" @click=${() => this.openPreview("video", m)}><video src="${f?.url ?? ""}" muted preload="none"></video></div>
+            <div class="vthumb" @click=${() => this.openPreview("video", m)}><video src="${f?.url ?? ""}" muted preload="metadata"></video></div>
             <div class="ovl" @click=${(e: Event) => e.stopPropagation()}><span class="mm"><span class="name">${f?.name ?? ""}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></span><span class="ops">${downBtn}</span></div>${delBtn}
           </div>`;
         break;
@@ -633,7 +704,7 @@ export class FilesyncApp extends LitElement {
     return html`
       <div class="container">
       <header class="app">
-        <div class="logo" @click=${() => (this.sheet = "settings")}><span class="dot"></span>filesyncEX<small>v6.0.0-alpha1 · 网页端</small></div>
+        <div class="logo ${this.connState}" @click=${() => (this.sheet = "settings")}>filesyncEX<small>v6.0.0-alpha1 · 网页端</small></div>
         <div class="spacer"></div>
         <button class="iconbtn" title="二维码" @click=${this.openQr}>${I_QR}</button>
         <button class="iconbtn" title="切换主题" @click=${this.toggleTheme}>${this.theme === "dark" ? I_MOON : I_SUN}</button>
@@ -655,7 +726,6 @@ export class FilesyncApp extends LitElement {
           <button class="bracebtn ${this.codeMode ? "on" : ""}" title="代码模式" @click=${() => (this.codeMode = !this.codeMode)}>&#123;&#125;</button>
           <button class="btn send" @click=${this.codeMode ? this.sendCode : this.sendText}>发送</button>
         </div>
-        ${this.uploads.length ? html`<div class="queue">${this.uploads.map((u) => html`<div class="qitem"><div class="qinfo"><div class="qname">${u.name} <small>${u.pct < 0 ? "失败" : fmtSize(u.size)}</small></div><div class="qbar"><i style="width:${u.pct < 0 ? 100 : u.pct}%"></i></div><div class="qmeta"><span>${u.pct < 0 ? "上传失败" : u.pct + "%"}</span></div></div></div>`)}</div>` : nothing}
         <input type="file" class="file-input" multiple hidden @change=${(e: Event) => void this.handleFiles((e.target as HTMLInputElement).files)} />
       </section>
 
@@ -677,7 +747,8 @@ export class FilesyncApp extends LitElement {
 
       ${this.sheet ? this.renderSheet() : nothing}
       ${pv ? this.renderPreview(pv) : nothing}
-      <div class="toast ${this.toastText ? "show" : ""}">${this.toastText}</div>
+      ${this.renderNotice()}
+      <div class="toast ${this.toastShow ? "show" : ""} ${this.toastLeaving ? "leaving" : ""}">${this.toastText}</div>
     `;
   }
 
@@ -699,14 +770,14 @@ export class FilesyncApp extends LitElement {
       content = html`<div class="settings">
         <!-- 连接 -->
         <p class="st-sec">连接</p>
-        <div class="st-conn"><span class="dot"></span><b style="color:var(--primary)">已连接</b><span class="muted">（局域网）</span></div>
+        <div class="st-conn"><span class="dot ${this.connState}"></span><b style="color:var(${this.connState === "connected" ? "--primary" : this.connState === "connecting" ? "--warn" : "--danger"})">${this.connState === "connected" ? "已连接" : this.connState === "connecting" ? "连接中…" : "已断开"}</b><span class="muted">（局域网）</span></div>
         <p class="muted">HTTP：<code>${this.httpUrl}</code></p>
         <p class="muted">WebSocket：<code>${wsUrl}</code></p>
         <hr />
         <!-- 设备身份 / 昵称 -->
-        <p class="st-note">默认昵称 <strong>用户-XXXX</strong>（四位数字），按<strong>设备指纹</strong>自动生成，可在此修改（仅本机保存）。</p>
+        <p class="st-note">默认昵称 <strong>user_XXXX</strong>（四位数字），按<strong>设备指纹</strong>自动生成，可在此修改（仅本机保存）。</p>
         <label>我的昵称
-          <input class="field" .value=${this.nick} @input=${(e: Event) => (this.nick = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.rename()} />
+          <input class="field" .value=${this.nick} maxlength="10" placeholder="仅字母/数字/下划线，最长 10 位" @input=${(e: Event) => (this.nick = (e.target as HTMLInputElement).value.replace(/[^A-Za-z0-9_]/g, ""))} @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.rename()} />
         </label>
         <p class="muted">设备指纹（仅用于本地生成稳定 ID，不上传原始信息）：</p>
         <code class="fp">${this.self?.deviceId ?? ""}</code>
@@ -729,13 +800,13 @@ export class FilesyncApp extends LitElement {
   private renderPreview(pv: { kind: string; msg: MsgDataT }) {
     const f = pv.msg.file;
     let body: unknown;
-    if (pv.kind === "image") body = html`<img class="ph" src="${f?.url ?? ""}" alt="" />`;
-    else if (pv.kind === "video") body = html`<video class="ph" src="${f?.url ?? ""}" controls autoplay></video>`;
+    if (pv.kind === "image") body = html`<img class="ph" src="${f?.url ?? ""}" alt="" @wheel=${(e: WheelEvent) => this.zoomPreview(e)} @mousedown=${(e: MouseEvent) => this.startDrag(e)} />`;
+    else if (pv.kind === "video") body = html`<video class="ph" src="${f?.url ?? ""}" controls></video>`;
     else if (pv.kind === "audio") body = html`<audio class="ph" src="${f?.url ?? ""}" controls style="width:80%"></audio>`;
     else if (pv.kind === "code") body = html`<div class="codeview">${unsafeHTML(highlightCode(pv.msg.code?.content ?? "", pv.msg.code?.lang ?? "ts"))}</div>`;
     const title = pv.kind === "image" ? "图片预览" : pv.kind === "video" ? "视频预览" : pv.kind === "audio" ? "音频播放" : "代码预览";
     const footBtn = pv.kind === "code" ? html`<button class="btn" @click=${this.previewAction}>复制</button>` : html`<button class="btn" @click=${this.previewAction}>下载</button>`;
-    return html`<div class="viewer open"><div class="vtop"><span class="vt">${title}</span><button class="close" @click=${this.closePreview}>✕</button></div><div class="vbody" @click=${(e: Event) => e.target === e.currentTarget && this.closePreview()}>${body}</div><div class="vfoot">${footBtn}<button class="btn pink" @click=${() => { this.deleteMsg(pv.msg.id); this.closePreview(); }}>删除</button></div></div>`;
+    return html`<div class="viewer open"><div class="vtop"><span class="vt">${title}</span><button class="close" @click=${this.closePreview}>✕</button></div><div class="vbody ${pv.kind === "image" ? "pv-img" : ""}" @click=${(e: Event) => e.target === e.currentTarget && this.closePreview()}>${body}</div><div class="vfoot">${footBtn}<button class="btn pink" @click=${() => { this.deleteMsg(pv.msg.id); this.closePreview(); }}>删除</button></div></div>`;
   }
 }
 

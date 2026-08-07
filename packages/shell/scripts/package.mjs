@@ -33,6 +33,23 @@ console.log("▶ 同步 tool/ → web/public/tool");
   }
 }
 
+// 同步根目录 fonts/ 到 web/public/fonts（@font-face 引用的字体，Vite 复制进 dist 打包进 exe）
+console.log("▶ 同步 fonts/ → web/public/fonts");
+{
+  const srcFonts = path.join(root, "fonts");
+  const dstFonts = path.join(root, "packages", "web", "public", "fonts");
+  fs.mkdirSync(dstFonts, { recursive: true });
+  if (fs.existsSync(srcFonts)) {
+    for (const f of fs.readdirSync(srcFonts)) {
+      const s = path.join(srcFonts, f);
+      if (fs.statSync(s).isFile()) fs.copyFileSync(s, path.join(dstFonts, f));
+    }
+    console.log("   已同步:", fs.readdirSync(srcFonts).filter((f) => fs.statSync(path.join(srcFonts, f)).isFile()).join(", "));
+  } else {
+    console.log("   (fonts/ 目录不存在，跳过)");
+  }
+}
+
 console.log("▶ 构建 server");
 run("pnpm --filter @filesyncex/server build", root);
 console.log("▶ 构建 web");

@@ -5,12 +5,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>filesyncEX</title>
     <style>
+      @font-face {
+        font-family: "JetBrains Mono NL Medium";
+        src: url("./fonts/JetBrainsMonoNL-Medium.woff2") format("woff2");
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Source Han Serif CN Medium";
+        src: url("./fonts/SourceHanSerifCN-Medium.woff2") format("woff2");
+        font-display: swap;
+      }
       :root {
         --primary: #047878;
         --primary-hover: #137a7f;
         --primary-active: #035c5c;
         --accent: #86cecb;
         --pink: #e12885;
+        --warn: #d9a020;
+        --danger: #e5484d;
         --ink: #525658;
         --muted: #6f7a82;
         --line: #dde3e7;
@@ -20,8 +32,8 @@
         --bubble: #f0f6f6;
         --shadow: 0 2px 8px rgba(4, 120, 120, 0.08);
         --radius: 10px;
-        --mono: "JetBrains Mono", Consolas, "Courier New", monospace;
-        --serif: "Source Han Serif CN", "Noto Serif SC", serif;
+        --mono: "JetBrains Mono NL Medium", Consolas, "Courier New", monospace;
+        --serif: "Source Han Serif CN Medium", "Noto Serif SC", serif;
       }
       html[data-theme="dark"] {
         --primary: #047878;
@@ -29,6 +41,8 @@
         --primary-active: #035c5c;
         --accent: #86cecb;
         --pink: #e12885;
+        --warn: #d9a020;
+        --danger: #e5484d;
         --ink: #bec8d1;
         --muted: #8b98a1;
         --line: #2a313c;
