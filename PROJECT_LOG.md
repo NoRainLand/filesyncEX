@@ -1,0 +1,857 @@
+# filesyncEX 项目操作日志
+
+> 本文档是重构过程的 **操作日志（Operation Log）**，用于逐次记录对项目的改动、决策与进度。
+> 注意：这是操作日志，不是 README / 使用文档。
+
+> **当前版本：alpha1**（原型定版 · 2026-08-06）——原型设计阶段收官，进入具体逻辑实现阶段。
+
+---
+
+## 版本里程碑
+
+### alpha1（2026-08-06）— 原型定版
+- **桌面端** `docs/prototype/desktop.html` 打磨完成：统一一体式消息卡片、图片/视频全屏预览（标题主体色+删除纯色白字）、弹窗（设置/二维码/文件信息）淡入+点击空白关闭+滚轮屏蔽、文件消息直接下载、文字 http 链接点击开网页、代码消息（One Dark 高亮+分隔线下移+去三个点）、日月主题图标、隐藏滚动条、删除免二次确认等 40+ 项调整。
+- **移动端** `docs/prototype/mobile.html` 打磨完成：消息卡片与桌面端同步、文字点击复制、长按删除确认气泡、全屏预览（代码高亮/智能缩放/点空白关闭）、底部 Sheet（附件/上传进度/设置/二维码弹窗）、遮罩淡入、Sheet 滚轮屏蔽、日月主题图标等 40+ 项调整。
+- **设计语言定版**：黛绿 `#047878` 主色 / 薄荷 `#86cecb` / 粉 `#e12885`；One Dark 代码主题（token 配色）；桌面移动统一风格；太阳/月亮主题图标。
+- **阶段转换**：原型 → 实现。按已确认的 P0 monorepo 骨架（`protocol` / `core` / `server` / `web` / `shell`）落地真实逻辑；**最终产物为 `pkg` 打包的单个 exe**（内嵌前端静态资源、含 rcedit 图标版本信息、better-sqlite3 经 Store 抽象隔离）。
+
+### alpha1-实现（2026-08-06）— P0 monorepo 骨架 + 核心链路跑通
+- **五包骨架**（pnpm workspace）：`packages/protocol`（zod 协议单一起源）/ `core`（Store 抽象 + SyncEngine 纯业务 + EventBus）/ `server`（Express + ws 传输适配 + 分片上传）/ `web`（lit + Vite）/ `shell`（Node 入口 + pkg 打包）。全部 `tsc` 通过，`web` Vite 构建 40KB。
+- **协议**（protocol）：DeviceInfo / MsgData / MsgInput（发送草稿，服务端补全 id/sender/ts）/ 上传分片（init/chunk/complete）/ WS 帧（hello/send/del/rename/ping + welcome/add/del/peers/renamed/pong）。
+- **core**：`Store` 接口（消息/上传会话/文件索引）+ `MemoryStore` + `SqliteStore`（better-sqlite3，WAL）+ `SyncEngine`（消息增删查/历史裁剪/事件）+ `EventBus`。**better-sqlite3 原生模块经 Store 抽象隔离，pkg 打包不可用时自动降级内存**。
+- **server**：`Express`（静态资源 + /api/upload 分片 + /api/file 下载 + /api/msgs + /api/health）+ `ws`（同端口 /ws，单端口模式）+ **唯一实例锁**（dataDir/.instance.lock，崩溃残留自动接管）+ **端口占用友好提示**（EADDRINUSE → 明确报错）+ 环境变量 `FSEX_HTTP_PORT` 覆盖。**HTTP 与 WS 单端口复用**（exe 分发只需开放一个端口）。
+- **web**（lit 单组件 App）：设备指纹（FNV-1a + localStorage）、WS 自动重连、消息渲染（text/code/file/image/audio/video）、分片上传（含断点续传 done 跳过 + SHA-256 秒传）、拖拽/选择文件、代码模式、日月主题、二维码弹窗（程序化 SVG）、昵称设置、删除消息。
+- **冒烟测试**（`packages/server/smoke.mjs`，临时脚本）：health ✓；分片上传 init→chunk→complete ✓；下载 200 ✓；WS 历史同步（新连接收到全部历史）✓；在线设备 peers ✓；删除广播 ✓；`/api/msgs` 持久化 ✓。
+- **浏览器端到端**：页面加载 → WS 自动连接（状态「已连接」）→ 历史消息渲染 → 发送消息**本机即时回显**（服务端广播含发送者 + 前端 id 去重）→ 输入框自动清空 → 主题切换（dark/月亮）→ 二维码弹窗（270 格 SVG）。
+- **关键修复**：
+  - `better-sqlite3`/`esbuild` 构建脚本被 pnpm 10 拦截 → `pnpm-workspace.yaml` 加 `onlyBuiltDependencies` + `pnpm install --force` 触发。
+  - 实例锁崩溃残留 → 锁文件记录 PID，进程已退出则自动接管。
+  - 客户端 `id:""` 占位导致帧校验失败 → 新增 `MsgInput` 草稿类型，服务端补全权威字段。
+  - lit 组件状态不更新 → TS `target ES2022` 默认 `useDefineForClassFields:true` 覆盖 lit 响应式 accessor，基座 tsconfig 设 `useDefineForClassFields:false`。
+  - lit 对聚焦 input 的 `.value` 绑定保护 → 发送后手动清空输入框 DOM。
+  - 二维码 SVG 字符串插入 → `unsafeHTML(qrSvg())`。
+- **打包 exe**：`pnpm --filter @filesyncex/shell package` → release/filesyncex.exe（pkg node18-win-x64，assets 内嵌 web/dist）。【结果见下方登记】
+
+### alpha1-实现·服务器完整链路（2026-08-06 · 25/25 冒烟通过）
+- **断点续传补全**：`UploadInitReq` 新增可选 `uploadId`（客户端持久化），服务端 `init` 遇匹配会话（name/size 一致）复用并返回 `done`（已传分片）；前端 `uploadFile` 用 `localStorage`（`fsex_upload_<sha>`）存 uploadId，中断后按同 sha 自动续传，完成删除。
+- **秒传补全**：服务端秒传命中（sha256 命中已有文件）时也 `engine.addMessage` 广播文件消息（不再只返回 existed）。
+- **完整冒烟测试**（`packages/server/smoke.mjs`，25 项全过）：health ✓；多设备 WS 历史同步（文本/代码）✓；在线 peers 增/减（相对基线 N0、断开后回 N0）✓；改名 renamed 广播 + peers 更新 ✓；2.5MB 大文件 3 分片上传 + 下载字节数一致 ✓；断点续传（复用 uploadId、done=[0]）✓；秒传（同 sha 不同设备 existed）✓；image/audio/video 类型分类 ✓；删除广播 ✓；持久化含全部类型 ✓。
+- **前端真实上传 E2E**：浏览器拖拽/选择文件 → `handleFiles` → `uploadFile` 分片上传 → 服务端广播 → WS 回显本机消息（250B「前端上传.txt」出现 + 进度 100% + 下载链接正常）。
+- 测试环境注意：浏览器页面持续连接 server 会出现在 peers（用户-6362 等），冒烟测试 peers 断言已相对化（基线 N0）。
+
+### alpha1-实现·pkg 打包 exe 成功（2026-08-06）
+- **产物**：`release/filesyncex.exe`（~60MB，Node 18.20.4 win-x64，内嵌 web/dist 静态资源），**已验证可运行**：health ✓、内嵌网页（filesync-app）✓、WS 连接「已连接」✓、发送消息回显 ✓。
+- **踩坑与解法（重要，勿重蹈）**：
+  1. `pkg@5.8.1`（已归档）pkg-fetch 远程缓存找不到 base binary + 源码构建撞进度条断言 bug → **换 `@yao-pkg/pkg`**。
+  2. `@yao-pkg/pkg@6.x` 依赖 `undici@7`，需要 `File` 全局（Node 20+），Node 18 加载崩溃 → **pin `@yao-pkg/pkg@^5.16.1`**（用 node-fetch，Node 18 兼容）。
+  3. pkg-fetch 误报「Not found in remote cache」，但 `yao-pkg/pkg-fetch` release `v3.5` 实际有 `node-v18.20.4-win-x64` → **手动下载**到 `~/.pkg-cache/v3.5/fetched-v18.20.4-win-x64`（42MB）绕过远程检查。
+  4. **ESM 无法生成 bytecode**（`import.meta` babel 解析失败）→ 用 **esbuild bundle 成单文件 CJS**：`esbuild src/index.ts --bundle --platform=node --format=cjs --target=node18 --external:better-sqlite3 --outfile=dist/bundle.cjs`，再 pkg 打 bundle.cjs。
+  5. server 的 CLI 判断用 `import.meta.url` 需移除（shell 是唯一入口），否则 bundle 失败。
+  6. **better-sqlite3 原生模块 pkg 下不可用**（未打包 .node）→ server 启动检测失败**自动降级内存存储**（Store 抽象设计生效，功能可用、数据不持久；后续可把 .node 加 pkg assets 或换 SEA）。
+- **当前打包流程**：`pnpm --filter @filesyncex/shell package` = 构建五包 → esbuild bundle → pkg（命中本地缓存）。
+- **遗留**：exe 内 better-sqlite3 持久化待优化（assets 注入 .node 或 SEA）；rcedit 图标/版本信息未做（plugins/rcedit 参考旧工程）。
+
+### alpha1-实现·web 界面与原型两端同步（2026-08-06）
+- **重构 `packages/web/src/app.ts`**（lit 单组件）对齐原型两端界面与交互。
+- **消息卡片**（对齐原型统一风格）：头像（sender.color 圆角方块 + 首字符）、head（彩色 who + 本机标记 + HH:MM）；text 气泡；file 卡片（图标 + 名称 + 大小 + 下载）；image/video 卡片（缩略图 + 底部渐变覆盖层 .ovl + 文件名/大小 + 下载按钮）；audio 卡片（图标 + 名称 + 控件）；code 卡片（One Dark 深色 + 语言栏 + 代码 + 底部渐变覆盖层 + 复制按钮）。本机消息靠右 + 右上/左上 ✕ 删除角标（粉色）。
+- **输入区**：附件按钮（打开附件 Sheet）+ 代码模式按钮（开启后切换 select 语言 + 深色 textarea 编辑器）+ 圆角输入框 + 主色发送按钮；拖拽上传高亮；上传进度条。
+- **弹层**（响应式）：移动端底部滑出 Sheet、桌面端居中弹窗——附件（相册/拍照/文件）、上传进度（qlist 进度条）、设置（昵称 + 设备指纹）、二维码（扫码连接 + 程序化 SVG + 地址）。
+- **全屏预览**（.viewer）：图片/视频/音频/代码，标题主体色 + ✕ 关闭 + 点空白关闭；底部「下载/复制」+ 删除按钮（粉底白字）。
+- **主题/设备**：太阳/月亮图标、WS 自动重连、设备指纹昵称。
+- **浏览器验证**：桌面（1280px）消息卡片/输入区/弹层居中 ✓；移动（390px）底部 Sheet/输入条 ✓；附件/二维码 Sheet 开关 ✓；图片/代码全屏预览 ✓；代码模式 ✓；删除角标 ✓。
+
+### alpha1-实现·真实文件测试 + 代码语法高亮（2026-08-06）
+- **真实文件上传测试**（用户提供 `testFiles/`）：bg.jpg(9.6KB image) / 7pm.wav(38.6MB audio) / 图片人物替换.png(4.5MB image) 经前端 `setInputFiles` 走真实分片上传全部成功——类型分类正确（image/audio）、下载链接可用、缩略图/播放控件渲染正常。38.6MB 音频验证大文件分片。
+- **代码 One Dark 语法高亮**：移植原型 `highlightCode`（HIGHLIGHT_LANGS 正则 / HIGHLIGHT_GROUPS / TOKEN_CLASS / esc）到 web；代码消息卡片 `<pre>` 与全屏代码预览 `.codeview` 均用 `unsafeHTML(highlightCode(...))` 渲染；token 颜色 CSS（tok-kw 紫 #c678dd / tok-str 绿 #98c379 / tok-num 橙 #d19a66 / tok-fn 蓝 / tok-com 灰斜体 等）。实测 `const a: number = 1;` → const/number 紫、1 橙 ✓。
+- **关键修复（高亮移植踩坑）**：
+  1. ts/js 正则移植时误多一个管道符 `||`（空分支）→ 正则空匹配 → `highlightCode` **死循环 → 页面 main thread 阻塞（浏览器一直 Loading）**。修复正则 + `highlightCode` 加 lastIndex 防死循环保护（`re.lastIndex <= last` 时手动前进）。
+  2. ts/js 正则移植时**丢失数字组** `|\b(\d+(?:\.\d+)?)\b|` → 捕获组索引错位（kw 组变第 3 组，被 HIGHLIGHT_GROUPS[2]="num" 误标，`const` 显示为数字色）。补回数字组后组序与 GROUPS 对齐。
+- **浏览器验证**：页面加载正常（不再卡 Loading）；代码卡片/代码预览高亮正确（kw 紫 rgb(198,120,221)）；截图确认界面与原型一致。
+
+
+
+
+
+
+---
+
+### alpha1-实现·web 界面全面对齐两端原型（2026-08-06）
+> 用户指令：**「全部都以原型为准」**——逐项对比桌面/移动原型后对 `packages/web/src/app.ts` 做结构性整体重写，不保留自己的设计差异。
+- **Header**：logo（dot + filesyncEX + `<small>v6.0.0-alpha1 · 网页端</small>`）+ spacer + 二维码按钮 + 主题按钮，**去掉连接状态显示**（对齐原型）。
+- **输入区位置**（响应式 640px 切换）：
+  - 桌面端**上传区在顶部**（`.upload` sticky）：btn-file「文件」+ input（「输入文本，或拖拽 / 粘贴文件到此处…」）+ `.code-editor`（ce-top 语言 select + textarea）+ bracebtn「{}」+ 发送按钮 + 上传队列 `.queue`（qitem 进度条）。
+  - 移动端**底部输入条**（`footer.composer`）：addbtn(+) + bracebtn + input + 圆形 sendbtn。
+- **消息按天分组**：`dayLabel(ts)` 输出 `.day` 分组条（今天 · 日期 / 昨天 · 日期 / 更早 · 日期）。
+- **时间格式**：`fmtTime(ts)` 相对时间（今天 HH:MM / 昨天 HH:MM / 更早 YYYY/MM/DD HH:MM）。
+- **卡片底部 `.ops` 操作行**（对齐原型「统一消息布局」重建操作行）：主操作（text→复制 / file→下载 / audio→下载 / video→下载 / code→复制）+ 删除按钮 `btn secondary pink` **免确认**。
+- **文件「大小 · 类型」**：`fmtType` 扩展名 / 图片 / 音频 / 视频映射中文类型。
+- **保留**：image/video `.ovl` 覆盖层（mm 名称/大小 + 下载按钮，无独立 ops 行）、代码 One Dark 高亮、全屏预览（vtop/vbody/vfoot 下载/复制 + 删除粉底白字）、弹层（attach/progress/settings/qr）、程序化二维码 SVG。
+- **浏览器验证**：
+  - 桌面 1280px：顶部上传区 ✓、Header 副标题+无状态 ✓、日期分组「今天 · 2026/08/06」✓、相对时间 ✓、文本/代码消息卡片底部 复制+删除 ops 行 ✓。
+  - 移动 390px：桌面上传区隐藏 ✓、底部 footer.composer（+ / {} / input / 圆形发送）✓、附件 Sheet 底部弹出（相册/拍照/文件 3 项）✓、panel 底部对齐视口 ✓。
+
+### alpha1-实现·web 桌面端全面对齐原型·第二轮（2026-08-06）
+> 用户再次截图对比后指出「差异还是很大的」→ 逐项对齐 `desktop.html` 的视觉/结构细节。
+- **主题变量对齐**（`packages/web/index.html`）：此前 web 用自定义浅绿底（--bg #f2f7f6 / surface 纯白 / 缺 --shadow）→ 全部改成原型值：light `--bg:#fff / --surface:#f6f8fa / --surface-2:#eef2f5 / --ink:#525658 / --muted:#6f7a82 / --line:#dde3e7 / --shadow:0 2px 8px rgba(4,120,120,.08) / --radius:10px`，dark 同步原型（--bg #13171f / --surface #1a2029 / --surface-2 #20262f 等）。**补上 --primary-hover/--primary-active/--serif**。
+- **布局容器**：`:host` 居中 + `.container{max-width:1000px;padding:20px 0 30px}`（header/upload/list/footer 全在容器内）——内容居中 + 四周留白，对齐原型 body padding 20px 55px。
+- **Header**：去 surface 背景条 → 透明 + `padding:12px 0 16px;border-bottom;margin-bottom:16px;gap:14px`；logo 22px/700/dot 12px/letter-spacing；iconbtn 38px。logo 点击打开设置 sheet（对齐原型）。
+- **上传区**：全宽条 → **surface 卡片**（背景+边框+圆角 10px+`box-shadow:var(--shadow)`+`sticky top:12px`）+ dragover dashed 高亮。
+- **花括号按钮**：独立按钮 → **absolute 悬浮输入框右上角**（right:84px 发送按钮左侧），输入框右侧留白 padding `10px 58px 10px 12px`；代码模式时 btn-file/input 隐藏、code-editor 负 margin 撑满卡片、发送按钮 absolute 右上角（`.upload-row.code-mode`）。
+- **按钮尺寸**：`.btn` padding `10px 18px`/14px 字/radius 10px；`.btn-file` surface-2 底 primary 字 + 边框；上传图标用原型向上箭头（新增 I_UP）。
+- **day 分组条**：文字居中 → **左右横线** `::before/::after{flex:1;height:1px;background:var(--line)}` + margin 22px 0 12px。
+- **头像**：38px 彩色方块 → **36px 圆形 + 统一主体色**（`background:var(--primary)!important`，弃用 sender.color）；who 统一主题色 700；me 标记 primary 底（弃用 accent 底）。
+- **文本消息进卡片**：独立气泡 → `.card.text`（surface 底+边框+阴影）+ 内部 `.bubble` 无背景无边框 + **-webkit-line-clamp:4 最多 4 行省略** + 底部 ops。
+- **卡片**：`.card` 加 `box-shadow:var(--shadow)`、radius 10px、max-width 560px。
+- **ops 操作行**：右对齐 → **左对齐**（去掉 justify-content:flex-end）+ padding `10px 14px 12px` + 小按钮 `padding:6px 12px;font-size:12px`。
+- **图片/视频卡片**：320px 小图 → **整卡 16:9 缩略图**（aspect-ratio:16/9 + object-fit:cover）+ **absolute 底部渐变覆盖层 .ovl**（mm 名称/大小 + ops 下载/删除）+ 中间放大镜/播放图标（::after data-uri SVG，原型原样）。
+- **音频卡片**：原生 audio 控件 → **play 圆形按钮 + 波形条 wave**（28 条正弦高度 `<i>`，I_PLAY/I_PAUSE 切换，播放中按钮变粉）+ mm 信息行（名称/大小）+ ops 下载。新增 `toggleAudio`（Audio 播放/暂停/ended 清理）+ `playingId` state。
+- **代码卡片**：code-head padding `8px 14px 16px`（分隔线下移）+ lang `top:5px`；pre 去掉 max-height 截断（完整显示）+ font 13px。
+- **文件卡片**：padding 12px 14px、ic 42px（svg 22px）、name 14px/sub 12px；整卡点击 flash「（原型）已开始下载」（对齐原型文件去预览直接下载）。
+- **浏览器验证（1280px）**：容器 1000px 居中 ✓；上传区 surface 底+圆角+sticky 12px+阴影 ✓（修 --shadow/--surface 后）；花括号 absolute 悬浮输入框 ✓；day 横线 ✓；头像圆形 rgb(4,120,120) ✓；文本卡片 ✓；ops 左对齐 ✓；代码 head padding 16px/不截断 ✓；img 16:9 + ovl absolute ✓；桌面代码模式（code-mode 隐藏输入/发送 absolute/编辑器撑满）✓；全屏预览代码 ✓；二维码 sheet 桌面居中 ✓。
+- **移动端不回归（390px）**：上传区隐藏/footer 输入条/附件 sheet（相册·拍照·文件 3 项）贴底/移动代码模式 ✓。
+- **修复「样式错乱」两处关键 bug**（用户再次截图反馈）：
+  1. `.card` 误加 `display:flex;flex-direction:column;align-self:flex-start` → 卡片宽度按内容**收缩**（文本卡片仅 114px、图片卡片仅 22px 撑不开）→ 去掉，恢复**块级卡片 + max-width 560px + 内容占满**（img thumb width:100% + aspect-ratio 16/9 撑满卡片）。
+  2. **ops 操作行原在 `.body` 层（卡片外）** → 对齐原型移到**卡片内部底部 `.card .ops`**（text/file/code/audio 分支的 ops 均进卡片；img/video 在 ovl 覆盖层内）。文件卡片补 `.file` 包裹层（ic+meta 横排）后 ops 在卡片底。
+  - 验证：text 卡片 562px（bubble+ops 一体）、file 118px、audio 140px、code 642px、img/video 16:9 317px 全部正常；移动端卡片自适应 body 宽不溢出。
+- **删除按钮形态修正（对齐原型桌面 runTime）**：此前把「删除」做进 ops 操作行（btn secondary pink）→ **原型删除是「卡片右上角垃圾桶角标」`.del-corner`**（26px 方块 + 垃圾桶 SVG，hover 粉，免二次确认直接删 + flash「消息已删除」）；**ops 只保留主操作按钮**：
+  - text→复制 / code→复制 / file→下载 / **img→复制**（新增 copyImage：fetch blob → ClipboardItem 真复制）/ audio→下载 / video→下载
+  - img/video 的 ops 在底部渐变覆盖层 .ovl 内（mm 名称/大小 + 主操作），ovl 加 @click stopPropagation 防按钮冒泡触发预览
+  - 移动端（≤640px）`.del-corner{display:none}`（对齐移动端原型：无删除角标，删除走预览/长按）
+- 验证：22 条消息全部卡片 hasCorner + 右上角定位 ✓、ops 各类型主操作正确 ✓、点击角标删除 22→21 + flash ✓、移动端角标隐藏 + footer 正常 ✓。
+- **滚动行为对齐原型（桌面：页面滚动 + 上传区 sticky 吸顶）**：此前 web 用 `.list` 独立滚动（header+上传区固定不动）；原型是**整个容器滚动**，滚动到下面后 **header 滚出视口、上传区 `sticky top:12px` 吸顶**。
+  - 桌面（>640px）：`.container` 改滚动容器（height:100% + overflow-y:auto），`.list` 去掉 flex:1/overflow-y:auto（普通流）；顶部留白从 container padding-top 移到 header `margin-top:20px`（否则 container padding-top 干扰 sticky 吸附 → upload 吸附 32px 而非 12px）；`scrollBottom()` 桌面滚 container / 移动滚 list。
+  - 移动（≤640px）：container `overflow:hidden`、list 恢复 `flex:1;overflow-y:auto`（footer 固定贴底）。
+  - 验证：桌面滚动到底 headerBottom -257（滚出）✓、upload sticky top 12px 吸顶 ✓；移动 list 滚动 + footer 贴底 844 ✓、上传区隐藏 ✓。
+- **消息排序确认**：server（MemoryStore `sort(a.ts-b.ts)` 升序 + slice(-limit)）与 web（`onAdd` append 尾部）均为**时间正序**——旧的在上、新的在下；web 实测 18:02→18:03 正序 + 新消息追加底部 ✓（无需改动）。
+- **桌面端消息改为「从新到旧」（用户指令：桌面端原型消息从上到下、从新到旧）**：
+  - `renderMessages()` 桌面端（>640px）`[...this.msgs].reverse()` **最新在顶**（按天分组顺序同步反转：最新日期的 day 条在最上）；移动端（≤640px）保持正序（聊天式，新的在底）。
+  - `scrollBottom` → `scrollToLatest()`：桌面滚顶（scrollTop=0，看到最新）/ 移动滚底（scrollHeight）。
+  - `onWelcome` / `onAdd` / 上传完成均调 `scrollToLatest`；`window resize` 监听 → `requestUpdate + scrollToLatest`（桌面↔移动切换重排序 + 滚到正确位置）。
+  - 验证：桌面渲染顺序 18:03 6→…→1→18:02 wuxia.rar（最新在顶）+ 初始 scrollTop=0 ✓；移动 390px reload 正序 wuxia.rar→6 + 滚底 ✓。
+- **日期格式对齐两端原型（用户反馈「日期格式不一致」）**：核心原则——**日期信息由 day 分组条承担，head 时间只显示 HH:MM**。
+  - `fmtTime()`：删掉昨天/更早完整日期逻辑 → **一律 `HH:MM`**（对齐原型 head 时间，如 09:12 / 20:12）。
+  - `dayLabel(ts, mobile)` 响应式：
+    - 今天 → `今天 · YYYY/MM/DD`；昨天 → `昨天 · YYYY/MM/DD`（两端一致）
+    - 更早：**桌面 → `更早`（无日期）**；**移动 → 7 天内 `MM/DD · 周X`（周日/周一…）、更久 `MM/DD`**（对齐 mobile.html 08/02·周日 / 07/30）
+  - `renderMessages()` 传 mobile 给 dayLabel。
+  - 验证：桌面注入 今天/昨天/更早 → day 条 `今天 · 2026/08/06` / `更早` / `昨天 · 2026/08/05` + head 全部 HH:MM ✓；移动 390 注入升序 → `07/30` / `08/02 · 周日` / `昨天 · 日期` / `今天 · 日期` ✓。
+- **消息 head 时间格式修正（用户澄清「消息旁边的日期格式不一致」）**：上轮误把 `fmtTime` 改成一律 HH:MM → 恢复**相对格式**（对齐原型桌面那条「昨天 22:04」）：
+  - 今天 → `HH:MM`；昨天 → `昨天 HH:MM`；更早 → `YYYY/MM/DD HH:MM`（完整日期）
+  - 验证：今天 09:05 / 昨天「昨天 22:04」/ 更早「2026/08/03 15:30」✓（day 条改动保留不动）。
+- **消息时间统一年月日时分（用户指令）**：所有消息 head 时间统一 `YYYY/MM/DD HH:MM`（如 `2026/08/06 18:21`），去掉相对格式（今天/昨天 HH:MM）。`fmtTime` 直接 `年/月/日 时:分`；day 分组条保持不变。验证：桌面全部消息 `2026/08/06 HH:MM` ✓。
+- **二维码改用真 QRCode 库（用户指令「你使用 QRcode 库生成好不好」）**：移除程序化仿二维码 `qrSvg()`（21×21 假图案扫不了）→ 用 **`qrcode` 库**（`pnpm --filter @filesyncex/web add qrcode` + `-D @types/qrcode`）。
+  - `import QRCode from "qrcode"`；新增 `qrDataUrl` state + `openQr()`（sheet="qr" + `QRCode.toDataURL(this.httpUrl,{width:180,margin:1,color:{dark:"#1a1a1a",light:"#ffffff"}})` 异步生成，失败 flash）。
+  - 二维码按钮 `@click=${this.openQr}`；qr 弹层渲染 `<img src=qrDataUrl>`（qrbox 加 flex 居中 + img 100%，生成中显示「生成中…」）。
+  - 验证：弹层显示 `data:image/png;base64` 真二维码（内容 http://127.0.0.1:14100）、200px、文字说明 ✓。构建 88.86KB（含 qrcode）。
+- **服务器返回真实局域网 IP（用户指令「服务器应该知道自己的真实IP，而非 127.0.0.1」）**：
+  - 提取 `lanAddress()`（os.networkInterfaces 取非回环 IPv4）到 `packages/server/src/net.ts`，`index.ts` 与 `HttpServer.ts` 共用。
+  - `/api/health` 新增返回 `{ lanIp, port }`（真实局域网 IP + HTTP 端口）。
+  - 前端 `connectedCallback` fetch `/api/health`：`lanIp` 非 127.0.0.1 时 `httpUrl = http://${lanIp}:${port}`（二维码/地址用真实地址）。**坑：改完 app.ts 忘记 build web，页面一直加载旧 bundle（httpUrl 仍旧 127.0.0.1），重新 build 后生效**。
+  - **server 真实入口是 `packages/shell`（调用 run()）**，`node dist/index.js`（server 包）只导出不启动。开发启动：`pnpm --filter @filesyncex/shell build` + `Start-Process node dist/index.js`（shell 目录，`FSEX_HTTP_PORT=14100`，重定向日志防终端清理杀掉进程）。
+  - 验证：health `{ lanIp:"192.168.40.154", port:14100 }` ✓；前端 httpUrl = `http://192.168.40.154:14100` ✓；二维码内容真实局域网 IP ✓。
+  - 注意：shell 入口默认 dataDir 在 `packages/shell/data`（与 server 包 dataDir 不同），旧测试消息在新 dataDir 下不显示。
+- **图片复制按钮修复（用户反馈「图片消息的复制按钮没起效」）**：
+  - 旧实现 `fetch(url).blob()` + `ClipboardItem({ [b.type]: b })`：真实图片 blob.type 是 image/jpeg，兼容性差；且非安全上下文（局域网 http）下 `navigator.clipboard`/`ClipboardItem` **不可用** → 复制静默失败。
+  - 改为 **canvas 方案**：`new Image()` 加载 → 画到 canvas → `toBlob("image/png")` → `ClipboardItem({ "image/png": b })`（强制 PNG，绕开源 MIME 兼容问题）；前置检查 `window.ClipboardItem && navigator.clipboard`，不可用（非 HTTPS）时 flash「当前浏览器不支持复制图片（需 HTTPS 安全上下文）」；加载失败/复制失败分别明确提示。
+  - 验证：真实 bg.jpg（/api/file/...）点击复制 → flash「图片已复制」+ `navigator.clipboard.read()` 返回 `["image/png"]` ✓（真正可粘贴）。
+- **视频预览自动播放（用户需求「视频消息点开预览自动开始播放」）**：全屏预览 `.viewer` 的 video 分支加 `autoplay`（`<video class="ph" controls autoplay>`）——点击缩略图打开预览即自动播放（用户手势上下文允许有声播放）。
+  - 顺手优化：缩略图 `vthumb` 内 `<video muted>` 加 `preload="none"`，避免每次渲染预加载视频（消除控制台 ERR_ABORTED 噪音）。
+  - 验证：点击视频消息打开预览 → `autoplay:true`、`paused:false`（正在播放）、有声、无错误 ✓。
+- **音频真实波形 + 进度操控（用户需求「波形图由服务器生成，且无法操控进度」）**：
+  - **服务器生成波形**：新增 `packages/server/src/wave.ts` + `/api/wave/:key` 接口（HttpServer，内存缓存 Map key→peaks）：
+    - **ffmpeg 优先**（检测 PATH/常见路径）：`ffmpeg -i file -f f32le -ac 1 -` 解码任意音频（mp3/m4a/float WAV）→ 稀疏采样求峰值（96 点）。
+    - **无 ffmpeg 回退**内置 WAV 解析：支持 PCM(1)、IEEE float(3)、extensible(0xFFFE 读 subformat)；ADPCM 等压缩返回 null。
+    - 非音频/解码失败 → 415。
+  - **前端**：音频卡片 wave 用 `wavePeaks[msg.id]`（fetch `/api/wave/<key>`，loadWave 只请求一次，失败回退正弦装饰条）；wave 渲染真实峰值高度。
+  - **进度操控**：`seekAudio`（wave 点击 → `currentTime = ratio × duration`，若未播放则开始播放）；`ensureAudio` 复用/创建 audio；播放中 `.wave .ind` 竖线指示进度（timeupdate 直接改 DOM，非 lit 重渲染）。CSS 加 `.ind` 样式 + wave `position:relative`。
+  - **坑**：7pm.wav 是 **IEEE float 32bit** WAV（fmtCode 3），仅 PCM 解析会 415 → 扩展支持 float + 引入 ffmpeg 兜底。
+  - 验证：`/api/wave/22ec31cef376_7pm.wav` 返回 96 峰值 ✓；前端 96 条波形高度与 peaks 一致（71%/83%/70%…）✓；点击波形中部 → currentTime/duration≈0.5 并自动播放 ✓；播放中 .ind 进度指示 ✓。
+  - **波形状态着色（用户需求「没有播放的改为灰色，播放暂停之后进度条指示器不要隐藏」）**：CSS 改为 `.card.audio .wave i` 默认 `var(--muted)` 灰、`.wave i.played` 已播部分 `var(--accent)` 薄荷；`updateWaveInd` 按 `ratio×count` 给 `i` 加 `.played` 类着色，`wave.classList.toggle("show-ind", ratio>0 && ratio<1)` 控制指示器（未播放/播完隐藏，暂停中间保持显示）。删除被旧规则覆盖的残留 `.wave i{background:var(--accent)}`。
+    - 验证：初始 96 条全灰（#6f7a82）✓；播放 2.5s 后暂停 → 已播 2 条薄荷（#86cecb）+ 未播灰 ✓；`.show-ind` 保持 + `.ind` 竖线 opacity .85 ✓。
+  - **轻量解码器替换 ffmpeg（用户需求「ffmpeg 79MB 太大，有没有更小选择？需求仅波形图+视频首帧」）**：
+    - **关键洞察**：①视频首帧缩略图 web 端用 `<video muted preload="none">` 浏览器自行取帧，**根本不依赖 ffmpeg**；②ffmpeg 只用于「非 WAV 音频」波形解码，WAV 走内置解析（0 依赖）。故 79MB ffmpeg-static 只为一个场景服务。
+    - **替换方案（全格式，用户选择 B）**：移除 `ffmpeg-static`（−79MB），改装 `@audio/decode-*` 系列 WASM 解码器（wasm 内嵌在 JS 里、无外置二进制，pkg 打包友好）：`@audio/decode-mp3`（MIT 0.10MB）/ `@audio/decode-flac`（MIT 0.14MB）/ `@audio/decode-vorbis`（MIT 0.17MB）/ `@audio/decode-aac`（**GPL-2.0** 0.38MB，M4A/AAC/ALAC）。合计 **~0.79MB**（对比 79MB 减少 ~98%）。统一 API `decode(buf) → {channelData, sampleRate}`。
+    - **wave.ts 重写**：`detectKind(buf)` 读魔数识别（RIFF→wav / fLaC→flac / OggS→ogg / ftyp→m4a / ID3 或 0xFFE→mp3 / 0xFFF→aac ADTS）；WAV 走内置解析（同步零依赖），其余按格式调对应 WASM 解码器 → `peaksFromChannels` 取多声道最大绝对值峰值（96 点）。`wavePeaksFromFile` 改 async，HttpServer `/api/wave` handler 改 async。
+    - **坑 1**：`@audio/decode-aac` 在 Node 分支用 `createRequire(import.meta.url)("./src/aac.wasm.cjs")` 动态加载 → **esbuild bundle 后相对路径失效**（`import.meta.url` 指向 bundle，`./src/aac.wasm.cjs` 不存在）→ M4A 在 bundle/exe 中 415。修复：**pnpm patch** 将该分支改为静态 `await import('./src/aac.wasm.cjs')`（与 browser 分支一致，esbuild 可内嵌），固化到 `patches/@audio__decode-aac@1.3.4.patch` + `pnpm-workspace.yaml` 的 `patchedDependencies`。
+    - **坑 2**：先临时改了 node_modules 的 decode-aac.js 验证可行，但 pnpm 会覆盖 → 必须用 `pnpm patch`/`patch-commit` 固化（补丁目录 `.pnpm_patches` 在项目内）。
+    - **验证**（ffmpeg 生成 4 个 3s 正弦测试音频 wave_test.mp3/flac/ogg/m4a）：dev server `/api/wave` 4 格式均 96 峰值 ✓；esbuild bundle 后 4 格式均 96 峰值 ✓（M4A 靠补丁）；**新 exe（release/filesyncex.exe 61.2MB）内置解码器，4 格式均 96 峰值 ✓，不再依赖系统 ffmpeg**。
+    - **exe 体积说明**：新旧 exe 都是 ~61MB（pkg node18 base ~58MB 占大头）；ffmpeg-static 的 79MB 只存在于 node_modules 开发环境、从未打进 exe。真正收益：①node_modules 减 79MB；②exe 内置解码器，任何机器不装 ffmpeg 也能出波形。
+    - **注意（license）**：`@audio/decode-aac` 是 GPL-2.0（FAAD2），如未来闭源分发 exe 需评估；其余 3 个 MIT。
+  - **Opus 支持补全（用户上传 7pm.opus 反馈波形不支持）**：Opus 是合法音频格式（Ogg Opus 容器，头 `OpusHead`）。原 `detectKind` 只认 `OggS` → 一律走 `decodeVorbis`，Opus 内容解码失败 → 415 回退装饰波形。修复：装 `@audio/decode-opus`（MIT，182KB wasm 内嵌），`detectKind` 在 OggS 分支内进一步读 64KB 区分 `OpusHead`→"opus" / `\x01vorbis`→"ogg"，解码分支加 `decodeOpus`。验证：`7pm.opus` → 96 峰值（max 0.77）✓；`7pm.ogg`(vorbis) 不受影响 ✓。
+- **上传队列残留修复（用户反馈「去掉上传进度条」）**：桌面端上传面板下 `.queue` 会把**已完成的条目（100%）一直留着**不消失，堆积多个已完成项。修复 `handleFiles`：上传成功后立即 `this.uploads.filter(x => x !== rec)` 从队列移除（进行中仍显示进度、失败保留红色提示）。验证：reload 后上传区下方无残留队列 ✓。
+- **秒传「同内容不同名」修复（用户需求「按内容生成哈希防重复；同内容不同名 → 新消息但文件指向旧文件」）**：现有秒传（前端 SHA-256 → init 命中 → 广播消息）已存在，但 bug：秒传生成的消息用 `existing`（**旧文件名**），同内容不同名时消息显示旧名。修复 `init` 秒传分支：`const meta = { ...existing, name: req.name, mime: req.mime || existing.mime }` —— 新消息用**本次上传的名字**，但 key/url/sha256/size 沿用旧文件（文件内容/下载仍指向旧文件）。验证：上传「同内容测试.txt」→ 再传同内容「改名后的文件.txt」→ 新消息 name=改名后的文件.txt、key 与旧文件一致（4660989c68bc_…）✓。
+- **浏览器音频兼容评估（用户问「有几个格式无法播放，是否内嵌全能播放库」）**：结论 **不推荐内嵌前端播放库**，推荐 **服务器端转码流（复用现有 WASM 解码器）**：
+  - 现状：`<audio>` 原生播放 file.url。Chromium 系对 mp3/wav/flac/ogg/m4a/opus 均 canPlayType maybe/probably；真正的兼容短板是 **`.aac`（ADTS 裸流）在多数浏览器无法播放**、旧版 Safari/Firefox 对 ogg/opus/flac 支持差。
+  - 前端内嵌播放库（如 wasm-audio-decoders 浏览器版 + Web Audio）缺点：每个解码器 wasm 数百 KB → 前端 bundle 体积暴涨、需自建 decode→AudioContext 播放管线、与现有 seek/波形联动重写，收益低。
+  - 推荐方案：服务器已有全套 `@audio/decode-*` 解码器 → 新增 `/api/stream/:key`（按需解码转 **WAV/PCM** 流返回），前端对 canPlayType 不支持的格式把 audio.src 指向流接口即可。零新增依赖、复用解码、跨浏览器一致。
+  - 待用户确认是否实施。
+  - **文件引用计数 + 转码流（用户需求「所有文件加引用计数写入数据库；统一转码流确保音频都能播放」）——已实施**：
+    - **引用计数（持久化）**：Store 接口新增 `incrFileRef`/`decrFileRef`/`removeFile`；SqliteStore `files` 表加 `refs` 列（旧库启动时 ALTER 迁移 + 按现有消息重算 refs），MemoryStore 独立 Map 维护。上传新文件 saveFile refs=1；秒传命中 `incrFileRef`（新增消息也引用该文件）；`SyncEngine.removeMessage` 与 `trim` 裁剪时 `decrFileRef`，归零则 `removeFile` + emit `file-gc {key}` 事件（EventBus 注册该事件）；server 订阅 `file-gc` → `UploadService.deleteFile` 物理删除。**验证**：同内容 2 消息 refs=2 → 删 1 条 refs=1 文件保留 → 删最后 1 条 refs=null 文件删除 ✓；**重启后 refs 不丢（持久化）** ✓。
+    - **转码流（统一播放）**：`wave.ts` 重构抽出通用解码 `decodeToChannels(p)`（读文件→detectKind→解码 PCM，供波形/转码共用）+ `toWavBuffer(decoded)`（多声道 PCM16 WAV 编码）；`decodeWav` 解析实际采样率（fmt 块 sampleRate）。新增 `/api/stream/:key`：解码→WAV 流，**支持 Range 请求**（206/Content-Range，audio 拖动 seek 需要），`streamCache` 只解码一次。前端 `audioSrc(m)` 统一返回 `/api/stream/<key>`，`ensureAudio` 与模板 `<audio src>` 都改用该源（下载仍走 `/api/file/<key>` 原文件）。**验证**：opus → `/api/stream` 200 audio/wav 22MB RIFF/WAVE 头 ✓、Range 206 `bytes 100-199/22054104` ✓、浏览器 `readyState=4 duration=114.86s error=null`（可播放出声）✓；全部音频消息 src 均指向 /api/stream ✓。
+    - **注意**：转码流 WAV 未压缩（22MB/2min），内存/带宽成本高于直接播放；仅音频走流，图片/视频/下载仍用原文件。
+  - **桌面端设置面板对齐原型（用户「对比桌面端和原型设置面板，同步」）**：web 端 `settings` sheet 相比 `desktop.html` 的 `dlgSettings` 缺 3 块 → 补齐：①**连接**（已连接·局域网 状态点 + HTTP/WebSocket 真实地址）；②**工具**（下载 QuickSendTool.exe + 说明）；③**关于**（前往 GitHub）。新增 `I_LINK` 链接图标 + `.settings` CSS（st-sec/st-conn/dot/muted code/st-note/hr/tool 按钮）。昵称/指纹原本已有。**WS 地址与 httpUrl 同源**（`httpUrl.replace(/^https?:/, ...)` + `/ws`），避免出现 127.0.0.1。验证：HTTP=192.168.40.154:14100、WS=ws://192.168.40.154:14100/ws（同 IP 同端口）、状态点 rgb(4,120,120)、两个按钮存在 ✓。
+  - **设置面板宽度对齐原型 + QuickSendTool 打包（用户「宽度不对；工具放哪、要打进 exe」）**：
+    - **宽度**：web `.panel` 桌面 380px 过窄，原型 `dlgSettings` 是 **640px**。给 settings 单独加 `.settings-panel` 类，桌面 `width/max-width: min(92vw, 640px)`（`.panel` 基础 max-width 520px 会覆盖 width，需同时覆盖 max-width）。验证：设置面板 640px ✓（attach/progress/qr 仍 380px 不受影响）。
+    - **QuickSendTool 位置与打包**：文件在旧工程 `filesync/tool/QuickSendTool.exe`（2.2MB）。移到 `packages/web/public/tool/QuickSendTool.exe` —— Vite 构建自动复制到 `dist/tool/`，server `express.static(webDir)` 自动托管 `/tool/QuickSendTool.exe`，pkg assets `web/dist/**/*` 自动打进 exe。验证：dev `GET /tool/QuickSendTool.exe` 200 ✓；**打包后 exe 内访问同样 200/2.2MB** ✓。exe 体积 61→**84.1MB**（转码流 bundle 6.4MB + tool 2.2MB + 其他）。
+  - **QuickSendTool 替换入口改为根 tool/（用户「能不能根目录新建 tool 文件夹，我替换进去就行，打包脚本处理」）**：在**项目根目录**建 `tool/` 作为**唯一替换入口**（`tool/QuickSendTool.exe`）。打包脚本 `packages/shell/scripts/package.mjs` 在 build web 前新增「同步 tool/ → packages/web/public/tool/」步骤（遍历复制根 tool 下所有文件），Vite 再复制进 dist → pkg 进 exe。删除了 web/public/tool 的手动副本（改由脚本生成，避免两处不同步）。**用户流程：只需把新 exe 覆盖到根 `tool/`，然后 `pnpm --filter @filesyncex/shell package` 即可**。验证：打包后 public/tool 与 dist/tool 均有 exe，**exe 内 /tool/QuickSendTool.exe 200/2.2MB** ✓。
+- **技术栈**：前端 `lit (Web Components)` + `Vite`；服务端 `Express + ws`（首版，传输层已抽象、可后切 Fastify/Socket.IO）；数据库 `better-sqlite3` + `Store` 接口抽象；协议 `zod` schema 校验。
+- **运行时**：Node 18。
+- **分发形态**：保持 `pkg` 打 exe + 网页。
+- **命名**：正式更名为 **filesyncEX**（版本跳至 6.0.0 起步）。
+- **UI 风格**：延续 pico `cyan` + miku 配色（`#047878` 主 / `#86cecb` 薄荷 / `#e12885` 强调），等宽字体 + 思源宋体，桌面与移动端**布局统一、视觉一致**；移动端在统一风格下**重做交互布局**。
+- **安全**：首版不做鉴权（保持局域网开放）。
+- **测试**：首版暂不写，重构跑通后补。
+
+### v6.0 首版功能范围
+- [ ] 粘贴图片（旧 TODO#5）
+- [ ] 移动端 UI 重做（旧 TODO#12）
+- [ ] 大文件分片 / 断点续传
+- [ ] 拖拽 / 批量上传
+- [ ] 多实例端口冲突修复（旧 TODO#11，用唯一实例锁替代裸 +10）
+- [ ] 设备身份（默认按设备指纹自动生成，可改名）
+- [ ] 保留 QuickSendTool 集成
+- [ ] 剪贴板同步：不做；鉴权：不做
+
+### 工程约束
+- 旧工程 `filesync/` 仅用于**查看参考**，**不允许被引用 / 复制 / import**。
+- 新工程在根目录 `g:\filesyncEX` **从零搭建**。
+- 所有改动必须在此日志中登记。
+
+### 进度
+- [x] 查看旧工程 UI（仅查看）：pico cyan + miku 配色、居中布局、上传表单 + 消息列表 + 左侧浮动按钮（run/qrcode/theme）、dialog 弹窗、light/dark 主题。桌面与移动端样式现为同一套（重做空间大）。
+- [x] 建立本操作日志。
+- [x] 设计网页端（桌面）原型 → `docs/prototype/desktop.html`
+- [x] 设计移动端原型 → `docs/prototype/mobile.html`
+- [x] 原型浏览器预览验证（桌面：预览/二维码/删除确认/拖拽高亮/主题切换 均通过；移动：附件面板/上传进度/全屏预览/主题切换 均通过）
+- [ ] 搭建 monorepo 骨架（protocol / core / server / web / shell）
+
+### 本轮改动（2026-08-05 · 原型设计）
+- 新增 `docs/prototype/desktop.html`：桌面端高保真原型（自包含 HTML/CSS/JS，零依赖）。
+  - 顶部 Header（logo / 连接状态 / 二维码 / 主题）+ 上传区（拖拽高亮 + 文本输入 + 发送）
+  - 上传队列卡片（大文件分片进度 58%→99% 动画、暂停/继续、速度与剩余时间）
+  - 消息列表（文本气泡 / 文件卡片 / 图片卡片 / 音频卡片 / 多设备来源），时间线分组
+  - 左下浮动按钮组（run / qrcode / theme，延续旧版交互）+ 预览 / 删除确认 / 二维码弹窗 + Toast
+- 新增 `docs/prototype/mobile.html`：移动端重做原型（触屏布局，视觉与桌面端统一）。
+  - 顶部 Header（收纳 连接状态 / 二维码 / 主题）+ 消息列表（大点击区）
+  - 底部固定输入条（附件 + 文本 + 发送），附件面板为底部 Sheet（相册 / 拍照 / 文件 / 粘贴图片）
+  - 上传进度 Sheet（分片/断点续传、暂停/继续）+ 全屏预览（图片/音频/文件）+ Toast
+  - 适配安全区 env(safe-area-inset)
+- 设计语言（两端口径一致）：CSS 变量主题，light/dark 切换；主色 `#047878` / 薄荷 `#86cecb` / 强调 `#e12885`；等宽字体 + 思源宋体；圆角卡片风格。
+
+### 本轮改动（2026-08-05 · 原型迭代 #2，基于用户反馈）
+- **上传区压缩**（`docs/prototype/desktop.html`）：去掉大块拖拽区，收敛为一行 `[📎 文件] [文本/拖拽输入] [发送]`，整行承载拖拽高亮。
+- **消除主题切换重复**：仅保留 Header 右上角主题按钮（与移动端一致），移除左下浮动按钮组中的主题按钮（现仅剩 运行 / 扫码连接）。
+- 对应更新 JS 绑定（文件按钮触发上传队列、拖拽事件迁移到新容器）。
+- 浏览器验证通过：文件按钮→队列、拖拽高亮/取消、fab 数=2、主题按钮唯一。
+
+### 设备身份方案（方案A，已确认）
+- **目标**：多端同步时可辨识"哪台设备发的"，UI 展示设备名 + 头像色。
+- **字段**：`MsgData` 增加 `sender` 嵌套对象 `{ deviceId, deviceName, color, platform }`，随 ADD/FULL 广播。
+- **设备指纹（默认自动生成，客户端浏览器侧）**：
+  - 信号：`userAgent + language + platform + screen(宽/高/色深) + timezoneOffset + hardwareConcurrency(+ deviceMemory)`
+  - 算法：组合字符串 → FNV-1a 32bit hash → hex（8 位）作为 `deviceId`
+  - 持久化：`localStorage`，刷新/重启不变
+  - 隐私说明：指纹仅用于本地生成稳定 ID，**不采集、不上传原始信号**，只传 hash 结果
+- **默认设备名**：`{平台名}-{deviceId 前 4 位}`（如 `Windows-3a2f`、`Android-9c1e`），可在设置中改名并持久化。
+- **头像色**：miku 调色板（#047878/#137a7f/#e12885/#86cecb/#525658/#4a90d9…）按 deviceId hash 取模选择。
+- **服务端职责**：仅透传并存储 `sender` 字段，不改动生成逻辑。
+- **当前设备标识**：列表中对本机消息标注"本机"徽标。
+
+### 本轮改动（2026-08-05 · 设备身份接入原型）
+- 两个原型（`docs/prototype/desktop.html` / `mobile.html`）均已接入设备身份展示与轻量设备指纹生成（演示级实现）：
+  - 消息头从示意昵称（NoRain / 手机·Pixel 8）改为设备身份：设备名 + 设备色头像 + 本机消息「本机」徽标；其它设备示例为 `Android-9c1e · Pixel 8`。
+  - 桌面端 Header 新增「本机」设备 chip（色点 + 设备名，点击打开设备设置弹窗）；移动端 Header 设备 chip 点击弹出设备设置 Sheet。
+  - 设备设置弹窗/Sheet：展示设备指纹（只读 hash）、设备名输入框、保存（写入 localStorage）。
+  - 设备指纹实现：`UA + language + platform + screen + timezoneOffset + hardwareConcurrency + deviceMemory` → FNV-1a 32bit → 8 位 hex；localStorage 持久化；默认设备名 `{平台}-{id前4位}`；头像色从 miku 色板按 hash 取模。
+- 浏览器验证通过（桌面端 evaluate click 全部正常；移动端真实鼠标点击验证）：
+  - 桌面：弹窗打开、指纹 `1a46f4cc`、头像色 `#e12885`、改名→chip/消息头/头像/localStorage 全联动 ✓
+  - 移动：真实点击打开设备 Sheet、改名→chip/消息头/头像/颜色/指纹全联动 ✓
+- 说明：调试环境对合成 click 事件派发不可靠（已用真实鼠标点击/直接调用 handler 验证，非原型缺陷）；`file://` 下 localStorage 共享仅为调试环境现象，真实部署按 http origin 隔离。
+
+### 本轮改动（2026-08-05 · 默认昵称用户-XXXX + 设置面板）
+- **默认昵称统一为 `用户-XXXX`（四位数字）**：`loadDevice` 生成逻辑改为 `"用户-" + (fnv1a(id) % 10000 补零4位)`，如 `用户-9714`；头像显示昵称去掉前缀后的首字符（数字）；平台信息保留在 `sender.platform` 字段，不再进默认昵称。
+- **Header 新增设置角标（齿轮）**：桌面端在 Header 右侧、移动端在 Header（chip 与二维码之间）各加 `btnSettings`，打开设置面板。
+- **设置面板（桌面弹窗 `dlgSettings` / 移动 Sheet `sheetSettings`）**三个区块：
+  - 设备身份：默认昵称说明（用户-XXXX + 设备指纹）、昵称输入框（保存写入 localStorage）、指纹只读展示
+  - 工具：下载 QuickSendTool 按钮（`/tool/QuickSendTool.exe`）
+  - 关于：跳转项目主页 GitHub（`https://github.com/NoRainLand/filesyncEX`）
+- **移动端 Sheet 健壮性**：加 `max-height:88dvh; overflow-y:auto`（设置内容较长时可滚动）；"点空白关闭"handler 排除 `#btnSettings`（修复点击齿轮被误判为点空白而关闭）。
+- 浏览器验证：桌面端完整通过（齿轮→设置弹窗、下载/项目链接、默认昵称 `用户-9714`、改名全联动）；移动端设置 Sheet 结构与函数正常（`openSettingsSheet`/改名联动验证通过），移动页面的真实点击受调试环境影响未全部闭环（含 SVG 按钮的点击事件在该环境不派发，非原型缺陷）。
+- 附注：`file://` 下两个原型共享 localStorage（桌面/移动互读昵称），仅为调试现象；真实部署按 http origin 隔离。
+
+### 本轮改动（2026-08-05 · 移除桌面端重复浮动按钮）
+- 根据用户反馈，移除桌面端左下角浮动按钮组（`#fabRun` 运行 QuickSendTool、`#fabQr` 扫码连接）：其功能分别与 Header 右上角「二维码」按钮、设置面板「下载 QuickSendTool」重复。
+- 删除对应 CSS（`.fab-group/.fab/.fab-tip`）、HTML 块、JS 绑定（`#fabQr/#fabRun`）。
+- 浏览器验证通过：`fab` 元素 0 个、无残留引用、Header 二维码按钮正常（弹窗可开）、页面无 JS 报错。
+
+### 本轮改动（2026-08-05 · 扩充原型消息以查看滚动效果）
+- 两个原型消息从 5 条扩充到 **26 条**，用于查看上下滚动效果：
+  - 多设备来源：本机（`用户-9714`，`from-me`）、`Android-9c1e · Pixel 8`、`macOS-3b7d · MacBook Pro`
+  - 多日期分组：今天 / 昨天 / 08-02 周日 / 08-01 周六 / 07-30
+  - 混合类型：文本气泡、文件卡片、图片卡片、音频卡片（含下载/复制/删除/预览交互）
+- `renderDevice` 增加 `.from-me` 批量渲染：所有带 `from-me` class 的本机消息自动套用设备色头像与昵称（新增消息无需逐一绑定 id）。
+- 浏览器验证：两端各 26 条消息、10 条本机、昵称批量渲染正确；桌面端 body 可滚动（scrollHeight 4335 / 视口 953），移动端 main 内滚动（6231 / 838），均可滚动到底部。
+
+### 本轮改动（2026-08-05 · 移动端图片预览手势）
+- 移动端图片全屏预览新增交互（此前无）：
+  - **双指捏合缩放**（1x–5x，`touchstart/touchmove/touchend` 计算两指距离比值，`#pvImg` 加 `touch-action:none`）
+  - **单指拖动平移**（缩放后可移动图片）
+  - **双击放大/复位**（1x ↔ 2x）
+  - **点击空白处关闭**（点击图片四周空白区域即关闭，图片本体点击不关闭；保留 ✕ 与底部按钮）
+  - 关闭时重置缩放/平移状态；`vbody` 加 `overflow:hidden` 防止缩放图片溢出盖住上下栏
+- 浏览器验证：双指捏合**实测生效**（touch 事件派发正常，`scale(2.4)`）；双击放大与点击空白关闭逻辑正确（函数/绑定已验证），但该调试环境不派发 click/dblclick 事件（标记 listener 证实 `vbodyClicked=0`），真实浏览器标准行为正常。
+
+### 本轮改动（2026-08-05 · 连接信息入设置 / 移动端去工具下载）
+- **连接状态 + 服务器地址移入设置**：
+  - 桌面端：Header 移除 `已连接 · ws://…` 状态文本（`#status`），改在设置弹窗顶部新增「连接」区块（状态指示灯 + `已连接（局域网）` + HTTP `http://192.168.1.8:4100` + WebSocket `ws://192.168.1.8:4200`）。
+  - 移动端：设置 Sheet 顶部新增「连接」区块（同上，状态 + HTTP/WS 地址）。
+- **移动端移除 QuickSendTool 下载**：设置 Sheet 中「工具」区块（`/tool/QuickSendTool.exe` 下载入口）整块删除；桌面端设置中保留该下载入口。
+- 浏览器验证：桌面 Header 无状态文本、设置含连接区块；移动端设置含连接区块、无工具下载/无工具区块。
+
+### 本轮改动（2026-08-05 · 移除桌面端 Header 用户显示）
+- 移除桌面端 Header 顶部的「本机：用户-XXXX」用户显示 chip（`#deviceChip`），Header 仅保留 logo + 二维码/主题/设置三个图标按钮（logo 加 `margin-right:auto` 让图标靠右）。
+- 同步修正 `renderDevice`（删除对已移除元素的引用，避免空引用报错）；`.device-chip` CSS 保留未复用（无害）。
+- 用户昵称入口与展示调整：Header 不再显示，昵称修改仍通过 Header 齿轮（设置弹窗），消息列表本机消息头部继续展示设备身份（`用户-9714` + 头像数字）。
+- 浏览器验证：Header 无 chip、消息头设备身份正常渲染、设置弹窗可开。
+
+### 本轮改动（2026-08-05 · 移除移动端 Header 用户显示）
+- 按反馈同步移除移动端 Header 顶部的「本机昵称」chip（`#deviceChip`），Header 仅保留 logo + 二维码/主题/设置三个图标按钮（logo 加 `margin-right:auto` 让图标靠右）。
+- 同步修正 `renderDevice`（删除对已移除元素的引用）；昵称修改仍通过 Header 齿轮（设置 Sheet）。
+- 浏览器验证：两端 Header 均无用户显示；消息头设备身份（`用户-9714` + 头像数字）正常渲染；设置入口可用。
+
+### 本轮改动（2026-08-05 · 连接状态指示灯）
+- 将两端 logo 前的圆点升级为**连接状态指示灯**，并暴露全局 `setConnStatus(status)`：
+  - `connected`（绿 `#2ecc71`）：已连接 / 链接正常
+  - `disconnected`（红 `#e74c3c`）：链接断开
+  - `connecting`（黄 `#f1c40f` + `connPulse` 闪烁动画）：正在连接
+  - 颜色带 `transition: .25s` 平滑过渡
+- 原型演示：页面加载先 `connecting`（黄）→ 1.5s 后 `connected`（绿）；可在控制台调用 `window.setConnStatus('disconnected')` 模拟断开。
+- 浏览器验证（等过渡完成后）：红/黄/绿三态背景色与 class 均正确，`connecting` 时动画生效。
+
+### 本轮改动（2026-08-05 · 复制按钮：文本 + 图片预览）
+- **文本消息默认加「📋 复制」按钮**（两端）：JS 批量给每条文本气泡（`.msg .bubble`）在消息头部注入 `.copy-text` 按钮，点击复制文本到剪贴板（`navigator.clipboard.writeText`，受限时提示）。
+- **图片预览加「复制图片」按钮**：
+  - 桌面端：预览弹窗在图片模式下底部显示「复制图片」，其他模式仅「关闭」。
+  - 移动端：全屏预览底部新增「复制」按钮，仅图片模式显示（音频/文件隐藏）。
+  - 复制实现：`fetch(src) → blob → navigator.clipboard.write([ClipboardItem{image/png}])`，浏览器受限时兜底提示（真实部署 http 下可用）。
+- 浏览器验证：两端文本消息 13/13 有复制按钮；桌面图片预览底部含复制；移动端图片模式显示「复制」、音频模式隐藏；复制相关函数存在。
+
+### 本轮改动（2026-08-05 · 绿点呼吸 / 图片复制移出预览）
+- **连接正常（绿）也加呼吸动画**：`.logo .dot.connected` 增加 `connPulse`（2s）呼吸，与「连接中」的黄灯闪烁呼应。
+- **图片复制按钮移出预览**：按反馈移除桌面预览弹窗的「复制图片」按钮、移动端全屏预览底部的「复制」按钮（`btnCopyImg`/`copyPreviewImage`/`copyViewerImage` 及相关代码一并清除）。
+- **图片复制入口改到图片消息卡片**：两端所有 `.card.img` 操作栏（桌面 `.imgops` / 移动 `.ops`）默认追加「复制」按钮（JS 批量注入，原型演示提示，正式版复制图片到剪贴板）。
+- 浏览器验证：两端绿点 `connPulse 2s`；图片卡片 4/4 有复制按钮；预览弹窗/全屏预览内无复制按钮；残留函数已清除。
+
+### 本轮改动（2026-08-05 · 桌面端媒体全屏预览 + 图片滚轮缩放）
+- 桌面端图片/视频/音频预览由小弹窗改为**全屏预览**（`.fullviewer` 全屏覆盖层，顶部标题/✕、底部下载/删除），与移动端全屏查看器口径统一；文件信息仍用弹窗。
+- **图片全屏支持鼠标滚轮缩放**（1x–5x，`wheel` 事件）、拖拽平移（mousedown/mousemove/mouseup）、双击放大/复位；关闭时重置。
+- 视频预览：全屏 `<video controls>`；新增一条视频消息卡片（`card.video`，Android 手机发的演示视频）供预览。
+- 预览入口 `openPreview`：`img/audio/video` → 全屏；`file` → 弹窗。
+- 浏览器验证：图片/视频全屏打开；滚轮缩放 `scale 1 → 1.12 → 1`；全屏关闭；文件走弹窗；视频卡片存在。
+
+### 本轮改动（2026-08-05 · 桌面端消息统一布局）
+- 桌面端所有消息统一为「上=主体内容，下=操作按钮行」（`.msg .ops`），JS 批量重建：
+  - 文本：复制 / 删除
+  - 文件：下载 / 复制 / 删除
+  - 图片：**预览 / 下载 / 删除**（去掉复制）
+  - 音频 / 视频：播放 / 下载 / 删除
+- **默认所有消息含删除按钮**（27 条全部）。
+- 图片消息：点击缩略图（上部分）直接预览（保留）；操作行含预览/下载/删除。
+- 移除卡片内旧操作行（`.card .ops` / `.imgops`）与旧的头部复制按钮注入，统一为下方操作行。
+- 浏览器验证：27/27 有操作行且含删除；图片操作为预览/下载/删除；卡片内旧操作行 0；缩略图点击预览正常。
+
+### 本轮改动（2026-08-05 · 桌面端消息布局回归一体式）
+- 按反馈修正上轮"上下割裂"问题：操作行与主体**融为一体**——
+  - 卡片消息（文件/图片/音频/视频）：操作行放回**卡片内部底部**（`.card .ops`），卡片整体一体。
+  - 文本消息：操作行**紧贴气泡下方**（`.msg .ops`，间距收窄至 4px）。
+- 保留统一能力：默认所有消息含删除；图片操作 = 预览/下载/删除；点缩略图直接预览。
+- 浏览器验证：14 条卡片消息操作行在卡片内、13 条文本消息操作行贴气泡下、图片操作为预览/下载/删除、27/27 含删除。
+
+### 本轮改动（2026-08-05 · 桌面端所有消息统一为一体式卡片）
+- 按反馈"包括文本都是，把所有消息重新整理"：**全部 27 条消息（含文本）统一为一体式卡片**，不再有"文本=气泡+悬空操作行 / 卡片=操作行在卡内"两种形态——
+  - 统一结构：`.msg > .body > .card > 主体 + .ops`（操作行一律在卡片内部底部）。
+  - **文本消息**也包进 `.card.text`：文本内容为卡片主体，操作行（复制/删除）在卡片内底部，与文件/图片/音频/视频卡片完全一致。
+  - 卡片内操作行间距统一为 `padding:10px 14px 12px`。
+- 浏览器验证：27/27 消息全部为卡片、操作行全部在卡片内、全部含删除；其中文本卡片 13 条（复制/删除）、from-me 文本卡片 6 条正常。
+
+### 本轮改动（2026-08-05 · 删除按钮统一为消息右上角垃圾桶角标）
+- 按反馈"所有删除按钮统一到该条消息右上角的一个小垃圾桶角标"：两端原型同步调整——
+  - **桌面端**（`desktop.html`）：统一注入逻辑不再生成"删除"文字按钮，改为给每条消息卡片右上角添加 `.del-corner`（垃圾桶 SVG 角标，绝对定位 top:8px right:8px，hover 变粉），点击触发原删除确认弹窗；底部操作行仅保留 复制/下载/预览/播放。
+  - **移动端**（`mobile.html`）：移除 6 处硬编码的"删除"按钮（`.ops` 内），CSS 新增 `.card` 相对定位 + `.del-corner` 样式，JS 统一给全部 13 张卡片注入删除角标（点击 flash 提示）。
+  - 角标小图标：垃圾桶线性 SVG（stroke 1.5），桌面 26px / 移动 28px 圆形圆角按钮。
+- 浏览器验证：桌面 27/27 卡片有删除角标、底部操作行无"删除"、点击角标弹出删除确认；移动 13/13 卡片有删除角标、无残留删除按钮。
+
+### 本轮改动（2026-08-05 · 消息操作按钮精简 + 文本截断 + 媒体文件名/大小）
+- 按反馈四项调整，两端原型同步：
+  1. **文本消息最大高度**：定 **4 行**，超出省略号（`-webkit-line-clamp:4`），两端气泡统一；复制按钮仍取完整文本（读取 textContent 不受截断影响）。
+  2. **图片消息操作按钮只有"复制"**（删除已移至右上角角标，不算操作按钮）：桌面 JS 注入、移动静态 ops 均只保留"复制"；预览仍可点缩略图。
+  3. **音频/视频消息操作按钮只有"下载"**：桌面 JS 注入 audio/video 只加"下载"；移动音频 ops 只留"下载"（移动端无视频示例）。
+  4. **图片/视频消息显示文件名 + 文件大小**：新增 `.card .mm` 信息行（文件名 ellipsis 缩略 + 大小），位于缩略图底部、操作行上方；桌面 5 处（4 图 1 视频）、移动 4 张图片均加。
+- 浏览器验证：桌面 文本 clamp=4、图片 ops=复制×4、音频=下载×2、视频=下载×1、mm 行 5 处；移动 图片 ops=复制×4、音频=下载×2、mm 行 4 处、文本 clamp=4、复制按钮 13 个仍在。
+
+### 本轮改动（2026-08-05 · 音频信息统一为 .mm 行 + 视频加时长）
+- 按反馈两项调整，两端原型同步：
+  1. **音频卡片文件信息统一**：原先音频的文件名/大小显示在播放条（`.ap .meta`）内，现改为与图片/视频一致的 `.mm` 信息行（播放条/波形下方、操作行上方），显示 文件名（缩略）+ `3:42 · 2.1 MB`；播放条仅保留 播放按钮 + 波形。
+  2. **视频卡片加时长**：视频 `.mm` 行由 `文件名 + 48.2 MB` 改为 `文件名 + 2:15 · 48.2 MB`（时长在前）。
+- 浏览器验证：桌面 音频 .mm 行 2 处（无残留 .ap .meta）、视频 .mm=「产品演示…mp4 2:15 · 48.2 MB」；移动 音频 .mm 行 2 处。
+
+### 本轮改动（2026-08-05 · 未知消息类型操作按钮只有下载）
+- 按反馈：**未知消息类型**（除文字/图片/音频/视频外的消息，即文件及其它类型）操作按钮只有"下载"——
+  - 桌面端（`desktop.html`）：JS 注入 `file` 分支移除"复制"，仅保留"下载"（未知类型兜底）。
+  - 移动端（`mobile.html`）：移除 3 处文件卡片操作行中的"复制"按钮，仅留"下载"。
+- 操作按钮总规约：文本=复制 / 图片=复制 / 音频=下载 / 视频=下载 / 未知(文件等)=下载；删除统一在右上角垃圾桶角标。
+- 浏览器验证：桌面 file 卡片 ops 全为"下载"（7 处）；移动 file 卡片 ops 全为"下载"（7 处）。
+
+### 本轮改动（2026-08-05 · 图片/视频文件信息改为覆盖在缩略图底部）
+- 按反馈：图片/视频的文件名+大小**不再作为独立信息行放在操作按钮上方**，而是**覆盖在缩略图（消息上半部分）底部**——白色文字 + 黑色半透明渐变背景（`linear-gradient(transparent, rgba(0,0,0,.68))`），保证浅色图片上文字也清晰。
+  - 桌面端（`desktop.html`）：`.card.img .mm` / `.card.video .mm` 改为 absolute 定位在 thumb/vthumb 底部（白字、黑渐变）；4 张图片 + 1 个视频的 `.mm` 移入缩略图内部。
+  - 移动端（`mobile.html`）：`.card.img .mm` 同样覆盖式；4 张图片的 `.mm` 移入 thumb 内。
+  - **音频**无缩略图：保留独立信息行（`.card.audio .mm` 为 static，播放条下方）。
+- 浏览器验证：桌面 图片 .mm×4 / 视频 .mm×1 均 absolute+白字+黑渐变、音频 .mm×2 static；移动 图片 .mm×4 均 absolute+白字。
+
+### 本轮改动（2026-08-05 · 图片/视频消息上下两部分合并为一部分）
+- 按反馈"再次全部统一操作逻辑，图片/视频上下两部分合并为一部分，操作按钮下面是半透明渐变黑色"：
+  - **图片/视频消息整卡 = 缩略图**，不再有"缩略图 + 下方独立操作行"两段式。
+  - 底部统一为**半透明渐变黑覆盖层**（`.ovl`，`linear-gradient(transparent, rgba(0,0,0,.7))`），层内自上而下：
+    1. 文件名 + 大小（`.mm`，白字）
+    2. 操作按钮行（`.ops`，白字按钮）
+  - 桌面端：JS 统一注入将 img/video 的 `.ops` 放进缩略图内 `.ovl`（`.mm` 也移入），清理重复 CSS；4 图 + 1 视频。
+  - 移动端：4 张图片卡片的 `.mm`+`.ops` 均移入缩略图内 `.ovl`。
+  - **音频/文本/文件**不受影响：音频 `.mm` 独立行（static）、文本/文件 ops 仍在卡片底部。
+- 浏览器验证：桌面 图片/视频 .ovl 内含 .mm+.ops、卡片底部无残留操作行、图片复制按钮可用、音频 .mm static、文本/文件 ops 在卡片底；移动 4 张图片 .ovl 内含 .mm+.ops、复制按钮可用。
+
+### 本轮改动（2026-08-05 · 移除图片/视频缩略图中间的文字占位块）
+- 按反馈"图片/视频中间那个玩意去掉"：移除缩略图（`.thumb`/`.vthumb`）中间的渐变占位文字块（如"🖼 图片缩略图（点击预览）""▶ 视频缩略图（点击全屏播放）""🖼 手机拍的照片"等），渐变背景改到 `.thumb`/`.vthumb` 本身作为图片占位——
+  - 桌面端：4 张图片（渐变改到 thumb 内联背景）+ 1 个视频（纯黑背景）。
+  - 移动端：4 张图片的 thumb 内占位文字移除（保留渐变背景）。
+- 浏览器验证：桌面 图片/视频缩略图内占位元素 0、移动 4 张图片占位 0（无 emoji、无中间文字）。
+
+### 本轮改动（2026-08-05 · 图片/视频缩略图中间加提示图标）
+- 按反馈给缩略图中间加图标，提示可全屏操作（用 CSS `::after` + SVG data URI 实现，两端统一）：
+  - **视频**：缩略图中间圆形半透明黑底 + 白色**播放三角**图标（56px），提示可点击全屏播放。
+  - **图片**：缩略图中间圆形半透明黑底 + 白色**放大镜**图标（52px，放大镜带 +/- ），提示可点击全屏预览。
+  - 桌面端图片/视频、移动端图片均生效；图标 `pointer-events:none` 不影响点击预览。
+- 浏览器验证：桌面 图片/视频 ::after 图标背景已加载、点缩略图仍能打开全屏预览；移动 图片 ::after 图标已加载。
+
+### 本轮改动（2026-08-05 · 音频消息支持播放/暂停 + 拖动波形选进度）
+- 按反馈实现音频交互（两端同步）：
+  - **点播放按钮 ▶ → 直接播放**（按钮变 ⏸、卡片粉色高亮 `playing` 态）；**再点 → 暂停**。
+  - **拖动波形图选进度**：`.wave` 支持鼠标/触摸按下拖动 seek，进度条（`.prog` 半透明粉色 overlay）实时反映播放位置。
+  - 原型用 Web Audio API 合成 30s 测试音频演示（真实实现由服务器提供音频文件 + ffmpeg 波形数据）。
+  - 移动端移除播放按钮 `onclick="openViewer('audio')"`（避免打开预览 sheet 与直接播放冲突）。
+- 浏览器验证：桌面 播放→⏸+进度增长、拖动 50%→进度 50.26%、再点→▶ 停止；移动 播放→⏸、拖动 50%→50.31%、再点→▶，且不再打开预览 sheet。
+
+### 本轮改动（2026-08-05 · 音频波形改为真实音频波形效果）
+- 按反馈"波形图不像真实音频"：将原来手写随机高度的稀疏柱条，改为**模拟真实音频波形**的生成逻辑（两端统一，JS 动态渲染）——
+  - 60 根柱条，**高斯包络**（峰值在 ~55% 位置、两侧对称渐低）+ **平滑随机**（相邻柱条连续），近似真实音频响度包络。
+  - 保留 `.prog` 播放进度条（重建柱条后重新挂载）。
+  - 真实实现由服务器 ffmpeg 生成波形数据数组，前端渲染逻辑一致。
+- 浏览器验证：桌面/移动 波形柱 60 根、峰值在中部（idx 29）、进度条保留。
+
+### 本轮改动（2026-08-05 · 播放进度改为已播放波形柱变灰）
+- 按反馈"播放之后波形图条的变成灰色"：将播放进度显示方式从"半透明粉色 overlay 覆盖全波形"改为**已播放的波形柱条变灰**（微信语音式进度）——
+  - 新增 `paintProgress(card, pct)`：按进度给前 `pct%` 的柱条加 `.played` 类（灰色），未播放保持薄荷色。
+  - `updateProgress`（播放中每 100ms）/ `seek`（拖动）/ `playCard`（开始）/ `stopAudio(true)`（播完归零）统一用该函数；暂停保留灰色进度。
+  - 移除 `.prog` overlay 相关逻辑与样式（桌面/移动两端同步）。
+  - CSS：`.wave i.played{background:var(--muted)}`（桌面 opacity:1、移动原色）。
+- 浏览器验证：桌面 播放 0.5s→3 根变灰、seek 40%→25/60 变灰、暂停保留、无 .prog；移动 播放→变灰、seek 35%→22/60、无 .prog。
+
+### 本轮改动（2026-08-05 · 波形加细黑进度指示竖线）
+- 按反馈"加一个细细黑色条作为指示器，更明确看到当前进度"：在波形上叠加 **2px 黑色细竖线**（`.wave .ind`，全高、绝对定位、`pointer-events:none`）——
+  - 随播放进度移动（`paintProgress` 同步更新 `left`），与"已播放柱条变灰"互补：灰色=已播放区域，黑线=当前精确播放位置。
+  - 桌面/移动两端同步；renderWaveforms 重建柱条时一并插入 `.ind`。
+- 浏览器验证：桌面/移动 指示竖线 2px 黑色、seek 40%→竖线在 ~40.9%、暂停后保留位置。
+
+### 本轮改动（2026-08-05 · 指示条仅播放显示 + 波形缩短避开删除角标）
+- 按反馈两项修正（两端同步）：
+  1. **未播放不显示指示竖线**：`.ind` 默认 `opacity:0`；JS `paintProgress` 直接控制 `ind.style.opacity`（进度>0 → 0.85 显示，进度归零 → 0 隐藏），暂停保留显示；不依赖 CSS 类切换（移动端 computed 异常故改用 JS 内联控制）。
+  2. **波形与删除角标重叠**：`.card.audio .ap` 右侧留出 42px 空间（`padding:12px 42px 12px 14px`），波形缩短避开右上角删除角标。
+- 浏览器验证：桌面/移动 未播放指示线 opacity 0、播放中 0.85、seek 40% 竖线在 ~41%；桌面 波形右 778 < 删除角标左 786、移动 1210 < 1216，均无重叠。
+
+### 本轮改动（2026-08-06 · 消息时间显示补全年月日时分秒）
+- 按反馈"时间显示更详细，具体到年月日时分秒"：新增 `formatTimes()` JS 遍历消息，根据每条消息前的 `.day` 分组日期解析，结合 time 文本（"HH:mm" 或 "昨天 HH:mm"）生成完整 `YYYY/MM/DD HH:mm:ss`——
+  - 年份取 day 中的（如 `今天 · 2026/08/05`→2026）；`08/02 · 周日` 等无年份的按 2026。
+  - "昨天 HH:mm" 自动按 day 日期 -1 天（如桌面"更早"下的 `昨天 22:04` → `2026/08/04 22:04:xx`）。
+  - 秒数为确定性伪随机（`(idx*37+11)%60`），刷新一致。
+  - 桌面/移动两端同步。
+- 浏览器验证：桌面 27/27、移动 26/26 条时间均为 `YYYY/MM/DD HH:mm:ss` 完整格式。
+
+### 本轮改动（2026-08-06 · 所有头像统一主体色）
+- 按反馈"所有头像统一配色，为网页主体色"：CSS 增加 `.msg .avatar{background:var(--primary) !important}`（桌面/移动两端），覆盖 HTML 中其它设备头像的内联背景色（`#137a7f`/`#4a90d9` 等），全部头像统一为**主体色 `#047878`**（青色）。
+- 浏览器验证：桌面 27/27、移动 26/26 头像背景均为 `rgb(4,120,120)`（#047878）。
+
+### 本轮改动（2026-08-06 · 新增代码模式：One Dark 代码消息）
+- **需求**：发送/展示代码消息，采用 One Dark 配色语法高亮。
+- **输入侧（桌面 + 移动）**：
+  - 输入条新增花括号按钮 `#btnBrace`（`{}`），点击切换代码编辑器 `.code-editor`（on 态主色填充）。
+  - 代码编辑器：顶部语言选择 `#codeLang`（TypeScript/JavaScript/Python/INI/Batch/JSON/SQL/HTML/CSS）+ `#codeInput` textarea（One Dark `#282c34` 深色底）。
+  - `send()` 改造：代码模式下读 `#codeInput` + `#codeLang`，空内容提示"请输入代码内容"，否则清空并 flash"（原型）代码已发送：<lang>"。
+- **消息渲染侧**：
+  - 新增 `.card.code` 卡片：One Dark 深色底 `#282c34`、顶部 `.code-head` 语言标签（蓝 `#61afef`）+ 三个窗口圆点、`.code-body` 白字 `pre` 保持格式、等宽字体。
+  - 新增轻量正则版语法高亮器：`HIGHLIGHT_LANGS`（各语言正则）、`HIGHLIGHT_GROUPS`（捕获组→token 名）、`TOKEN_CLASS`（token→类名）、`highlightCode(code,lang)`、`esc(s)` 转义；One Dark token 类 `.tok-kw`(紫 `#c678dd`)/`.tok-str`(绿 `#98c379`)/`.tok-num`(橙 `#d19a66`)/`.tok-fn`(蓝 `#61afef`)/`.tok-com`(灰 `#5c6370` 斜体)/`.tok-typ`(黄 `#e5c07b`)/`.tok-var`(红 `#e06c75`)/`.tok-prop`/`.tok-attr`/`.tok-op`。
+  - 桌面端消息注入逻辑 kind 判断新增 `code` 类型；操作按钮=**复制**（复制代码原文到剪贴板）；删除角标同其它卡片。
+  - 移动端同样注入删除角标 + 复制按钮。
+- **示例消息**：桌面加一条 TypeScript（`interface Device` + FNV-1a 指纹生成），移动加一条 INI/Config（`[server]`/`[sync]` 配置）。
+- **浏览器验证**：
+  - 桌面：`.card.code` 高亮渲染成功（`tok-kw`/`tok-str`/`tok-fn`/`tok-com` 均生成）；花括号切换开/关正常；代码模式发送 flash"（原型）代码已发送：ts"并清空输入。
+  - 移动：ini 高亮（`[server]`→`tok-typ`、key→`tok-prop`、注释→`tok-com`）；花括号切换 + 代码发送（python）均正常；删除角标 + 复制按钮注入成功。
+
+### 本轮改动（2026-08-06 · 媒体预览优化：屏蔽滚轮穿透 + 点击空白退出）
+- **需求**：图片预览 / 视频播放时，屏蔽下层滚轮事件（防止滚动穿透消息列表）；点击空白处即可退出预览。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - `openFullPreview()` 打开时锁定 `document.body.style.overflow = "hidden"`（关闭时恢复），全屏期间页面不可滚动。
+  - `#fullViewer` 常驻挂 `wheel` 监听（`passive:false` + `preventDefault`），彻底拦截滚轮穿透；图片滚轮缩放不受影响（缩放走 JS `fvApply()` 变换，不依赖默认滚动）。
+  - `#fvBody` 点击空白（`e.target === fvBody`，即非图片/视频本身区域）→ `closeFullViewer()` 退出预览；点图片/视频本身不退出（保留拖拽/缩放/播放）。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - `openViewer()` 打开时锁定 `main` 滚动（`overflow:hidden`），关闭时恢复。
+  - `#viewer` 常驻挂 `wheel` 拦截（`passive:false` + `preventDefault`）。
+  - 补充 `video` 预览分支（`<video controls>`），两端视频预览能力对齐；原有"点击 `#vBody` 空白关闭"保留。
+- **浏览器验证**（两端均通过）：
+  - 桌面：打开图片/视频预览 → `body.overflow=hidden`、滚轮事件被 `preventDefault`、点空白关闭、关闭后 overflow 恢复。
+  - 移动：打开图片/视频预览 → `main.overflow=hidden`、滚轮被拦截、点空白关闭、关闭后恢复；视频预览分支正常。 
+
+### 本轮改动（2026-08-06 · 代码模式输入区：开启后隐藏文件按钮与输入框）
+- **需求**：修正花括号按钮与输入框的视觉重叠感；开启代码模式后，隐藏文件上传按钮与原本的文本输入框。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - 花括号切换 JS 增加 `.upload-row.code-mode` class 切换。
+  - CSS `.upload-row.code-mode #btnFile, .upload-row.code-mode #textInput{display:none}`：开启代码模式时隐藏「文件」按钮 + 文本输入框，输入区仅剩 `{}`（退出开关，on 态主色）+「发送」。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - 花括号切换 JS 增加 `.composer.code-mode` class 切换。
+  - CSS `.composer.code-mode #btnAdd, .composer.code-mode #textInput{display:none}`：开启时隐藏附件（文件上传）+ 文本输入框，仅剩 `{}` + 发送。
+- **浏览器验证**（两端均通过）：开启 → 文件按钮/输入框隐藏、花括号 on、编辑器打开、发送按钮与花括号按钮仍可见；关闭 → 全部恢复显示。 
+
+### 本轮改动（2026-08-06 · 代码模式布局重做：按钮固定右上角 + 输入框放大成代码输入框）
+- **需求（推翻上一轮方案）**：花括号按钮应**压在输入框之上**，而非与发送按钮并列；开启代码模式后，输入框**放大成代码输入框**（带动画，无破绽），同时隐藏文件上传按钮；**发送按钮与花括号按钮位置恒定，均在右上角，压在代码输入框之上**。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - 新增 `.composer-actions`（absolute 定位 `top:10px right:12px`，z-index 5）：花括号 + 发送按钮**固定右上角**，压在输入框/代码输入框之上；输入框右侧 `padding-right:126px` 预留按钮位。
+  - 代码编辑器 `.code-editor` 移入 `.upload-row`（flex:1 占内容区），平时隐藏；开启后 `display:flex` + `codeIn` 动画（`transform-origin:top center`，`scaleY(.45)→1` + 淡入），视觉上**输入框纵向放大成代码输入框**。
+  - 开启代码模式（`.upload-row.code-mode`）：隐藏 `#btnFile` + `#textInput`，代码编辑器撑高 upload 区。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - composer 改 `flex-direction:column`，新增 `.composer-inner`（附件 + 输入框），`.composer-actions`（absolute `top:50% right:0`）固定右上角；输入框 `padding-right:100px` 预留按钮位。
+  - 代码编辑器改为 **absolute 覆盖在 footer 上方展开**（`bottom:100%` + `codeIn` 动画 `transform-origin:bottom center` 向上放大），**不撑高 footer → 按钮位置恒定不变**。
+  - 开启（`.composer.code-mode`）：隐藏 `#btnAdd` + `#textInput`；`.composer-inner` 保持 `min-height:40px`。
+- **浏览器验证**（两端均通过）：
+  - 桌面：开启前/后/关闭，花括号与发送按钮坐标**完全一致**（右上角恒定）；开启后文件按钮/输入框隐藏、代码编辑器放大展开（upload 39px→197px）；关闭恢复。
+  - 移动：开启前/后/关闭，按钮坐标一致（y 恒定）；代码编辑器在 footer 上方覆盖展开（footer 高度不变 58→57）；附件/输入框隐藏，关闭恢复。 
+
+### 本轮改动（2026-08-06 · 代码模式按钮定位澄清：花括号压输入框 + 发送并列）
+- **需求澄清**：默认状态下，**代码模式切换按钮（花括号）压在输入框之上**（覆盖输入框右上角区域），**发送按钮不与输入框叠加，而是与输入框并列**（输入框右侧独立按钮）。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - 移除 `.composer-actions` 容器；`#btnBrace` 改为 `position:absolute; top:50%; right:74px`（相对 `.upload-row`），**压在输入框/代码输入框右上角之上**；`#btnSend` 回归正常流内，**与输入框并列**（输入框右侧）。
+  - 输入框 `padding-right` 调整为 `58px`（仅预留花括号位）。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - 移除 `.composer-actions` 容器；`.composer-inner .bracebtn` 改为 `position:absolute; top:50%; right:48px`（发送圆形按钮左侧），**压在输入框右上角之上**；`#btnSend` 回归流内**与输入框并列**。
+  - 输入框 `padding-right` 调整为 `56px`。
+- **浏览器验证**（两端均通过）：
+  - 桌面默认：花括号 `absolute` 且与输入框区域重叠（压在输入框上）；发送按钮在输入框右侧、不重叠输入框（并列）；开启代码模式后文件/输入框隐藏、代码编辑器放大（39→197px）、花括号+发送仍可见；关闭恢复。
+  - 移动默认：花括号与输入框区域重叠（压输入框上）；发送按钮在输入框右侧并列；开启后附件/输入框隐藏、代码编辑器覆盖展开（99px）、花括号+发送可见；关闭恢复。 
+
+### 本轮改动（2026-08-06 · 花括号按钮去除边框，悬浮于输入框之上）
+- **需求**：代码模式按钮（花括号）**不要外边框**，表现为**悬浮在输入框之上**。
+- **桌面端**（`docs/prototype/desktop.html`）：`.bracebtn` 去掉 `border:1px` + `background:var(--surface)`，改为 `border:0` + `background:transparent`；hover 仅变主色（不再有边框反馈）；on 态保留主色填充 + 白字（无边框）。
+- **移动端**（`docs/prototype/mobile.html`）：`.bracebtn` 同步去掉边框与背景，透明悬浮；active 仅变主色；on 态主色填充 + 白字。
+- **浏览器验证**（两端均通过）：默认状态 `border:0`、`background:transparent`（悬浮无边框）；on 态主色填充 `#047878` + 白字、无边框。 
+
+### 本轮改动（2026-08-06 · 代码模式按钮 on 态仅变色 + 发送按钮压代码输入框）
+- **需求**：①代码模式下，**发送按钮压在代码输入框之上**（右上角）；②代码模式按钮（花括号）**不要边框，on 态仅仅是花括号变色**（去掉主色填充）。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - `.bracebtn.on` 由主色填充改为 `background:transparent; color:var(--primary)`（仅花括号变主色）。
+  - 新增 `.upload-row.code-mode #btnSend{position:absolute; top:50%; right:12px; transform:translateY(-50%); z-index:5}`：**代码模式下发送按钮压在代码输入框右上角**（与花括号 `right:74px` 并排）；默认状态发送按钮仍流内与输入框并列。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - `.bracebtn.on` 改为 `background:transparent; color:var(--primary)`（仅变色）。
+  - 新增 `.composer.code-mode .sendbtn{position:absolute; top:50%; right:0; z-index:5}`：代码模式下发送按钮固定输入行右上角。
+- **浏览器验证**（两端均通过）：
+  - 桌面：默认发送按钮 `static` 与输入框并列；代码模式发送按钮 `absolute` 且与代码编辑器区域重叠（压其上）、花括号 on 态透明背景 + 主色文字 + 无边框；关闭恢复。
+  - 移动：默认发送按钮并列；代码模式发送按钮 `absolute`（输入行右上角）、花括号 on 态仅变主色、附件/输入框隐藏、代码编辑器覆盖展开；关闭恢复。 
+
+### 本轮改动（2026-08-06 · 花括号与发送按钮固定在顶部，相对静止）
+- **需求**：花括号与发送按钮**保持相对静止**，位置固定在**上面（顶部）**——开启代码模式后不随代码输入框高度变大而下移（此前 `top:50%` 垂直居中导致按钮下移到中部）。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - `#btnBrace` 由 `top:50% + translateY(-50%)` 改为 **`top:10px` 固定**（去掉 transform）：始终停在顶部右上角，压在输入框/代码输入框之上。
+  - `.upload-row.code-mode #btnSend` 同样改为 **`top:10px` 固定**：代码模式下发送按钮停在顶部，与花括号并排（同 y 水平线）。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - `.composer-inner .bracebtn` 由 `top:50%` 改为 **`top:0` 固定**。
+  - `.composer.code-mode .sendbtn` 改为 **`top:0` 固定**，与花括号同 y 并排。
+- **浏览器验证**（两端均通过）：
+  - 桌面：花括号坐标默认/代码模式/关闭**完全一致**（(1090,124) 静止）；代码模式下发送按钮 `absolute top:10px` 与花括号同 y 并排，压在代码编辑器上、不随行高（40→197px）下移；关闭恢复流内并列。
+  - 移动：花括号坐标恒定（top:0）；代码模式下发送按钮 `top:0` 与花括号同 y（905）并排静止；关闭恢复。 
+
+### 本轮改动（2026-08-06 · 修复代码模式开关的控件错位/越界）
+- **问题**（浏览器实测发现）：桌面端 `#btnBrace` 用 `top:10px`（相对 `.upload-row` 顶部）导致花括号按钮**比其他控件低 10px**、底部贴到 upload 边缘（错位）；`right:74px` 与代码模式下发送按钮 `right:12px` 冲突，导致**两按钮重叠 2px**；发送按钮 `top:10px` 也略下偏。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - `#btnBrace`：`top:10px` → **`top:0`**（相对 upload-row 顶部，与其他控件/ce-top 顶部对齐）；`right:74px` → **`right:84px`**（给代码模式下发送按钮让位，避免重叠）。
+  - `.upload-row.code-mode #btnSend`：`top:10px` → **`top:0`**（与花括号顶部对齐）。
+- **移动端**（`docs/prototype/mobile.html`）：实测无错位/越界（花括号 `top:0` 与输入框/发送对齐，不重叠），无需改动。
+- **浏览器验证**（两端均通过，DOM 坐标核对）：
+  - 桌面默认：花括号 (1080,114) 与其他控件顶部对齐（y 差 ≤2px）、与发送不重叠、不越界；代码模式：花括号与发送顶部对齐（y=114）、不重叠、均在 ce-top 内、不越界。
+  - 移动：默认/代码模式均顶部对齐、不重叠、控件在 composer-inner 内。 
+
+### 本轮改动（2026-08-06 · 修复代码模式开启后按钮位置漂移）
+- **问题**：开启代码模式后，发送按钮从默认位置左移（`absolute right:12px` 比默认流内贴右缘缩进 12px，x 由 1138→1126），导致按钮位置"不对"、与关闭状态不一致。
+- **桌面端**（`docs/prototype/desktop.html`）：`.upload-row.code-mode #btnSend` 的 `right:12px` → **`right:0`**（贴 upload-row 右缘），使代码模式下发送按钮位置与默认流内一致；花括号保持 `right:84px` 不变。
+- **移动端**（`docs/prototype/mobile.html`）：发送按钮已是 `right:0`，实测无需改动。
+- **浏览器验证**（两端均通过，坐标核对）：
+  - 桌面：花括号默认/代码模式均 (1080,114)；发送按钮默认 (1138,115) 与代码模式 (1138,114) **x/right 完全一致**；代码模式下按钮贴 ce-top 右缘。
+  - 移动：花括号 x=1346、发送 x=1394/right=1434 在默认/代码模式/关闭三态**完全一致**。 
+
+### 本轮改动（2026-08-06 · 代码输入框去边框，与最外层边框融为一体）
+- **需求**：去掉代码输入框（`.code-editor`）自己的边框，让它和最外层 `.upload` 的边框融为一体（消除嵌套双框）。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - `.code-editor` 去掉 `border:1px solid var(--line)`（`border:0`）。
+  - 新增 `.upload-row.code-mode .code-editor{margin:-10px -12px}`：用**负 margin 抵消 `.upload` 的 padding**，让代码编辑器撑满 `.upload` 内容区（贴到最外层边框），圆角由 `.code-editor` 的 `border-radius + overflow:hidden` 呈现。
+  - 注：`code-mode` class 加在 `.upload-row` 上，故选择器用 `.upload-row.code-mode`（初稿误写 `.upload.code-mode` 已修正）。
+- **浏览器验证**（桌面端）：
+  - 代码模式：`code-editor` 与 `.upload` 四边贴合（left/right/top/bottom 均 ≤2px）、`border:0` 无独立边框、宽 998 贴满内容区；花括号/发送按钮位置保持（x 一致）；`ce-top` 随编辑器贴顶。
+  - 关闭后：upload 恢复单行高 61px、文件/输入框/发送按钮正常、代码编辑器隐藏。 
+
+### 本轮改动（2026-08-06 · 代码黑色区下移 8px，与发送按钮拉开）
+- **问题**：代码模式下黑色代码区（textarea）顶部贴语言栏底部（y≈149），而发送按钮底部（y≈151）**深入黑色区顶部约 2px**，视觉上重叠。
+- **桌面端**（`docs/prototype/desktop.html`）：`.code-editor textarea` 增加 `margin-top:8px`，黑色代码区整体下移 8px。
+- **浏览器验证**：黑色区顶部 y 149→157（下移 8px，`margin-top:8px`），与发送按钮底部（151）拉开 **6px 间隙**（不再重叠）；底部仍贴外层框底；代码编辑器高度相应 195→203px。 
+
+### 本轮改动（2026-08-06 · 去掉语言栏黑线 + 空隙改语言栏同色）
+- **需求**：去掉语言栏底部的黑线（`border-bottom`）；把黑色区下移露出的 8px 白色空隙改为与上方语言栏相同的颜色，使之融为一体。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - `.code-editor` 背景 `var(--bg)`（白）→ **`var(--surface)`**（浅灰，与语言栏同色），8px 空隙不再露白。
+  - `.code-editor .ce-top` 去掉 `border-bottom:1px solid var(--line)`（黑线）；清理重复定义。
+- **移动端**（`docs/prototype/mobile.html`）：`.code-editor .ce-top` 同步去掉 `border-bottom`（保持两端一致）。
+- **浏览器验证**（桌面）：`.ce-top` `border-bottom:0px none`（黑线已去）；空隙区域采样色 = `rgb(246,248,250)` = 语言栏背景色，与语言栏无缝衔接；黑色代码区仍为 One Dark `rgb(40,44,52)`。 
+
+### 本轮改动（2026-08-06 · 移动端假消息与桌面端同步）
+- **需求**：删除移动端所有假消息，将桌面端假消息同步到移动端（内容一致：同一批发送者/文件/时间/消息类型）。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - 新增**代码消息**（TypeScript，09:25，本机）——与桌面端一致（原移动端 INI 代码 10:38 移除）。
+  - 新增 **`更早` 分组**（原移动端缺），并将 Android「昨天 22:04」消息移入该分组。
+  - 新增**视频消息**（产品演示-20260805.mp4，10:42，Android）——移动端此前无视频消息。
+  - 10:02 文本内容同步为桌面端版本（「…拖动滚动条或滚动鼠标滚轮看看效果 ✌️」）。
+  - 新增 `.card.video` 卡片样式（`.vthumb` + `.ovl` 覆盖层 + 中间播放图标），与图片卡片同构；其余消息（文本/文件/图片/音频/昨天及更早分组）原已一致。
+- **浏览器验证**（移动端）：消息总数 **28** 条与桌面端完全一致（文本13 / 文件7 / 图片4 / 音频2 / 代码1 / 视频1）；TypeScript 代码高亮渲染（tok-kw/tok-fn）、删除角标、复制按钮正常；视频卡片黑色缩略图 + 覆盖层正常；更早分组存在。 
+
+### 本轮改动（2026-08-06 · 移动端移除所有消息的删除角标）
+- **需求**：移动端所有类型的消息，移除删除按钮角标。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - 删除通用注入：`document.querySelectorAll(".card").forEach(...)` 给所有卡片加 `.del-corner` 的整段逻辑。
+  - 代码卡片注入中删除 `del-corner` 部分（保留复制按钮 ops）。
+  - 删除 `.card .del-corner` 相关 CSS（清理死代码）。
+- **浏览器验证**（移动端）：28 条消息 / 15 个卡片中 `.del-corner` 数量为 **0**；文件/图片/代码/音频/视频各类型卡片均无删除角标；代码卡片的「复制」按钮、视频卡片的「下载」按钮保留正常。 
+
+### 本轮改动（2026-08-06 · 移动端移除文字/代码消息的复制按钮）
+- **需求**：移动端删除所有**文字消息**与**代码消息**的复制角标/按钮。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - 删除文本消息复制按钮注入：`.msg .bubble` → 在 `.head` 追加 `.copy-text`（「📋 复制」）的整段逻辑；并清理 `.copy-text` 相关 CSS。
+  - 删除代码卡片复制按钮注入：`.card.code` → 追加 `.ops` 中「复制」按钮的整段逻辑（保留代码 One Dark 高亮渲染）。
+- **浏览器验证**（移动端）：`.copy-text` 数量 **0**；代码卡片无 `ops`/复制按钮；代码高亮（tok-kw）仍正常；28 条消息不变。**图片消息的「复制」按钮保留**（用户未要求删除，共 4 个）。 
+
+### 本轮改动（2026-08-06 · 移动端文字点击复制 + 代码卡片尺寸统一 + 代码全屏预览）
+- **需求**：①文字消息点击直接复制；②代码消息大小与图片/视频一致、不允许左右上下滚动；③点击代码消息全屏预览。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **文字点击复制**：`.msg .bubble` 绑定 click → 复制文本 → flash「已复制到剪贴板」。
+  - **代码卡片尺寸统一**：`.card.code` `max-width` 92%→**88%**（与图片/视频一致）；`.code-body` 由 `overflow-x:auto` → **`overflow:hidden` + `height:150px`**（固定高度、不可滚动）；右下角加「`</> 点击全屏`」提示（`::after`）。
+  - **代码全屏预览**：`openViewer(kind, opt)` 新增 `code` 分支（标题「代码预览」，`.codeview` 占满查看器、可滚动查看完整代码）；`.card.code` 绑定 click → `openViewer("code", { code })`。
+- **浏览器验证**（移动端）：代码卡片 `max-width:88%`、`overflow:hidden`、`height:150px`、有「点击全屏」提示；点击文字消息 flash「已复制到剪贴板」；点击代码卡片打开全屏预览（标题「代码预览」，显示完整 `interface Device…` 代码），关闭正常。 
+
+### 本轮改动（2026-08-06 · 移动端代码卡片：底部渐变覆盖层 + 左下角复制按钮）
+- **需求**：代码消息左下角添加复制按钮；并为代码消息添加图片/视频那样的**底部半透明黑色渐变过渡**。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - 新增 `.card.code .code-ovl` 覆盖层（absolute 底部，`linear-gradient(transparent, rgba(0,0,0,.7))` 半透明黑渐变，与图片/视频 `.ovl` 一致）；内含**左下角「复制」按钮**（点击复制代码，`stopPropagation` 不触发全屏预览）+ **右上角「</> 点击全屏」提示**（`margin-left:auto`）。
+  - 移除原 `.card.code::after` 右下角提示（由覆盖层内提示替代）。
+  - JS 在 `.card.code` 上统一注入覆盖层（复制按钮 + 提示）+ 保留点击卡片全屏预览。
+- **浏览器验证**（移动端）：代码卡片有渐变覆盖层（`background-image` 含 linear-gradient）、左下角「复制」按钮、右上角「点击全屏」提示；点复制 → 仅复制（`viewer` 不打开）；点卡片空白 → 全屏预览打开；代码区仍 150px 高、不可滚动。 
+
+### 本轮改动（2026-08-06 · 移动端：图片按钮改「下载」+ 全部消息左下角按钮统一）
+- **需求**：①图片消息左下角按钮由「复制」改为「下载」；②全部消息左下角按钮的大小、颜色、相对左下角位置与代码消息一致。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **图片按钮改下载**：4 张图片卡片左下角按钮文本「复制」→「**下载**」、去掉 `secondary` 灰色样式（继承 `.btn` 主色）；JS 绑定改为下载行为（`stopPropagation` + flash「（原型）已开始下载图片」，不触发全屏预览）；并给视频左下角按钮补同样下载行为。
+  - **按钮统一（与代码消息基准一致）**：大小 `padding:6px 12px;font-size:12px`（通用 `.ops .btn` 由 `7px` → `6px`）；颜色统一 `--primary` 主色（图片去掉 secondary 后自然一致）；相对左下角位置统一 左 `10px`、下 `8px`（通用 `.ops` 由 `padding:0 10px 10px` → `0 10px 8px`）。
+- **浏览器验证**（移动端）：图片 4 处按钮均为「下载」、背景 `rgb(4,120,120)`（primary）；视频「下载」同色；图片/文件/音频/代码按钮 `padding:6px 12px;font-size:12px` 全一致；图片/视频/代码覆盖层与 `.ops` 均为 左10 下8 相对左下角一致；点图片「下载」→ 仅提示、`viewer` 不打开；点卡片空白 → 全屏预览正常。 
+
+### 本轮改动（2026-08-06 · 移动端：修复图片/视频按钮相对左下角位置偏移 10px）
+- **问题**：图片/视频消息左下角按钮相对卡片左下角为 左 `21px`、下 `17px`，而文件/代码/音频为 左 `11px`、下 `9px`，明显不一致。
+- **根因**：`.ovl` 覆盖层自身 `padding:16px 10px 8px`（左10 下8），其内 `.ovl .ops` 又继承通用 `.ops` 的 `padding:0 10px 8px`，造成**双重 padding**，按钮被叠加推离左下角 10px。
+- **修复**（`docs/prototype/mobile.html`）：`.card.img .ovl .ops`、`.card.video .ovl .ops` 补 `padding:0`，消除叠加。
+- **浏览器验证**（移动端）：全量测量所有消息按钮相对卡片左下角 → file/img/code/audio/video 全部 **左 11px、下 9px**（即 padding 左10 下8 + 1px 边框）完全一致。 
+
+### 本轮改动（2026-08-06 · 移动端代码预览：代码高亮 + 底部按钮改「复制」）
+- **需求**：代码全屏预览窗口中的代码也要**语法高亮**；预览窗口底部「下载」按钮改为「复制」。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **代码预览高亮**：`openViewer("code")` 分支由纯文本 `esc()` → 用 `highlightCode(code, lang)` 渲染（`<pre><code>` 结构，沿用 One Dark token 样式）；`.card.code` 点击时传入 `lang`（`data-lang`）。
+  - **底部按钮改复制**：`openViewer` 开头重置底部左下角按钮为「下载」（`onclick=closeViewer`）；`code` 分支时改为「复制」，点击复制完整代码 → flash「代码已复制」（`file://` 下 clipboard 受限走 catch 提示）。其他预览（图片/视频/文件/音频）仍为「下载」。
+- **浏览器验证**（移动端）：点代码卡片 → 预览标题「代码预览」、代码高亮生效（23 个 token）、底部按钮为「复制/删除」；点「复制」→ flash 提示且预览不关闭；关闭预览正常。 
+
+### 本轮改动（2026-08-06 · 移动端：代码消息去掉全屏提示 + 图片/视频图标去黑圈）
+- **需求**：①代码消息去掉左下角「`</> 点击全屏`」提示；②图片/视频消息保留中间图案（放大镜/播放），但去掉图案后的半透明黑色圆圈。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **代码消息去提示**：删除 `.card.code .code-ovl .hint` 样式；JS 注入覆盖层时移除 hint 的创建与 append（覆盖层仅剩左下角「复制」按钮，点击卡片仍可全屏预览）。
+  - **图片/视频去黑圈**：`.card.img .thumb::after`、`.card.video .vthumb::after` 的 `background-color:rgba(0,0,0,.38)` → `transparent`（保留白色放大镜 24px / 播放图标 22px 图案，去掉黑色圆形容器背景）。
+- **浏览器验证**（移动端）：代码卡片覆盖层只剩「复制」按钮、无 hint；图片 `::after` 背景 `rgba(0,0,0,0)` 且放大镜图案保留；视频 `::after` 背景透明且播放图标保留；整页截图确认白色图案直接显示、无黑圈。 
+
+### 本轮改动（2026-08-06 · 移动端：所有消息长按弹出删除确认气泡）
+- **需求**：所有消息长按弹出「删除确认」气泡；气泡位置固定在该条消息下方；下方位置不够时整体向上滑动。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **长按检测**：每条 `.msg` 绑定 `touchstart`/`mousedown` 起 500ms 定时器触发；`touchmove`/`mouseup`/`mouseleave` 取消；跳过消息内按钮（不干扰复制/下载）。
+  - **删除气泡** `.del-bubble`（fixed，z-420，宽 200px，白底圆角+阴影，指向消息的小箭头）：默认定位在消息正下方（`top = msg.bottom + 8`）并水平居中；若 `bottom + 气泡高 > 视口` 则整体**向上滑动**（`top = msg.top - 气泡高 - 8`，`.above` 时箭头朝下）；消息加粉色 `del-target` 描边高亮。
+  - **操作**：「删除」→ 移除该 `.msg` + flash「消息已删除」；「取消」→ 关闭；点击气泡外/列表滚动 → 关闭。
+  - **抬起屏蔽**：长按后手指抬起产生的 click 在 600ms 屏蔽窗口内拦截（不关闭气泡、不误触复制/打开预览）。
+- **浏览器验证**（移动端）：中间消息长按 → 气泡在消息下方 8px、水平居中、抬起不关闭、消息高亮；底部消息长按 → `above:true` 气泡滑到消息上方 8px 且不越界；「取消」保留消息、「删除」移除消息并提示「消息已删除」；截图确认气泡与箭头视觉正常。 
+
+### 本轮改动（2026-08-06 · 移动端：预览窗口删除按钮纯色白字 + 预览内弹出删除确认窗）
+- **需求**：其他文件/图片/视频/代码等预览窗口的「删除」按钮样式改为**纯色白字**；点击删除后**直接在预览窗口内**弹出删除确认窗（预览保持打开），确认删除才移除消息并关闭预览。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **按钮样式**：预览底部删除按钮由 `btn secondary`（粉边框粉字）→ `btn pink`（纯色粉底 `rgb(225,40,133)` + 白字 + 无边框）。
+  - **预览内确认窗** `.viewer .vdel`（absolute 覆盖预览层，半透明遮罩 + 居中白色卡片「删除这条消息？」）：`#vDel` 点击 → 直接弹出确认窗、**预览保持打开**；「取消」→ 关闭确认窗、预览不变；「删除」→ 移除 `viewerMsg` 来源消息 + `closeViewer()` + flash「消息已删除」。`openViewer` 开头重置确认窗为关闭。
+  - `viewerMsg` 记录预览来源消息（document 捕获阶段事件委托：点击 `.msg` 内元素即记录）。
+- **浏览器验证**（移动端）：点预览「删除」→ 确认窗在预览窗口内弹出（居中、遮罩），预览不关闭；「取消」→ 确认窗关闭、预览保持；确认「删除」→ 消息移除 + 预览关闭 + flash「消息已删除」；截图确认确认窗视觉正常。 
+
+### 本轮改动（2026-08-06 · 移动端：预览标题放大为主题色 + 代码预览点空白关闭）
+- **需求**：①所有预览窗口左上角标题放大一点点并改为**主题色**；②代码预览点击空白处可关闭预览界面。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **标题**：`.viewer .vtop #vTitle` → `font-size:14px → 16px`（放大一点点）、`color` 白 → `var(--primary)`（`rgb(4,120,120)` 主题色）、`font-weight:600`。
+  - **代码预览点空白关闭**：`#vBody` 点击处理新增——点击 `.codeview` 自身（padding 空白区）→ `closeViewer()`；点代码文字（`code/pre/span`）不关闭，避免误触；其他预览点 vBody 空白关闭逻辑保持不变。
+- **浏览器验证**（移动端）：预览标题 `16px` + 主题色 `rgb(4,120,120)` + 600（截图确认）；代码预览点 codeview 空白 → 关闭；点代码文字 → 不关闭；图片预览空白关闭仍正常。 
+
+### 本轮改动（2026-08-06 · 移动端：代码预览空白关闭改为代码块外区域 + 代码块智能缩放）
+- **需求澄清**：①代码预览的「空白区」指**代码块之外的区域**（点代码块内部不关闭），而非代码块内空白；②代码块区域**智能缩放贴合内容**，减少四周空白。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **空白关闭修正**：移除「点 `.codeview` 自身即关闭」逻辑，恢复为仅点击 `#vBody` 空白（代码块之外的区域）才关闭——点代码块内部任意处不关闭。
+  - **代码块智能缩放**：`.codeview` 由 `width:100%;height:100%` 占满 → `width:fit-content;max-width:92vw;max-height:72vh`（宽度贴合最长行、高度贴合内容行数，超出最大尺寸才滚动）；并 `codeview pre{margin:0}` 清除 pre 默认 margin，让代码块精确贴合内容、四周空白最小化（居中显示）。
+- **浏览器验证**（移动端）：代码块宽 292 = pre 264 + padding、高 354 = pre 326 + padding（完全贴合）；点代码块内部 → 不关闭；点代码块外 vBody 空白 → 关闭；截图确认代码块紧凑居中、四周留白。 
+
+### 本轮改动（2026-08-06 · 移动端：设置标题放大可点击关闭 + 去掉保存按钮改输入即保存）
+- **需求**：①设置界面标题放大一点，点击标题可关闭设置界面；②去掉下方「取消 / 保存昵称」按钮，输入完成即自动保存昵称。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **设置标题**：`.sheet .stitle` `font-size:13px → 15px`（放大一点）+ `cursor:pointer`；新增 JS——点击任意 Sheet 标题（`.stitle`）→ 关闭其所在 sheet。
+  - **输入即保存**：删除设置底部 `qactions`（「取消」「保存昵称」按钮）；`#devNameInput` 改绑 `input` 事件 → 实时 `device.deviceName = value` + 写 localStorage + `renderDevice()`（列表头像/名字即时更新，设置界面保持打开）；移除原 `#btnSaveDevice` 点击逻辑。
+- **浏览器验证**（移动端）：设置标题 15px、cursor pointer；点击标题 → 设置界面关闭；输入「测试昵称ABC」→ device 更新、localStorage 保存、列表头像/名字实时更新、设置界面不关闭；截图确认底部已无「取消/保存昵称」按钮。 
+
+### 本轮改动（2026-08-06 · 移动端：隐藏滚动条，保留滚动功能）
+- **问题**：移动端页面左侧出现滚动条（黑色模式下可见），需去除。
+- **根因**：消息列表 `main` 容器 `overflow-y:auto`，内容高度（3799px）超出视口高度（728px）产生垂直滚动条。
+- **修复**（`docs/prototype/mobile.html`）：全局隐藏滚动条——`*::-webkit-scrollbar{width:0;height:0;display:none}`（WebKit/Chromium）+ `*{scrollbar-width:none;-ms-overflow-style:none}`（Firefox/IE），**保留滚动功能**。
+- **浏览器验证**（移动端）：`scrollbar-width:none` 生效、WebKit 滚动条隐藏；`main` 仍可滚动（scrollTop 正常改变）；黑色模式截图确认左侧无滚动条。 
+
+### 本轮改动（2026-08-06 · 移动端：黑色模式主题色保持黛绿不变）
+- **需求**：黑色模式下主题色（黛绿 `#047878`）不允许更改。
+- **问题**：深色主题 `html[data-theme="dark"]` 里 `--primary` 被定义为浅青 `#86cecb`，导致切深色模式后主题色由黛绿变成浅青色。
+- **修复**（`docs/prototype/mobile.html`）：深色模式 `--primary` 改回 `#047878`（`--primary-hover:#137a7f`、`--primary-active:#035c5c` 同步保持黛绿色系），与浅色模式完全一致；`--accent` 辅助色 `#86cecb` 保持不变。
+- **浏览器验证**（移动端）：浅色/深色 `--primary` 均为 `#047878`（一致）；深色模式截图确认 logo 圆点、状态灯、发送按钮、头像、本机标签、播放按钮等均呈黛绿色。 
+
+### 本轮改动（2026-08-06 · 移动端：文件/音频消息去掉预览界面 + 下载按钮直接下载）
+- **需求**：①音频消息、其他文件消息左下角「下载」按钮应**直接开始下载**（不进预览）；②音频/文件消息**去掉预览界面**，它们不应有预览入口。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **去预览入口**：JS 运行时移除所有文件卡片 `.card .file` 的 `onclick="openViewer('file')"`（点击文件卡片不再打开预览）；移除文件/音频下载按钮的 `onclick="openViewer('file'/'audio')"`（`openViewer` 的 file/audio 分支不再有入口触发）。
+  - **下载按钮直接下载**：文件/音频左下角「下载」按钮改绑 click → flash「（原型）已开始下载」，不再进入预览。
+  - 音频卡片内**播放功能保留**（`.play` 波形播放不受影响）。
+- **浏览器验证**（移动端）：文件卡片点击不打开预览；文件/音频「下载」按钮点击 → flash「（原型）已开始下载」、预览不打开；音频播放按钮仍可切换播放态；图片/视频/代码预览不受影响（均正常打开）。 
+
+### 本轮改动（2026-08-06 · 移动端：附件面板去粘贴图片 + Sheet 标题主题色 + 遮罩点击关闭）
+- **需求**：①发送内容窗口（附件面板）去掉「粘贴图片」选项；②发送内容窗口、设置窗口标题文字改为**主题色**；③发送内容/设置窗口点击上方空白区域直接关闭，点击事件不可传递到下方消息。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **去粘贴图片**：附件面板 `attach-grid` 移除「📋 粘贴图片」项，仅剩 相册/拍照/文件。
+  - **标题主题色**：`.sheet .stitle` `color:var(--muted) → var(--primary)`（黛绿 `#047878`），发送内容/设置/上传进度标题统一主题色。
+  - **遮罩关闭**：新增 `.sheet-mask`（fixed 全屏、z-290、`rgba(0,0,0,.25)`，低于 sheet 300 高于消息）；`syncSheetMask()` 任一 sheet 打开即显示遮罩、全关则隐藏；点击遮罩 → `closeSheets()` 关闭全部 sheet，遮罩拦截点击、**不穿透到下方消息**；`#btnAdd`/`openProgress`/`openSettingsSheet`/点空白/点 stitle 关闭均同步遮罩。
+- **浏览器验证**（移动端）：附件面板仅 相册/拍照/文件（无粘贴图片）；「发送内容」「设置」标题均为 `rgb(4,120,120)` 主题色；打开面板遮罩显示（z-290）；点击遮罩 → 面板关闭、遮罩隐藏、预览未打开（事件不穿透）；设置窗口同样正常。 
+
+### 本轮改动（2026-08-06 · 移动端：遮罩淡入动画 + 去设置按钮 + logo 点击进设置）
+- **需求**：①设置/发送内容界面的黑色半透明遮罩出现时带**透明渐变动画**；②去掉主界面右上角设置按钮；③左上角 filesyncEX 文字**放大 + 主题色**，点击进入设置界面。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **遮罩淡入**：`.sheet-mask` 由 `display:none` → `opacity:0/visibility:hidden` + `transition:opacity .28s ease,visibility .28s ease`，`.show` 时 `opacity:1/visible`（淡入渐变，关闭淡出）。
+  - **去设置按钮**：删除 header 的 `#btnSettings`（齿轮）按钮；入口改由 logo 承担。
+  - **logo 进设置**：`.logo` `font-size:16px → 20px`（放大）+ `color:var(--primary)` 主题色 + `cursor:pointer` + `user-select:none`；点击 `.logo` → `openSettingsSheet()`（`stopPropagation` 防被 body 空白关闭逻辑误关，body 关闭逻辑排除 `.logo`）。
+- **浏览器验证**（移动端）：打开面板/设置 → 遮罩从透明淡入至 `opacity:1`（0.28s）；右上角无设置按钮；logo `20px` + `rgb(4,120,120)`；点击 logo → 设置界面打开、遮罩显示；点遮罩关闭正常。 
+
+### 本轮改动（2026-08-06 · 桌面端：弹窗遮罩淡入动画 + 去设置按钮 + logo 点击进设置）
+- **需求**：与移动端一致——①设置界面黑色半透明遮罩出现时透明渐变动画；②去掉主界面右上角设置按钮；③左上角 filesyncEX 文字放大 + 主题色，点击进入设置界面。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - **遮罩淡入**：原生 `<dialog>` 弹窗加 `dialog[open]{animation:dlgIn .22s ease}`（淡入+微缩放）+ `dialog::backdrop{animation:dlgBackdropIn .22s ease}`（半透明黑遮罩 `rgba(0,0,0,.45)` 从透明淡入）。
+  - **去设置按钮**：删除 header 的 `#btnSettings`（齿轮）按钮，右上角仅剩 二维码/主题切换。
+  - **logo 进设置**：`.logo` `font-size:18px → 22px`（放大）+ `color:var(--primary)` 主题色 + `cursor:pointer` + `user-select:none`（右侧 `<small>` 版本号保持 muted）；点击 `.logo` → `dlg("dlgSettings").showModal()`。
+- **浏览器验证**（桌面端）：右上角无设置按钮；logo `22px` + `rgb(4,120,120)`、small 保持灰 `rgb(111,122,130)`；点击 logo → 设置弹窗打开，dialog 动画 `dlgIn`、遮罩动画 `dlgBackdropIn`（淡入）；关闭正常；截图确认。 
+
+### 本轮改动（2026-08-06 · 桌面端：隐藏滚动条 + 深色模式主题色保持黛绿）
+- **需求**：与移动端一致——①主界面不显示滚动条（保留滚动功能）；②黑夜模式下主题色（黛绿 `#047878`）不改变。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - **隐藏滚动条**：全局 `*::-webkit-scrollbar{width:0;height:0;display:none}`（WebKit/Chromium）+ `*{scrollbar-width:none;-ms-overflow-style:none}`（Firefox/IE），保留滚动功能。
+  - **深色主题色**：`html[data-theme="dark"]` 的 `--primary` 由 `#86cecb` 改回 `#047878`（`--primary-hover`/`--primary-active` 同步黛绿色系），与浅色模式一致；`--accent:#86cecb` 不变。
+- **浏览器验证**（桌面端）：浅色/深色 `--primary` 均为 `#047878`；`scrollbar-width:none` 生效；页面可滚动（`scrollY` 正常改变，页面高 5614 > 视口 953）；深色模式截图确认 logo/按钮均呈黛绿色、无滚动条。 
+
+### 本轮改动（2026-08-06 · 桌面端：文件消息去预览 + 下载直接下载 + 全屏预览删除按钮纯色白字）
+- **需求**：①去掉其他文件消息的预览窗口；②文件消息左下角「下载」按钮直接开始下载（不进预览）；③图片/视频全屏预览下方「删除」按钮改为纯色白字。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - **去文件预览**：`.card .file` 运行时 `removeAttribute("onclick")`（点击文件卡片不再打开 `dlgPreview` 文件信息弹窗，`openPreview('file')` 分支无入口）。
+  - **下载直接下载**：「统一消息布局」重建的文件消息操作按钮改 `add("下载", "", () => flash("（原型）已开始下载"))`（原来绑定 `openPreview('file')`）。
+  - **删除按钮纯色白字**：全屏预览 `.fullviewer .fv-foot` 删除按钮由 `btn secondary`（粉边框粉字）→ `btn pink`（纯色粉底 `rgb(225,40,133)` + 白字）。
+- **浏览器验证**（桌面端）：文件卡片点击不打开预览弹窗；文件「下载」按钮点击 → flash「（原型）已开始下载」、预览不打开；全屏预览删除按钮纯色粉底白字；图片/视频全屏预览仍正常打开。 
+
+### 本轮改动（2026-08-06 · 桌面端：文件消息去 hover 响应 + 图片/视频按钮位置统一）
+- **需求**：①其他文件消息鼠标移过时**不响应 hover**（无背景变化）；②图片/视频消息左下角复制/下载按钮相对左下角位置与文件消息一致。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - **去 hover**：删除 `.card .file:hover{background:var(--surface-2)}`（文件消息鼠标移过不再变背景）。
+  - **按钮位置统一**：`.card.img .ovl, .card.video .ovl` 底部 padding `10px → 12px`，并给 `.card.img .ovl .ops, .card.video .ovl .ops` 补 `padding:0`（消除覆盖层内 `.ops` 继承通用 `.card .ops{padding:10px 14px 12px}` 造成的**双重 padding**，按钮被推离左下角的问题）。
+- **浏览器验证**（桌面端）：文件消息 hover 前后背景均为 `rgba(0,0,0,0)`（无变化）；全量测量 file/img/code/audio/video 按钮相对卡片左下角均为 **左 15px、下 13px**（即 padding 左14 下12 + 1px 边框）完全一致。 
+
+### 本轮改动（2026-08-06 · 桌面端：删除免二次确认 + 图片/视频图标去黑圈）
+- **需求**：①所有删除操作**不需要二次确认**（直接删除）；②图片/视频消息中间图标保留，但去掉图标下方的半透明黑色圆形。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - **删除免确认**：消息卡片右上角删除角标（`.del-corner`）点击由 `askDelete()`（弹 `dlgDelete` 确认框）改为**直接删除**——`del.closest(".msg").remove()` + flash「消息已删除」，不再弹二次确认；`dlgDelete` 弹窗不再有入口。
+  - **图标去黑圈**：`.card.img .thumb::after`、`.card.video .vthumb::after` 的 `background-color` `rgba(0,0,0,.38/.45)` → `transparent`（保留白色放大镜/播放图标图案，去掉黑色圆形容器背景）。
+- **浏览器验证**（桌面端）：点删除角标 → 消息直接移除（28→27）+ flash「消息已删除」、`dlgDelete` 未打开；图片/视频 `::after` 背景 `rgba(0,0,0,0)` 且图标（svg）保留。 
+
+### 本轮改动（2026-08-06 · 移动端：设置标题放大 + 确认既有设置项 + Sheet 滚轮屏蔽）
+- **需求**：①设置界面标题变大一点并改为主题色；②去掉设置界面最下方「取消 / 保存昵称」；③设置界面点击空白处直接关闭；④设置界面屏蔽鼠标滚轮事件，不渗透到下方主界面。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **标题放大**：`.sheet .stitle` `font-size:15px → 17px`（主题色 `var(--primary)` 此前已改，保持）。
+  - **既有项确认**：设置界面 `qactions`（取消/保存昵称）此前已删除；`.sheet-mask` 遮罩点击关闭此前已实现——本轮验证均生效。
+  - **滚轮屏蔽**：给所有 `.sheet` 加 `wheel` 监听（`passive:false`）——滚动到边界时 `preventDefault()`（阻止穿透下方主界面）；Sheet 内部仍可正常滚动（未到边界时放行）。
+- **浏览器验证**（移动端）：设置标题 `17px` + `rgb(4,120,120)` 主题色；无「取消/保存昵称」按钮；遮罩点击关闭正常；dispatch wheel → `defaultPrevented:true`、主界面 `scrollTop` 不变（不穿透）。 
+
+### 本轮改动（2026-08-06 · 桌面端：设置弹窗标题主题色 + 去取消/保存昵称 + 点击空白关闭 + 滚轮屏蔽）
+- **需求**（桌面端同步移动端设置界面四项）：①设置界面标题变大并改为主题色；②去掉最下方「取消 / 保存昵称」；③设置界面点击空白处直接关闭；④屏蔽鼠标滚轮事件，不渗透到下方主界面。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - **标题放大主题色**：`.dialog .dhead` `font-size:16px` + `font-weight:700` + `color:var(--primary)`（原 15px 默认色）。
+  - **去取消/保存昵称**：删除设置弹窗底部 `dfoot`（含「取消」「保存昵称」按钮），`#btnSaveDevice` 绑定移除。
+  - **输入即保存**：`#devNameInput` 由按钮保存改为 `input` 事件**实时保存**（更新 `device.deviceName` + `localStorage` + `renderDevice()` 刷新列表）。
+  - **点击空白关闭**：`#dlgSettings` 加 click 监听——`e.target === dlg`（点 dialog 自身空白）时 `close()`（`dialog::backdrop` 点击同样命中自身，故点击弹窗外区域也关闭）。
+  - **滚轮屏蔽**：`#dlgSettings` 加 `wheel` 监听（`passive:false`）——滚动到边界时 `preventDefault()`（阻止穿透下方主界面）。
+- **浏览器验证**（桌面端）：`.dhead` `16px` + `rgb(4,120,120)` 主题色；无 `#btnSaveDevice`、无 `.dfoot`；dispatch dialog 自身 click → 弹窗关闭；输入昵称 dispatch input → `device.deviceName` 与 `localStorage` 同步更新、消息列表实时刷新；dispatch wheel → `defaultPrevented:true`；截图确认弹窗底部无按钮。 
+
+### 本轮改动（2026-08-06 · 桌面端：设置弹窗滚轮穿透根治——打开 dialog 锁定主界面滚动）
+- **需求**：上一轮给 `#dlgSettings` 加的 wheel 边界 `preventDefault` 在真实浏览器中仍挡不住——用户实测打开设置界面时滚轮仍会传递到下方主界面（dialog 内容滚到边界后的 overscroll 会链式传到背景页面，Playwright synthetic/dispatch wheel 测不出该现象）。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - 弹窗 CSS 区新增 `body:has(dialog[open]){overflow:hidden}`——**任意 modal dialog 打开即锁定主界面滚动**（`showModal` 会往 body 加 `[dialog open]` 状态，`:has` 命中即锁 body `overflow:hidden`），全部 dialog 关闭后自动恢复；dialog 自身（top layer）仍可正常滚动，与主界面隔离。
+  - 保留上轮 `#dlgSettings` wheel 边界拦截（作为内容区 overscroll 抑制，与 body 锁定双保险，无需移除）。
+- **浏览器验证**（桌面端）：打开设置弹窗前 `body.overflow = visible` → 打开后 `hidden`（锁定）；弹窗打开时鼠标移到**弹窗内容区**与**弹窗外 backdrop 区**各真实滚轮 800px，主界面 `scrollTop` 始终不变（纹丝不动，彻底不穿透）；关闭后 `overflow` 恢复 `visible` 且原滚动位置保留。同时 `:has(dialog[open])` 自动覆盖 `dlgQr`/`dlgPreview`/`dlgDelete` 等所有 dialog。 
+
+### 本轮改动（2026-08-06 · 两端：去代码消息右上角三个点 + 桌面端文字链接点击开网页）
+- **需求**：①桌面端、移动端去掉代码消息右上角的三个点（红黄绿圆点）；②桌面端文字消息若是 http 链接，点击消息直接在新标签页打开网页（移动端依旧执行复制操作，不改）。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - **去三个点**：删除 `.card.code .code-head` 内 `<span class="dots">`（红黄绿圆点）及其 CSS（`.code-head .dots` / `.dots i`）——标题栏只剩左上角 `TypeScript` 语言名。
+  - **文字链接点击开网页**：`kind === "text"` 分支给 `.bubble` 加 click——`textContent.trim().match(/^https?:\/\/\S+/i)` 命中则 `window.open(url, "_blank")` 新标签打开；非链接文本点击无操作；`e.stopPropagation()` 防止误触其他消息操作；右下角「复制」按钮保留不变。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **去三个点**：同样删除 `.code-head` 内 `.dots` 圆点及 CSS。
+  - **文字点击保持复制**：`.bubble` 点击复制逻辑不动（用户要求移动端依旧复制）。
+- **浏览器验证**（两端）：`.card.code .code-head` 内 `.dots` 数量 0、`innerHTML` 只剩 `<span class="lang">TypeScript</span>`；截图确认标题栏无三个点。桌面端注入链接文本点击 → `window.open("https://example.com/page?x=1")`（新标签打开）、非链接文本点击不打开；移动端 stub clipboard 点击 bubble → 文本写入剪贴板 + flash「已复制到剪贴板」（复制逻辑保持）。 
+
+### 本轮改动（2026-08-06 · 两端：主题按钮白天太阳/夜晚月亮 + 移动端二维码底部滑出弹窗）
+- **需求**：①移动端、桌面端切换黑白主题的按钮，白天（浅色）为太阳、晚上（深色）为月亮；②移动端点击二维码按钮，改为从下面划出二维码弹窗。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - **主题图标日月切换**：`#themeIco` SVG 同时内嵌 `<g class="ico-sun">`（Heroicons sun）与 `<g class="ico-moon">`（Heroicons moon），新增 CSS `html[data-theme="light"] .ico-moon{display:none}` / `html[data-theme="dark"] .ico-sun{display:none}`——浅色显示太阳、深色显示月亮，切换主题时图标自动跟随（纯 CSS，无需改 JS）。
+- **移动端**（`docs/prototype/mobile.html`）：
+  - **主题图标日月切换**：`#btnTheme` SVG 同样内嵌 `.ico-sun` / `.ico-moon` 双 group + 相同 CSS 显隐规则。
+  - **二维码底部滑出弹窗**：新建 `<div class="sheet" id="sheetQr">`（handle + stitle「扫码连接本机」+ 白底 180×180 `#qrBox` + 连接地址文案），`fillQr()` 程序化生成仿二维码 SVG（21×21：三个 7×7 定位角 + 第 6 行/列时序线 + LCG 确定性伪随机数据点，270 个黑格）；`#btnQr` 点击改为打开 `sheetQr`（关闭其他 sheet + `syncSheetMask`），从底部 `translateY(110%)→0` 划出；`closeSheets()` / `openSettingsSheet()` 均加入 sheetQr；body 空白关闭排除列表补 `#btnQr`（否则点按钮打开后冒泡被立即关闭）。stitle 点击 / 遮罩点击 / 空白点击关闭自动继承既有 sheet 机制。
+- **浏览器验证**：桌面端浅色 `sun:inline / moon:none`、切深色 `sun:none / moon:inline`（截图确认太阳/月亮）；移动端同验证通过。移动端点 `#btnQr` → `sheetQr.open` + 遮罩 show + `#qrBox` 生成 21×21 SVG（270 rect）；点 stitle、点遮罩均正常关闭；滑出动画 `transform: translateY(330px)`（关闭态 110% 偏移）生效；修复 body 空白关闭误关 sheetQr 后 reopen 正常。 
+
+### 本轮改动（2026-08-06 · 两端：二维码标题改「扫码连接」+ 桌面预览标题主体色 + 代码分隔线下移）
+- **需求**：①移动端、桌面端二维码界面标题改为「扫码连接」；②桌面端图片/视频预览左上角标题改为主体色；③桌面端代码消息语言类型下面的那条线向下挪 6px。
+- **移动端**（`docs/prototype/mobile.html`）：`#sheetQr` 的 `.stitle`「扫码连接本机」→「扫码连接」。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - **二维码标题**：`dlgQr .dhead`「扫码连接本机」→「扫码连接」。
+  - **预览标题主体色**：新增 `.fullviewer .fv-top #fvTitle{color:var(--primary);font-weight:700}`——图片/视频/音频全屏预览左上角标题（`openFullPreview` 设置 `#fvTitle`）由白色改为主体色黛绿 `#047878` + 加粗；右上角 ✕ 关闭按钮保持白色。
+  - **代码分隔线下移**：`.card.code .code-head` padding `8px 14px` → `8px 14px 14px`（底部 padding +6px），语言类型「TypeScript」下方 `border-bottom` 分隔线向下挪 6px。
+- **浏览器验证**（桌面端）：`dlgQr` 标题文本「扫码连接」；`openPreview("img")` → `#fvTitle`「图片预览」color `rgb(4,120,120)` + weight 700、`openPreview("video")` →「视频预览」同主体色；`.code-head` padding-bottom `14px`、语言文字底到分隔线实测 15px（14px padding + 1px border，比原 9px 多 6px）。移动端：`#sheetQr .stitle` 文本「扫码连接」。截图确认图片预览标题黛绿色、二维码标题、代码分隔线空隙。 
+
+### 本轮改动（2026-08-06 · 桌面端：代码消息语言类型下移5px + 分隔线再下移2px）
+- **需求**：桌面端代码消息，语言类型「TypeScript」向下挪 5px，其下方那条分隔线再次向下挪 2px（在上轮已下移 6px 的基础上）。
+- **桌面端**（`docs/prototype/desktop.html`）：
+  - **语言类型下移5px**：`.card.code .code-head .lang` 加 `position:relative;top:5px`（视觉下移 5px，不参与布局、不影响线位置）。
+  - **分隔线再下移2px**：`.card.code .code-head` padding-bottom `14px` → `16px`（border-bottom 分隔线随之再下移 2px，累计较最初下移 8px）。
+- **浏览器验证**（桌面端）：`.lang` `position:relative; top:5px`、视觉距标题栏顶实测 `13px`（8px padding + 5px top，语言类型下移 5px）；`.code-head` padding-bottom `16px`；语言文字底到分隔线实测 `12px`（文字下移 5 + 线下移 2，间距由 15→12px）。截图确认。 

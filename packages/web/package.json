@@ -1,0 +1,22 @@
+{
+  "name": "@filesyncex/web",
+  "version": "6.0.0-alpha1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@filesyncex/protocol": "workspace:*",
+    "lit": "^3.1.4",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/qrcode": "^1.5.6",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0"
+  }
+}

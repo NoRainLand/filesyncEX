@@ -1,0 +1,1561 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>filesyncEX · 移动端原型</title>
+<style>
+  /* ========== 主题变量（与桌面端统一：pico cyan + miku） ========== */
+  :root{
+    --primary:#047878; --primary-hover:#137a7f; --primary-active:#035c5c;
+    --accent:#86cecb; --pink:#e12885;
+    --ink:#525658; --muted:#6f7a82; --line:#dde3e7;
+    --bg:#ffffff; --surface:#f6f8fa; --surface-2:#eef2f5;
+    --bubble:#f0f6f6; --shadow:0 2px 8px rgba(4,120,120,.08);
+    --radius:12px; --mono:"JetBrains Mono",Consolas,"Courier New",monospace;
+    --serif:"Source Han Serif CN","Noto Serif SC",serif;
+    --sat:env(safe-area-inset-bottom,0px);
+  }
+  html[data-theme="dark"]{
+    /* 主题色（黛绿）不随主题更改，深浅色模式保持一致 */
+    --primary:#047878; --primary-hover:#137a7f; --primary-active:#035c5c;
+    --accent:#86cecb; --pink:#e12885;
+    --ink:#bec8d1; --muted:#8b98a1; --line:#2a313c;
+    --bg:#13171f; --surface:#1a2029; --surface-2:#20262f;
+    --bubble:#1d262e; --shadow:0 2px 10px rgba(0,0,0,.4);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0;height:100%}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:var(--mono); transition:background .25s,color .25s;
+    display:flex; flex-direction:column; height:100dvh; overflow:hidden;
+  }
+
+  /* ========== 顶部 Header（移动端收纳操作入口） ========== */
+  header.app{
+    flex:none; display:flex; align-items:center; gap:10px;
+    padding:calc(10px + env(safe-area-inset-top,0px)) 12px 10px;
+    border-bottom:1px solid var(--line); background:var(--bg);
+  }
+  .logo{display:flex; align-items:center; gap:8px; font-weight:700; font-size:20px; margin-right:auto; color:var(--primary); cursor:pointer; user-select:none}
+  .logo .dot{width:10px;height:10px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 3px var(--accent);transition:background .25s,box-shadow .25s}
+  .logo .dot.connecting{background:#f1c40f;box-shadow:0 0 0 3px rgba(241,196,15,.35);animation:connPulse 1.2s infinite}
+  .logo .dot.connected{background:#2ecc71;box-shadow:0 0 0 3px rgba(46,204,113,.35);animation:connPulse 2s infinite}
+  .logo .dot.disconnected{background:#e74c3c;box-shadow:0 0 0 3px rgba(231,76,60,.35)}
+  @keyframes connPulse{0%,100%{opacity:1}50%{opacity:.45}}
+  .status{margin-left:auto; display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted)}
+  .status .led{width:8px;height:8px;border-radius:50%;background:var(--primary);animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .iconbtn{
+    width:36px;height:36px;border-radius:10px;border:1px solid var(--line);background:var(--surface);
+    color:var(--ink); display:inline-flex;align-items:center;justify-content:center; cursor:pointer;
+  }
+  .iconbtn:active{background:var(--surface-2);color:var(--primary)}
+  .iconbtn svg{width:19px;height:19px}
+  /* 主题切换图标：白天（浅色）显示太阳，夜晚（深色）显示月亮 */
+  html[data-theme="light"] .ico-moon{display:none}
+  html[data-theme="dark"] .ico-sun{display:none}
+
+  /* ========== 消息列表（可滚动） ========== */
+  main{flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:8px 12px}
+  .day{display:flex;align-items:center;gap:10px;margin:14px 0 10px;color:var(--muted);font-size:11px}
+  .day::before,.day::after{content:"";flex:1;height:1px;background:var(--line)}
+  .list{display:flex;flex-direction:column;gap:12px}
+
+  .msg{display:flex; gap:8px; align-items:flex-start}
+  .msg .avatar{
+    width:32px;height:32px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
+    background:var(--primary);color:#fff;font-size:13px;font-weight:700;
+  }
+  /* 所有头像统一为主体色 */
+  .msg .avatar{background:var(--primary) !important}
+  .msg .body{flex:1;min-width:0}
+  .msg .head{display:flex;gap:6px;align-items:baseline;font-size:11px;margin-bottom:4px}
+  .msg .head .who{color:var(--primary);font-weight:700}
+  .msg .head time{color:var(--muted)}
+  /* 已按需求移除文本消息的复制按钮（copy-text） */
+  .me{background:var(--primary);color:#fff;font-size:9px;padding:1px 5px;border-radius:5px;letter-spacing:.5px;flex:none}
+  .device-chip{
+    margin-left:auto; display:flex; align-items:center; gap:6px; padding:6px 10px;
+    background:var(--surface); border:1px solid var(--line); border-radius:16px; cursor:pointer;
+    font-size:11px; max-width:30vw; white-space:nowrap; overflow:hidden;
+  }
+  .device-chip:active{background:var(--surface-2)}
+  .device-chip .dp{width:8px;height:8px;border-radius:50%;flex:none}
+  .device-chip .led{width:7px;height:7px;border-radius:50%;background:var(--primary);flex:none;animation:pulse 2s infinite}
+  .device-chip b{color:var(--primary);font-weight:700;overflow:hidden;text-overflow:ellipsis}
+
+  .bubble{
+    display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden;
+    background:var(--bubble);border:1px solid var(--line);border-radius:12px;
+    padding:9px 12px;font-size:14px;line-height:1.55;max-width:84%;white-space:pre-wrap;word-break:break-word;
+  }
+  /* 长按操作提示 */
+  .longhint{font-size:10px;color:var(--muted);margin-top:3px;padding-left:2px}
+
+  /* 文件/图片卡片（触屏：整卡可点，操作以图标为主） */
+  .card{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);max-width:88%;overflow:hidden}
+  /* 图片 文件名+大小：覆盖在缩略图（上半部分）底部，白色文字 + 黑色半透明渐变 */
+  .card.img .thumb{position:relative;width:100%;aspect-ratio:4/3;cursor:pointer;background:linear-gradient(135deg,#047878,#86cecb);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;overflow:hidden}
+  /* 图片 消息：整卡为缩略图，底部半透明渐变黑覆盖层（上=文件名+大小，下=操作按钮） */
+  .card.img .ovl{
+    position:absolute; left:0; right:0; bottom:0; z-index:1;
+    display:flex; flex-direction:column; gap:6px; padding:16px 10px 8px;
+    background:linear-gradient(transparent, rgba(0,0,0,.7));
+  }
+  .card.img .ovl .mm{display:flex; align-items:center; gap:8px; font-size:11px; color:#fff}
+  .card.img .ovl .mm .name{color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  .card.img .ovl .mm .size{color:rgba(255,255,255,.85);flex:none;white-space:nowrap}
+  .card.img .ovl .ops{display:flex;gap:6px;padding:0}
+  .card.img .ovl .ops .btn{padding:6px 12px;font-size:12px}
+  /* 图片缩略图中间：放大预览图标（保留图案，去掉半透明黑圈） */
+  .card.img .thumb::after{
+    content:""; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    width:48px; height:48px; z-index:1; pointer-events:none;
+    background-color:transparent;
+    background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="white" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path stroke-linecap="round" d="m20 20-3.5-3.5M8 11h6M11 8v6"/></svg>');
+    background-size:24px; background-position:center; background-repeat:no-repeat;
+  }
+  /* 视频 消息：整卡为缩略图，底部半透明渐变黑覆盖层（同图片结构）+ 中间播放图标 */
+  .card.video .vthumb{position:relative;width:100%;aspect-ratio:16/9;cursor:pointer;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#fff}
+  .card.video .ovl{
+    position:absolute; left:0; right:0; bottom:0; z-index:1;
+    display:flex; flex-direction:column; gap:6px; padding:16px 10px 8px;
+    background:linear-gradient(transparent, rgba(0,0,0,.7));
+  }
+  .card.video .ovl .mm{display:flex; align-items:center; gap:8px; font-size:11px; color:#fff}
+  .card.video .ovl .mm .name{color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  .card.video .ovl .mm .size{color:rgba(255,255,255,.85);flex:none;white-space:nowrap}
+  .card.video .ovl .ops{display:flex;gap:6px;padding:0}
+  .card.video .ovl .ops .btn{padding:6px 12px;font-size:12px}
+  .card.video .vthumb::after{
+    content:""; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    width:48px; height:48px; z-index:1; pointer-events:none;
+    background-color:transparent;
+    background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" fill="white" viewBox="0 0 24 24"><path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86A1 1 0 0 0 8 5.14z"/></svg>');
+    background-size:22px; background-position:center; background-repeat:no-repeat;
+  }
+  /* 音频 文件名+大小：独立信息行（播放条下方） */
+  .card.audio .mm{display:flex;align-items:center;gap:8px;padding:7px 10px 0;font-size:11px}
+  .card.audio .mm .name{color:var(--ink);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  .card.audio .mm .size{color:var(--muted);flex:none;white-space:nowrap}
+  /* 代码卡片：One Dark 深色，尺寸与图片/视频一致（整卡不可滚动），点击全屏预览 */
+  .card.code{max-width:88%;background:#282c34;border-color:#3e4451;cursor:pointer;position:relative}
+  .card.code .code-head{
+    display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #3e4451;
+    font-size:12px;color:#7f848e;
+  }
+  .card.code .code-head .lang{color:#61afef;font-weight:700}
+  .card.code .code-body{padding:10px 12px;height:150px;overflow:hidden;font-size:12.5px;line-height:1.7;white-space:pre;tab-size:2;color:#abb2bf;font-family:var(--mono)}
+  /* 代码卡片底部：半透明黑色渐变覆盖层（同图片/视频）+ 左下角复制按钮 */
+  .card.code .code-ovl{
+    position:absolute; left:0; right:0; bottom:0; z-index:2;
+    display:flex; align-items:center; gap:8px; padding:14px 10px 8px;
+    background:linear-gradient(transparent, rgba(0,0,0,.7));
+  }
+  .card.code .code-ovl .btn{padding:6px 12px;font-size:12px;flex:none}
+  /* One Dark 语法高亮 token */
+  .tok-kw{color:#c678dd}.tok-str{color:#98c379}.tok-num{color:#d19a66}.tok-fn{color:#61afef}
+  .tok-com{color:#5c6370;font-style:italic}.tok-typ{color:#e5c07b}.tok-var{color:#e06c75}
+  .tok-prop{color:#d19a66}.tok-attr{color:#d19a66}.tok-op{color:#56b6c2}
+  .card .file{display:flex;align-items:center;gap:10px;padding:11px 12px}
+  .file .ic{width:40px;height:40px;border-radius:10px;background:var(--bubble);color:var(--primary);display:flex;align-items:center;justify-content:center;flex:none}
+  .file .ic svg{width:21px;height:21px}
+  .file .meta{flex:1;min-width:0}
+  .file .meta .name{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .file .meta .sub{font-size:11px;color:var(--muted)}
+  .ops{display:flex;gap:6px;padding:0 10px 8px;flex-wrap:wrap}
+  .ops .btn{padding:6px 12px;font-size:12px}
+  .card.audio .ap{display:flex;align-items:center;gap:10px;padding:11px 42px 11px 12px}
+  .play{width:38px;height:38px;border-radius:50%;background:var(--primary);color:#fff;border:0;flex:none}
+  .card.audio.playing .play{background:var(--pink)}
+  .wave{flex:1;height:30px;display:flex;align-items:center;gap:2px;cursor:pointer;position:relative;user-select:none}
+  .wave i{flex:1;background:var(--accent);border-radius:2px;transition:background .15s}
+  .wave i.played{background:var(--muted)}
+  /* 播放进度指示竖线（细黑条） */
+  /* 播放进度指示竖线（细黑条）：仅播放时显示 */
+  .wave .ind{position:absolute;top:0;bottom:0;left:0;width:2px;background:#000;opacity:0;border-radius:1px;pointer-events:none;z-index:2;transition:opacity .15s}
+  .card.audio.playing .wave .ind{opacity:.85}
+
+  .btn{
+    border:0;border-radius:10px;padding:10px 16px;font-family:var(--mono);font-size:14px;
+    background:var(--primary);color:#fff;cursor:pointer;
+  }
+  .btn:active{background:var(--primary-active)}
+  .btn.secondary{background:var(--surface-2);color:var(--ink);border:1px solid var(--line)}
+  .btn.pink{background:var(--pink)}
+
+  /* ========== 底部输入条 ========== */
+  footer.composer{
+    flex:none; display:flex; flex-direction:column; gap:8px; padding:8px 10px calc(8px + var(--sat));
+    border-top:1px solid var(--line); background:var(--bg);
+    position:relative; z-index:50;
+  }
+  .composer-inner{display:flex; align-items:center; gap:8px; position:relative; min-height:40px}
+  /* 代码模式切换按钮：absolute 固定在顶部右上角（位置相对静止），压在输入框之上；发送按钮仍与输入框并列 */
+  .composer-inner .bracebtn{
+    position:absolute; top:0; right:48px; z-index:5;
+  }
+  .addbtn{
+    width:40px;height:40px;border-radius:12px;border:1px solid var(--line);background:var(--surface);
+    color:var(--primary); display:flex;align-items:center;justify-content:center; cursor:pointer; flex:none;
+  }
+  .addbtn:active{background:var(--surface-2)}
+  .addbtn svg{width:22px;height:22px}
+  .composer input{
+    flex:1; background:var(--surface); border:1px solid var(--line); border-radius:20px;
+    padding:11px 56px 11px 14px; color:var(--ink); font-family:var(--mono); font-size:14px; outline:none; min-width:0;
+  }
+  .composer input:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(4,120,120,.15)}
+  .sendbtn{
+    width:40px;height:40px;border-radius:50%;background:var(--primary);color:#fff;border:0;flex:none;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;
+  }
+  .sendbtn:active{background:var(--primary-active)}
+  .sendbtn svg{width:20px;height:20px}
+  /* 代码模式：花括号按钮 + 代码编辑器（无边框、透明，悬浮在输入框之上） */
+  .bracebtn{
+    width:40px;height:40px;border-radius:12px;border:0;background:transparent;
+    color:var(--ink);font-family:var(--mono);font-weight:700;font-size:15px;flex:none;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .bracebtn:active{color:var(--primary)}
+  .bracebtn.on{background:transparent;color:var(--primary)}
+  /* 代码模式开启：隐藏附件(文件上传)按钮 + 文本输入框；发送按钮压输入行右上角 */
+  .composer.code-mode #btnAdd,
+  .composer.code-mode #textInput{display:none}
+  .composer.code-mode .sendbtn{
+    position:absolute; top:0; right:0; z-index:5;
+  }
+  .composer.code-mode .composer-inner{min-height:40px}
+  /* 代码编辑器：覆盖在输入条上方展开（不撑高 footer，按钮位置恒定），视觉上输入框向上放大 */
+  .code-editor{
+    position:absolute; left:0; right:0; bottom:calc(100% - 0px);
+    display:none; flex-direction:column; border:1px solid var(--line); border-radius:12px; overflow:hidden;
+    background:var(--surface); margin:0 10px 8px; transform-origin:bottom center;
+    box-shadow:0 -6px 24px rgba(0,0,0,.18);
+  }
+  .code-editor.open{display:flex; animation:codeIn .22s ease}
+  @keyframes codeIn{from{opacity:0; transform:scaleY(.5)} to{opacity:1; transform:scaleY(1)}}
+  .code-editor .ce-top{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface-2)}
+  .code-editor .ce-top label{font-size:12px;color:var(--muted);flex:none}
+  .code-editor select{
+    flex:1;min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--bg);
+    color:var(--ink);font-family:var(--mono);font-size:12px;padding:5px 8px;outline:none;
+  }
+  .code-editor textarea{
+    width:100%;height:150px;resize:none;border:0;outline:none;background:#282c34;color:#abb2bf;
+    font-family:var(--mono);font-size:12.5px;line-height:1.6;padding:10px 12px;tab-size:2;white-space:pre;
+  }
+
+  /* ========== 底部 Sheet（附件面板 / 上传进度） ========== */
+  .sheet{
+    position:fixed; left:0; right:0; bottom:0; z-index:300;
+    background:var(--surface); border-radius:16px 16px 0 0; box-shadow:0 -6px 30px rgba(0,0,0,.18);
+    transform:translateY(110%); transition:transform .28s ease; padding-bottom:var(--sat);
+    max-height:88dvh; overflow-y:auto; -webkit-overflow-scrolling:touch;
+  }
+  .sheet.open{transform:translateY(0)}
+  .sheet .handle{width:40px;height:4px;border-radius:2px;background:var(--line);margin:8px auto 4px}
+  /* Sheet 遮罩：覆盖面板上方空白，点击关闭面板且不穿透到消息；显示时淡入渐变 */
+  .sheet-mask{position:fixed;inset:0;z-index:290;background:rgba(0,0,0,.25);opacity:0;visibility:hidden;transition:opacity .28s ease,visibility .28s ease}
+  .sheet-mask.show{opacity:1;visibility:visible}
+  .sheet .stitle{font-size:17px;color:var(--primary);text-align:center;padding:6px 0 4px;cursor:pointer}
+  .attach-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:12px 16px 18px}
+  .att{
+    display:flex;flex-direction:column;align-items:center;gap:6px;background:transparent;border:0;
+    font-family:var(--mono);color:var(--ink);cursor:pointer;font-size:11px;
+  }
+  .att .ai{
+    width:52px;height:52px;border-radius:14px;display:flex;align-items:center;justify-content:center;
+    background:var(--bubble);color:var(--primary);font-size:22px;border:1px solid var(--line);
+  }
+  .att:active .ai{background:var(--surface-2)}
+  .att .ai.pink{color:var(--pink)}
+  .qlist{display:flex;flex-direction:column;gap:10px;padding:4px 16px 18px}
+  .qitem{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+  .qname{font-size:12px;display:flex;gap:8px;align-items:center}
+  .qname small{color:var(--muted)}
+  .qbar{height:6px;background:var(--surface-2);border-radius:3px;margin-top:7px;overflow:hidden}
+  .qbar i{display:block;height:100%;background:linear-gradient(90deg,var(--primary),var(--accent));transition:width .2s}
+  .qmeta{font-size:10px;color:var(--muted);margin-top:5px;display:flex;justify-content:space-between}
+  .qactions{display:flex;gap:6px;margin-top:8px}
+  .mini{flex:1;padding:7px 0;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:12px;font-family:var(--mono)}
+
+  /* ========== 预览（全屏化） ========== */
+  .viewer{
+    position:fixed; inset:0; z-index:400; background:rgba(0,0,0,.92); color:#fff;
+    display:none; flex-direction:column;
+  }
+  .viewer.open{display:flex}
+  .viewer .vtop{display:flex;align-items:center;padding:calc(12px + env(safe-area-inset-top,0px)) 14px 8px;font-size:14px}
+  .viewer .vtop #vTitle{font-size:16px;color:var(--primary);font-weight:600}
+  .viewer .vtop .close{margin-left:auto;border:0;background:none;color:#fff;font-size:20px;font-family:var(--mono)}
+  .viewer .vbody{flex:1;display:flex;align-items:center;justify-content:center;padding:10px;overflow:hidden}
+  .viewer .vbody .ph{max-width:92vw;max-height:70vh;border-radius:10px}
+  /* 代码预览：代码块智能缩放贴合内容（宽度 fit-content、高度自适应，超出最大尺寸滚动），减少四周空白 */
+  .viewer .codeview{width:fit-content;max-width:92vw;max-height:72vh;overflow:auto;-webkit-overflow-scrolling:touch;background:#282c34;color:#abb2bf;padding:14px;font-family:var(--mono);font-size:12px;line-height:1.6;white-space:pre;text-align:left;border-radius:10px}
+  .viewer .codeview pre{margin:0}
+  #pvImg{touch-action:none;transition:transform .15s ease;will-change:transform;transform-origin:center center;user-select:none;-webkit-user-select:none}
+  .viewer .vfoot{display:flex;gap:10px;justify-content:center;padding:10px 14px calc(14px + var(--sat))}
+  /* 预览窗口内删除确认窗（覆盖预览层，居中卡片；预览保持打开） */
+  .viewer .vdel{
+    position:absolute; inset:0; z-index:10; display:none;
+    align-items:center; justify-content:center; background:rgba(0,0,0,.45);
+  }
+  .viewer .vdel.open{display:flex}
+  .viewer .vdel-card{
+    width:220px; background:var(--bg); border-radius:14px; padding:16px;
+    box-shadow:var(--shadow); animation:dbIn .16s ease;
+  }
+  .viewer .vdel-text{font-size:14px;color:var(--ink);text-align:center;margin-bottom:14px}
+  .viewer .vdel-ops{display:flex;gap:8px}
+  .viewer .vdel-ops .btn{flex:1;padding:8px 0;font-size:13px;border-radius:8px}
+  .viewer .vdel-ops .btn.cancel{background:var(--surface-2);color:var(--ink);border:1px solid var(--line)}
+  .viewer .vdel-ops .btn.del{background:var(--pink);color:#fff}
+
+  /* ===== 长按删除确认气泡（固定在目标消息下方，位置不够则向上滑动） ===== */
+  .del-bubble{
+    position:fixed; z-index:420; width:200px; display:none;
+    background:var(--bg); border:1px solid var(--line); border-radius:12px;
+    box-shadow:var(--shadow); padding:12px;
+  }
+  .del-bubble.show{display:block; animation:dbIn .16s ease}
+  @keyframes dbIn{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none}}
+  .del-bubble .db-text{font-size:13px;color:var(--ink);text-align:center;margin-bottom:10px}
+  .del-bubble .db-ops{display:flex;gap:8px}
+  .del-bubble .db-ops .btn{flex:1;padding:8px 0;font-size:13px;border-radius:8px}
+  .del-bubble .db-ops .btn.cancel{background:var(--surface-2);color:var(--ink);border:1px solid var(--line)}
+  .del-bubble .db-ops .btn.del{background:var(--pink);color:#fff}
+  /* 指向消息的小箭头（气泡在消息下方时朝上；above 时朝下） */
+  .del-bubble::before{
+    content:""; position:absolute; top:-6px; left:50%; transform:translateX(-50%);
+    border:6px solid transparent; border-bottom-color:var(--bg); border-top:none;
+  }
+  .del-bubble.above::before{top:auto; bottom:-6px; border-bottom:none; border-top-color:var(--bg)}
+  /* 被长按选中的消息 */
+  .msg.del-target{outline:2px solid var(--pink); outline-offset:2px; border-radius:var(--radius)}
+  /* 隐藏滚动条（保留滚动功能），移动端不显示滚动条 */
+  *::-webkit-scrollbar{width:0;height:0;display:none}
+  *{scrollbar-width:none;-ms-overflow-style:none}
+
+  .hidden{display:none!important}
+</style>
+</head>
+<body>
+
+  <!-- ================= 顶部 Header ================= -->
+  <header class="app">
+    <div class="logo"><span class="dot"></span>filesyncEX</div>
+    <button class="iconbtn" id="btnQr">
+      <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0 1 3.75 9.375v-4.5ZM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 0 1-1.125-1.125v-4.5ZM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0 1 13.5 9.375v-4.5Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 6.75h.75v.75h-.75v-.75ZM6.75 16.5h.75v.75h-.75v-.75ZM16.5 6.75h.75v.75h-.75v-.75ZM13.5 13.5h.75v.75h-.75v-.75ZM13.5 19.5h.75v.75h-.75v-.75ZM19.5 13.5h.75v.75h-.75v-.75ZM19.5 19.5h.75v.75h-.75v-.75ZM16.5 16.5h.75v.75h-.75v-.75Z"/></svg>
+    </button>
+    <button class="iconbtn" id="btnTheme">
+      <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        <g class="ico-sun"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z"/></g>
+        <g class="ico-moon"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z"/></g>
+      </svg>
+    </button>
+  </header>
+
+  <!-- ================= 消息列表 ================= -->
+  <main>
+    <div class="day">今天 · 2026/08/05</div>
+    <div class="list">
+
+      <div class="msg">
+        <div class="avatar" id="av1">W</div>
+        <div class="body">
+          <div class="head"><span class="who" id="who1">Windows-3a2f</span><span class="me">本机</span><time>09:12</time></div>
+          <div class="bubble">在？把今晚的部署脚本发我一份 🚀</div>
+        </div>
+      </div>
+
+      <div class="msg">
+        <div class="avatar" id="av2">W</div>
+        <div class="body">
+          <div class="head"><span class="who" id="who2">Windows-3a2f</span><span class="me">本机</span><time>09:13</time></div>
+          <div class="card">
+            <div class="file" onclick="openViewer('file')">
+              <div class="ic"><svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg></div>
+              <div class="meta">
+                <div class="name">deploy-script.sh</div>
+                <div class="sub">12.4 KB · 脚本</div>
+              </div>
+            </div>
+            <div class="ops">
+              <button class="btn" onclick="openViewer('file')">下载</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="msg">
+        <div class="avatar" id="av3">W</div>
+        <div class="body">
+          <div class="head"><span class="who" id="who3">Windows-3a2f</span><span class="me">本机</span><time>09:20</time></div>
+          <div class="card img">
+            <div class="thumb" onclick="openViewer('img')">
+              <div class="ovl">
+                <div class="mm"><span class="name">截图-20260805-092013.png</span><span class="size">2.4 MB</span></div>
+                <div class="ops"><button class="btn">下载</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 代码消息（示例：TypeScript，One Dark 高亮） -->
+      <div class="msg">
+        <div class="avatar">9</div>
+        <div class="body">
+          <div class="head"><span class="who">用户-9714</span><span class="me">本机</span><time>09:25</time></div>
+          <div class="card code" data-lang="ts">
+            <div class="code-head"><span class="lang">TypeScript</span></div>
+            <div class="code-body"><pre><code>interface Device {
+  id: string;
+  name: string;
+  platform: "windows" | "android" | "macos";
+  color: string;
+}
+
+// 设备指纹（FNV-1a）生成稳定 ID
+function genDeviceId(): string {
+  const parts = [
+    navigator.userAgent,
+    navigator.language,
+    screen.width + "x" + screen.height
+  ];
+  const hash = fnv1a(parts.join("|"));
+  return hash.toString(16).padStart(8, "0");
+}</code></pre></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 更早 -->
+      <div class="day">更早</div>
+      <div class="msg">
+        <div class="avatar" style="background:#137a7f">A</div>
+        <div class="body">
+          <div class="head"><span class="who">Android-9c1e <small style="color:var(--muted)">· Pixel 8</small></span><time>昨天 22:04</time></div>
+          <div class="bubble">手机粘贴的图片 + 一段文字一起发过来了 📎</div>
+        </div>
+      </div>
+
+      <div class="msg">
+        <div class="avatar" id="av4">W</div>
+        <div class="body">
+          <div class="head"><span class="who" id="who4">Windows-3a2f</span><span class="me">本机</span><time>09:31</time></div>
+          <div class="card audio">
+            <div class="ap">
+              <button class="play">▶</button>
+              <div class="wave">
+                <i style="height:15%"></i><i style="height:30%"></i><i style="height:55%"></i><i style="height:40%"></i><i style="height:75%"></i><i style="height:60%"></i><i style="height:90%"></i><i style="height:50%"></i><i style="height:70%"></i><i style="height:35%"></i>
+              </div>
+            </div>
+            <div class="mm"><span class="name">会议录音.m4a</span><span class="size">3:42 · 2.1 MB</span></div>
+            <div class="ops"><button class="btn" onclick="openViewer('audio')">下载</button></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="msg from-me">
+        <div class="avatar">9</div>
+        <div class="body">
+          <div class="head"><span class="who">用户-9714</span><span class="me">本机</span><time>10:02</time></div>
+          <div class="bubble">消息多了以后页面就可以上下滚动啦，拖动滚动条或滚动鼠标滚轮看看效果 ✌️</div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar" style="background:#137a7f">A</div>
+        <div class="body">
+          <div class="head"><span class="who">Android-9c1e <small style="color:var(--muted)">· Pixel 8</small></span><time>10:05</time></div>
+          <div class="card">
+            <div class="file" onclick="openViewer('file')">
+              <div class="ic"><svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg></div>
+              <div class="meta">
+                <div class="name">周末照片.zip</div>
+                <div class="sub">48.2 MB · 压缩包</div>
+              </div>
+            </div>
+            <div class="ops"><button class="btn" onclick="openViewer('file')">下载</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="msg from-me">
+        <div class="avatar">9</div>
+        <div class="body">
+          <div class="head"><span class="who">用户-9714</span><span class="me">本机</span><time>10:11</time></div>
+          <div class="card img">
+            <div class="thumb" onclick="openViewer('img')">
+              <div class="ovl">
+                <div class="mm"><span class="name">粘贴图片-20260805-1011.jpg</span><span class="size">1.8 MB</span></div>
+                <div class="ops"><button class="btn">下载</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar" style="background:#4a90d9">M</div>
+        <div class="body">
+          <div class="head"><span class="who">macOS-3b7d <small style="color:var(--muted)">· MacBook Pro</small></span><time>10:18</time></div>
+          <div class="bubble">笔记本电脑也加入同步了，多端一起用 👍</div>
+        </div>
+      </div>
+      <div class="msg from-me">
+        <div class="avatar">9</div>
+        <div class="body">
+          <div class="head"><span class="who">用户-9714</span><span class="me">本机</span><time>10:26</time></div>
+          <div class="card">
+            <div class="file" onclick="openViewer('file')">
+              <div class="ic"><svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg></div>
+              <div class="meta">
+                <div class="name">新页面设计稿.fig</div>
+                <div class="sub">6.4 MB · 设计文件</div>
+              </div>
+            </div>
+            <div class="ops"><button class="btn" onclick="openViewer('file')">下载</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar" style="background:#137a7f">A</div>
+        <div class="body">
+          <div class="head"><span class="who">Android-9c1e <small style="color:var(--muted)">· Pixel 8</small></span><time>10:30</time></div>
+          <div class="bubble">收到，晚上一起看效果。</div>
+        </div>
+      </div>
+      <!-- 视频消息 -->
+      <div class="msg">
+        <div class="avatar" style="background:#137a7f">A</div>
+        <div class="body">
+          <div class="head"><span class="who">Android-9c1e <small style="color:var(--muted)">· Pixel 8</small></span><time>10:42</time></div>
+          <div class="card video">
+            <div class="vthumb" onclick="openViewer('video')">
+              <div class="ovl">
+                <div class="mm"><span class="name">产品演示-20260805.mp4</span><span class="size">2:15 · 48.2 MB</span></div>
+                <div class="ops"><button class="btn">下载</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="day">昨天 · 2026/08/04</div>
+      <div class="msg from-me">
+        <div class="avatar">9</div>
+        <div class="body">
+          <div class="head"><span class="who">用户-9714</span><span class="me">本机</span><time>20:12</time></div>
+          <div class="bubble">把项目文档整理到共享目录了。</div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar" style="background:#4a90d9">M</div>
+        <div class="body">
+          <div class="head"><span class="who">macOS-3b7d <small style="color:var(--muted)">· MacBook Pro</small></span><time>20:30</time></div>
+          <div class="card audio">
+            <div class="ap">
+              <button class="play">▶</button>
+              <div class="wave"><i style="height:15%"></i><i style="height:32%"></i><i style="height:55%"></i><i style="height:40%"></i><i style="height:72%"></i><i style="height:58%"></i><i style="height:85%"></i><i style="height:48%"></i><i style="height:66%"></i><i style="height:30%"></i></div>
+            </div>
+            <div class="mm"><span class="name">会议录音.m4a</span><span class="size">3:42 · 2.1 MB</span></div>
+            <div class="ops"><button class="btn" onclick="openViewer('audio')">下载</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="msg from-me">
+        <div class="avatar">9</div>
+        <div class="body">
+          <div class="head"><span class="who">用户-9714</span><span class="me">本机</span><time>21:00</time></div>
+          <div class="card">
+            <div class="file" onclick="openViewer('file')">
+              <div class="ic"><svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg></div>
+              <div class="meta">
+                <div class="name">数据库备份.db</div>
+                <div class="sub">156.0 MB · 数据库</div>
+              </div>
+            </div>
+            <div class="ops"><button class="btn" onclick="openViewer('file')">下载</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar" style="background:#137a7f">A</div>
+        <div class="body">
+          <div class="head"><span class="who">Android-9c1e <small style="color:var(--muted)">· Pixel 8</small></span><time>21:15</time></div>
+          <div class="card img">
+            <div class="thumb" onclick="openViewer('img')">
+              <div class="ovl">
+                <div class="mm"><span class="name">IMG_20260804_211500.jpg</span><span class="size">3.6 MB</span></div>
+                <div class="ops"><button class="btn">下载</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="msg from-me">
+        <div class="avatar">9</div>
+        <div class="body">
+          <div class="head"><span class="who">用户-9714</span><span class="me">本机</span><time>21:40</time></div>
+          <div class="bubble">今晚早点休息。</div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar" style="background:#4a90d9">M</div>
+        <div class="body">
+          <div class="head"><span class="who">macOS-3b7d <small style="color:var(--muted)">· MacBook Pro</small></span><time>22:00</time></div>
+          <div class="card">
+            <div class="file" onclick="openViewer('file')">
+              <div class="ic"><svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg></div>
+              <div class="meta">
+                <div class="name">会议纪要.docx</div>
+                <div class="sub">24 KB · 文档</div>
+              </div>
+            </div>
+            <div class="ops"><button class="btn" onclick="openViewer('file')">下载</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="msg from-me">
+        <div class="avatar">9</div>
+        <div class="body">
+          <div class="head"><span class="who">用户-9714</span><span class="me">本机</span><time>22:20</time></div>
+          <div class="bubble">好的，明天见。</div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar" style="background:#137a7f">A</div>
+        <div class="body">
+          <div class="head"><span class="who">Android-9c1e <small style="color:var(--muted)">· Pixel 8</small></span><time>22:50</time></div>
+          <div class="bubble">晚安 🌙</div>
+        </div>
+      </div>
+
+      <div class="day">08/02 · 周日</div>
+      <div class="msg from-me">
+        <div class="avatar">9</div>
+        <div class="body">
+          <div class="head"><span class="who">用户-9714</span><span class="me">本机</span><time>15:20</time></div>
+          <div class="bubble">周末整理一下硬盘里的旧文件。</div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar" style="background:#4a90d9">M</div>
+        <div class="body">
+          <div class="head"><span class="who">macOS-3b7d <small style="color:var(--muted)">· MacBook Pro</small></span><time>16:05</time></div>
+          <div class="card">
+            <div class="file" onclick="openViewer('file')">
+              <div class="ic"><svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg></div>
+              <div class="meta">
+                <div class="name">年度计划.pptx</div>
+                <div class="sub">8.8 MB · 演示文稿</div>
+              </div>
+            </div>
+            <div class="ops"><button class="btn" onclick="openViewer('file')">下载</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="day">08/01 · 周六</div>
+      <div class="msg">
+        <div class="avatar" style="background:#137a7f">A</div>
+        <div class="body">
+          <div class="head"><span class="who">Android-9c1e <small style="color:var(--muted)">· Pixel 8</small></span><time>10:00</time></div>
+          <div class="bubble">早，今天把相册里的图备份一下。</div>
+        </div>
+      </div>
+      <div class="msg from-me">
+        <div class="avatar">9</div>
+        <div class="body">
+          <div class="head"><span class="who">用户-9714</span><span class="me">本机</span><time>10:30</time></div>
+          <div class="card img">
+            <div class="thumb" onclick="openViewer('img')">
+              <div class="ovl">
+                <div class="mm"><span class="name">wallpaper-4k-miku.png</span><span class="size">8.2 MB</span></div>
+                <div class="ops"><button class="btn">下载</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="day">07/30</div>
+      <div class="msg from-me">
+        <div class="avatar">9</div>
+        <div class="body">
+          <div class="head"><span class="who">用户-9714</span><span class="me">本机</span><time>19:00</time></div>
+          <div class="bubble">旧的日志文件已经清理。</div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar" style="background:#4a90d9">M</div>
+        <div class="body">
+          <div class="head"><span class="who">macOS-3b7d <small style="color:var(--muted)">· MacBook Pro</small></span><time>19:20</time></div>
+          <div class="card">
+            <div class="file" onclick="openViewer('file')">
+              <div class="ic"><svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg></div>
+              <div class="meta">
+                <div class="name">源码包-v6.0.tar.gz</div>
+                <div class="sub">2.3 GB · 压缩包</div>
+              </div>
+            </div>
+            <div class="ops"><button class="btn" onclick="openViewer('file')">下载</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar" style="background:#137a7f">A</div>
+        <div class="body">
+          <div class="head"><span class="who">Android-9c1e <small style="color:var(--muted)">· Pixel 8</small></span><time>19:45</time></div>
+          <div class="bubble">收到，辛苦了。</div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- ================= 底部输入条 ================= -->
+  <footer class="composer">
+    <div class="composer-inner">
+      <button class="addbtn" id="btnAdd">
+        <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+      </button>
+      <input id="textInput" placeholder="输入文本…" />
+      <!-- 代码模式切换按钮：压在输入框右上角之上 -->
+      <button class="bracebtn" id="btnBrace" title="代码模式">&#123;&#125;</button>
+      <!-- 发送按钮：与输入框并列 -->
+      <button class="sendbtn" id="btnSend">
+        <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12 3.27 3.5l17.227 8.5L3.27 20.5 6 12Zm0 0h6"/></svg>
+      </button>
+    </div>
+
+    <!-- 代码编辑模式（开启后输入行下方放大展开代码输入框） -->
+    <div class="code-editor" id="codeEditor">
+      <div class="ce-top">
+        <label>语言</label>
+        <select id="codeLang">
+          <option value="ts">TypeScript</option>
+          <option value="js">JavaScript</option>
+          <option value="python">Python</option>
+          <option value="ini">INI / Config</option>
+          <option value="bat">Batch (.bat)</option>
+          <option value="json">JSON</option>
+          <option value="sql">SQL</option>
+          <option value="html">HTML</option>
+          <option value="css">CSS</option>
+        </select>
+      </div>
+      <textarea id="codeInput" placeholder="在此输入代码…（One Dark 风格，发送后高亮显示）"></textarea>
+    </div>
+  </footer>
+
+  <!-- ================= 附件面板 Sheet ================= -->
+  <div class="sheet" id="sheetAttach">
+    <div class="handle"></div>
+    <div class="stitle">发送内容</div>
+    <div class="attach-grid">
+      <button class="att" onclick="flash('（原型）打开相册')"><span class="ai">🖼</span>相册</button>
+      <button class="att" onclick="flash('（原型）打开相机')"><span class="ai">📷</span>拍照</button>
+      <button class="att" onclick="openProgress()"><span class="ai">📁</span>文件</button>
+    </div>
+  </div>
+
+  <!-- ================= 上传进度 Sheet ================= -->
+  <div class="sheet" id="sheetProgress">
+    <div class="handle"></div>
+    <div class="stitle">上传进度 · 分片 / 断点续传</div>
+    <div class="qlist">
+      <div class="qitem">
+        <div class="qname">大视频文件.mp4 <small>2.4 GB · 分片 37/64</small></div>
+        <div class="qbar"><i id="barA" style="width:58%"></i></div>
+        <div class="qmeta"><span id="metaA">58% · 3.2 MB/s</span><span>剩余 6 分 12 秒</span></div>
+        <div class="qactions">
+          <button class="mini" id="btnPause">⏸ 暂停</button>
+          <button class="mini">✕ 取消</button>
+        </div>
+      </div>
+      <div class="qitem">
+        <div class="qname">项目截图.png <small>1.2 MB</small></div>
+        <div class="qbar"><i style="width:100%"></i></div>
+        <div class="qmeta"><span>100% · 已上传</span><span>同步中…</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 设置 Sheet ================= -->
+  <div class="sheet" id="sheetSettings">
+    <div class="handle"></div>
+    <div class="stitle">设置</div>
+    <div class="qlist">
+      <!-- 连接 -->
+      <div class="qitem">
+        <div style="font-size:12px;margin-bottom:8px;font-weight:700">连接</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span style="width:9px;height:9px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 3px var(--accent)"></span>
+          <b style="color:var(--primary)">已连接</b>
+          <span style="font-size:11px;color:var(--muted)">局域网</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.8">
+          HTTP：<code style="background:var(--surface-2);padding:1px 6px;border-radius:4px;color:var(--primary)">http://192.168.1.8:4100</code><br />
+          WebSocket：<code style="background:var(--surface-2);padding:1px 6px;border-radius:4px;color:var(--primary)">ws://192.168.1.8:4200</code>
+        </div>
+      </div>
+      <!-- 昵称 -->
+      <p style="font-size:12px;color:var(--muted);margin:0 0 10px">默认昵称 <strong>用户-XXXX</strong>（四位数字），按<strong>设备指纹</strong>自动生成，可在此修改（仅本机保存）。</p>
+      <div class="qitem">
+        <div style="font-size:12px;margin-bottom:8px">我的昵称</div>
+        <input id="devNameInput" style="width:100%;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--ink);font-family:var(--mono);font-size:14px;outline:none" />
+      </div>
+      <div class="qitem">
+        <div style="font-size:12px;color:var(--muted)">设备指纹（仅本地生成稳定 ID，不上传原始信息）</div>
+        <code id="devFp" style="display:inline-block;margin-top:6px;padding:4px 8px;background:var(--surface-2);border-radius:6px;color:var(--primary)"></code>
+      </div>
+      <!-- 关于 -->
+      <div class="qitem" style="margin-top:6px">
+        <div style="font-size:12px;margin-bottom:8px;font-weight:700">关于</div>
+        <a class="mini" href="https://github.com/NoRainLand/filesyncEX" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;gap:6px;text-decoration:none;color:var(--primary)">↗ 前往项目主页 GitHub</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 二维码 Sheet ================= -->
+  <div class="sheet" id="sheetQr">
+    <div class="handle"></div>
+    <div class="stitle">扫码连接</div>
+    <div class="qlist">
+      <div id="qrBox" style="width:180px;height:180px;margin:0 auto 12px;background:#fff;border-radius:8px;padding:10px;box-sizing:border-box"></div>
+      <p style="text-align:center;font-size:12px;color:var(--muted);margin:0 0 16px">http://192.168.1.8:4100 · 用手机扫码即可加入同步</p>
+    </div>
+  </div>
+
+  <!-- Sheet 遮罩：点击面板上方空白直接关闭，事件不传递到下方消息 -->
+  <div class="sheet-mask" id="sheetMask"></div>
+
+  <!-- ================= 全屏预览 ================= -->
+  <div class="viewer" id="viewer">
+    <div class="vtop"><span id="vTitle">预览</span><button class="close" onclick="closeViewer()">✕</button></div>
+    <div class="vbody" id="vBody"></div>
+    <div class="vfoot">
+      <button class="btn" onclick="closeViewer()">下载</button>
+      <button class="btn pink" id="vDel" type="button">删除</button>
+    </div>
+    <!-- 预览内删除确认窗 -->
+    <div class="vdel" id="vDelBox">
+      <div class="vdel-card">
+        <div class="vdel-text">删除这条消息？</div>
+        <div class="vdel-ops">
+          <button class="btn cancel" id="vDelCancel" type="button">取消</button>
+          <button class="btn del" id="vDelOk" type="button">删除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 长按删除确认气泡 -->
+  <div class="del-bubble" id="delBubble">
+    <div class="db-text">删除这条消息？</div>
+    <div class="db-ops">
+      <button class="btn cancel" id="dbCancel" type="button">取消</button>
+      <button class="btn del" id="dbDel" type="button">删除</button>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="tips" class="hidden" style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:10px;font-size:13px;z-index:500;box-shadow:var(--shadow);max-width:82vw;text-align:center"></div>
+
+<script>
+  const $ = s => document.querySelector(s);
+  const sheet = id => document.getElementById(id);
+
+  /* ===== 连接状态指示灯（logo 前圆点） =====
+   * setConnStatus(status): connected(绿·已连接) / connecting(黄·连接中) / disconnected(红·断开)
+   * 可在控制台调用 window.setConnStatus('disconnected') 模拟断开 */
+  function setConnStatus(status){
+    const dot = document.querySelector(".logo .dot");
+    if (!dot) return;
+    dot.classList.remove("connected", "connecting", "disconnected");
+    if (status) dot.classList.add(status);
+  }
+  // 演示：模拟启动 → 正在连接(黄) → 已连接(绿)
+  setConnStatus("connecting");
+  setTimeout(() => setConnStatus("connected"), 1500);
+
+  /* 主题 */
+  $("#btnTheme").addEventListener("click", () => {
+    const cur = document.documentElement.dataset.theme;
+    document.documentElement.dataset.theme = cur === "light" ? "dark" : "light";
+  });
+  /* 二维码：从底部划出二维码面板 */
+  $("#btnQr").addEventListener("click", () => {
+    sheet("sheetAttach").classList.remove("open");
+    sheet("sheetProgress").classList.remove("open");
+    sheet("sheetSettings").classList.remove("open");
+    sheet("sheetQr").classList.add("open");
+    syncSheetMask();
+  });
+  /* 程序化生成仿二维码 SVG（三个定位角 + 时序线 + 确定性伪随机数据点） */
+  function fillQr(){
+    const N = 21;
+    const g = Array.from({length:N}, () => Array(N).fill(false));
+    const finder = (cx, cy) => {
+      for (let dy=-3; dy<=3; dy++) for (let dx=-3; dx<=3; dx++) {
+        const d = Math.max(Math.abs(dx), Math.abs(dy));
+        g[cy+dy][cx+dx] = d !== 2;
+      }
+    };
+    finder(3,3); finder(N-4,3); finder(3,N-4);
+    for (let i=8; i<N-8; i++){ g[6][i] = (i%2===0); g[i][6] = (i%2===0); }
+    let s = 0x9e3779b9;
+    const rnd = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
+    for (let y=0; y<N; y++) for (let x=0; x<N; x++) if (g[y][x] === false) g[y][x] = rnd() > 0.5;
+    let rects = "";
+    for (let y=0; y<N; y++) for (let x=0; x<N; x++) if (g[y][x]) rects += `<rect x="${x}" y="${y}" width="1" height="1" fill="#1a1a1a"/>`;
+    const el = $("#qrBox");
+    if (el) el.innerHTML = `<svg viewBox="0 0 ${N} ${N}" style="width:100%;height:100%" shape-rendering="crispEdges">${rects}</svg>`;
+  }
+  fillQr();
+
+  /* 附件面板 */
+  $("#btnAdd").addEventListener("click", () => { sheet("sheetAttach").classList.add("open"); sheet("sheetProgress").classList.remove("open"); syncSheetMask(); });
+
+  /* 上传进度 */
+  function openProgress(){ sheet("sheetAttach").classList.remove("open"); sheet("sheetProgress").classList.add("open"); syncSheetMask(); }
+  let progress = 58;
+  const timer = setInterval(() => {
+    progress = Math.min(progress + 1, 99);
+    $("#barA").style.width = progress + "%";
+    $("#metaA").textContent = progress + "% · 3.2 MB/s";
+  }, 350);
+  $("#btnPause").addEventListener("click", function(){ this.textContent = this.textContent.startsWith("⏸") ? "▶ 继续" : "⏸ 暂停"; });
+
+  /* 发送 */
+  $("#btnSend").addEventListener("click", send);
+  $("#textInput").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+  function send(){
+    const codeMode = $("#codeEditor").classList.contains("open");
+    if (codeMode){
+      const code = $("#codeInput").value;
+      const lang = $("#codeLang").value;
+      if (!code.trim()){ flash("请输入代码内容"); return; }
+      $("#codeInput").value = "";
+      flash("（原型）代码已发送：" + lang);
+      return;
+    }
+    const v = $("#textInput").value.trim(); if(!v) return;
+    $("#textInput").value = ""; flash("（原型）文本已发送：" + v.slice(0, 16));
+  }
+  /* 花括号按钮：切换代码编辑器 */
+  $("#btnBrace").addEventListener("click", () => {
+    const editor = $("#codeEditor");
+    const open = !editor.classList.contains("open");
+    editor.classList.toggle("open", open);
+    $("#btnBrace").classList.toggle("on", open);
+    // 开启代码模式：隐藏附件(文件上传)按钮 + 文本输入框，仅保留 花括号(退出开关) + 发送
+    document.querySelector(".composer").classList.toggle("code-mode", open);
+    if (open) setTimeout(() => $("#codeInput").focus(), 50);
+    else $("#textInput").focus();
+  });
+
+  /* ===== 图片查看器手势：双指缩放 / 单指平移 / 双击复位 / 点击空白关闭 ===== */
+  let pvImg = null, pvScale = 1, pvTx = 0, pvTy = 0, pvGesture = null;
+  function pvApply(){ if (pvImg) pvImg.style.transform = "translate(" + pvTx + "px," + pvTy + "px) scale(" + pvScale + ")"; }
+  function pvReset(){ pvScale = 1; pvTx = 0; pvTy = 0; pvGesture = null; pvApply(); }
+  function pvDist(t){ return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY); }
+
+  function openViewer(kind, opt){
+    // 全屏预览期间锁定消息列表滚动，屏蔽滚轮穿透到下层
+    document.querySelector("main").style.overflow = "hidden";
+    const body = $("#vBody");
+    // 底部左下角按钮：默认「下载」，代码预览时改为「复制」
+    const footBtn = document.querySelector(".viewer .vfoot .btn");
+    footBtn.textContent = "下载";
+    footBtn.onclick = closeViewer;
+    $("#vDelBox").classList.remove("open"); // 重置预览内删除确认窗
+    if(kind === "img"){
+      $("#vTitle").textContent = "图片预览";
+      body.innerHTML = '<img class="ph" id="pvImg" src="data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#047878"/><stop offset="1" stop-color="#86cecb"/></linearGradient></defs><rect width="640" height="360" fill="url(#g)"/><text x="320" y="186" font-size="22" fill="#fff" text-anchor="middle" font-family="sans-serif">图片预览占位（可双指缩放）</text></svg>') + '">';
+      pvImg = document.getElementById("pvImg");
+      pvReset();
+      pvImg.addEventListener("dblclick", () => {
+        if (pvScale > 1) { pvReset(); } else { pvScale = 2; pvApply(); }
+      });
+      pvImg.addEventListener("touchstart", (e) => {
+        e.preventDefault();
+        if (e.touches.length === 2) {
+          pvGesture = { type: "pinch", d0: pvDist(e.touches), s0: pvScale };
+        } else if (e.touches.length === 1) {
+          pvGesture = { type: "pan", x: e.touches[0].clientX, y: e.touches[0].clientY };
+        }
+      }, { passive: false });
+      pvImg.addEventListener("touchmove", (e) => {
+        e.preventDefault();
+        if (!pvGesture) return;
+        if (e.touches.length === 2 && pvGesture.type === "pinch") {
+          const d = pvDist(e.touches);
+          pvScale = Math.min(5, Math.max(1, pvGesture.s0 * d / pvGesture.d0));
+          pvApply();
+        } else if (e.touches.length === 1 && pvGesture.type === "pan") {
+          pvTx += e.touches[0].clientX - pvGesture.x;
+          pvTy += e.touches[0].clientY - pvGesture.y;
+          pvGesture.x = e.touches[0].clientX;
+          pvGesture.y = e.touches[0].clientY;
+          pvApply();
+        }
+      }, { passive: false });
+      pvImg.addEventListener("touchend", (e) => {
+        if (e.touches.length === 0) {
+          if (pvScale <= 1) pvReset();
+          pvGesture = null;
+        } else if (e.touches.length < 2 && pvGesture && pvGesture.type === "pinch") {
+          pvGesture = null;
+        }
+      });
+    } else if(kind === "audio"){
+      $("#vTitle").textContent = "音频播放";
+      body.innerHTML = '<div class="wave" style="width:300px;height:60px"><i style="height:25%"></i><i style="height:55%"></i><i style="height:80%"></i><i style="height:40%"></i><i style="height:70%"></i><i style="height:90%"></i><i style="height:50%"></i><i style="height:30%"></i></div><p style="font-size:12px;color:#aaa">会议录音.m4a · 3:42</p>';
+    } else if(kind === "video"){
+      $("#vTitle").textContent = "视频播放";
+      body.innerHTML = '<video class="ph" id="pvVideo" controls src="data:video/mp4;base64," style="background:#000"></video>';
+    } else if(kind === "code"){
+      $("#vTitle").textContent = "代码预览";
+      const code = (opt && opt.code) || "";
+      const lang = (opt && opt.lang) || "ts";
+      body.innerHTML = '<div class="codeview"><pre><code>' + highlightCode(code, lang) + '</code></pre></div>';
+      footBtn.textContent = "复制";
+      footBtn.onclick = () => {
+        (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject())
+          .then(() => flash("代码已复制"))
+          .catch(() => flash("复制失败，请手动选择复制"));
+      };
+    } else {
+      $("#vTitle").textContent = "文件信息";
+      body.innerHTML = '<p style="font-size:13px">deploy-script.sh</p><p style="font-size:12px;color:#aaa">12.4 KB · MD5 a3f2…9c1e</p>';
+    }
+    sheet("viewer").classList.add("open");
+  }
+  function closeViewer(){
+    sheet("viewer").classList.remove("open");
+    document.querySelector("main").style.overflow = "";
+    pvReset();
+    pvImg = null;
+  }
+  /* 全屏预览：屏蔽滚轮滚动下层 */
+  sheet("viewer").addEventListener("wheel", e => e.preventDefault(), { passive: false });
+  /* 点击代码块/内容之外的空白区域关闭预览（代码块内部点击不关闭） */
+  $("#vBody").addEventListener("click", (e) => {
+    if (e.target === $("#vBody")) closeViewer();
+  });
+
+  /* 关闭全部 sheet 并同步遮罩 */
+  function closeSheets(){
+    sheet("sheetAttach").classList.remove("open");
+    sheet("sheetProgress").classList.remove("open");
+    sheet("sheetSettings").classList.remove("open");
+    sheet("sheetQr").classList.remove("open");
+    syncSheetMask();
+  }
+  /* 有任一 sheet 打开时显示遮罩 */
+  function syncSheetMask(){
+    const anyOpen = document.querySelectorAll(".sheet.open").length > 0;
+    $("#sheetMask").classList.toggle("show", anyOpen);
+  }
+  /* 点击遮罩（面板上方空白）关闭，事件不会传递到下方消息 */
+  $("#sheetMask").addEventListener("click", closeSheets);
+  /* Sheet 滚轮屏蔽：滚动到边界时不穿透到下方主界面 */
+  document.querySelectorAll(".sheet").forEach(s => {
+    s.addEventListener("wheel", e => {
+      const delta = e.deltaY;
+      const canDown = s.scrollTop + s.clientHeight < s.scrollHeight - 1;
+      const canUp = s.scrollTop > 1;
+      if ((delta > 0 && !canDown) || (delta < 0 && !canUp)) e.preventDefault();
+    }, { passive: false });
+  });
+  /* 点空白关闭 sheet */
+  document.body.addEventListener("click", e => {
+    if (!e.target.closest(".sheet") && !e.target.closest("#btnAdd") && !e.target.closest("#btnQr") && !e.target.closest(".sendbtn") && !e.target.closest("#deviceChip") && !e.target.closest(".logo")) {
+      closeSheets();
+    }
+  });
+
+  let tipTimer;
+  function flash(t){
+    const el = $("#tips"); el.textContent = t; el.classList.remove("hidden");
+    clearTimeout(tipTimer); tipTimer = setTimeout(() => el.classList.add("hidden"), 1800);
+  }
+
+  /* 复制图片到剪贴板（图片预览的复制按钮用） */
+  function copyImageFromSrc(src){
+    fetch(src)
+      .then(r => r.blob())
+      .then(blob => navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]))
+      .then(() => flash("图片已复制到剪贴板"))
+      .catch(() => flash("图片已复制（浏览器限制，正式版接入真实剪贴板）"));
+  }
+
+  /* 已按需求移除文本消息的复制按钮 */
+
+  /* 图片消息卡片：左下角按钮 = 下载 */
+  document.querySelectorAll(".card.img .ops .btn").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      flash("（原型）已开始下载图片");
+    });
+  });
+  /* 视频消息卡片：左下角按钮 = 下载 */
+  document.querySelectorAll(".card.video .ovl .ops .btn").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      flash("（原型）已开始下载视频");
+    });
+  });
+
+  /* 文字消息：点击直接复制 */
+  document.querySelectorAll(".msg .bubble").forEach(bubble => {
+    bubble.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const text = bubble.textContent.trim();
+      (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
+        .then(() => flash("已复制到剪贴板"))
+        .catch(() => flash("复制失败，请手动选择复制"));
+    });
+  });
+
+  /* ===== One Dark 语法高亮器（轻量正则版，支持 ts/js/python/ini/bat/json/sql/html/css） ===== */
+  const HIGHLIGHT_LANGS = {
+    ts: /(\/\*[\s\S]*?\*\/|\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|\b(\d+(?:\.\d+)?)\b|\b(interface|type|enum|class|function|const|let|var|return|if|else|for|while|switch|case|break|continue|new|extends|implements|import|export|from|async|await|public|private|protected|readonly|static|this|super|typeof|instanceof|in|of|void|never|unknown|any|string|number|boolean|null|undefined)\b|\b([A-Za-z_$][\w$]*)(?=\s*\()/gm,
+    js: /(\/\*[\s\S]*?\*\/|\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|\b(\d+(?:\.\d+)?)\b|\b(const|let|var|function|return|if|else|for|while|switch|case|break|continue|new|class|extends|import|export|from|async|await|typeof|instanceof|in|of|null|undefined|this|super|try|catch|finally|throw)\b|\b([A-Za-z_$][\w$]*)(?=\s*\()/gm,
+    python: /(#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|"""(?:[^"\\]|\\.)*"""|'''(?:[^'\\]|\\.)*''')|\b(\d+(?:\.\d+)?)\b|\b(def|class|return|if|elif|else|for|while|in|not|and|or|import|from|as|with|try|except|finally|raise|pass|break|continue|lambda|yield|global|nonlocal|None|True|False|async|await|print|len|range|type|is)\b|\b([A-Za-z_]\w*)(?=\s*\()/gm,
+    ini: /(^[#;].*$)|(\[[^\]]*\])|(^[ \t]*[A-Za-z0-9_.-]+(?=[ \t]*=))/gm,
+    bat: /(^::.*$|^[ \t]*@?echo[ \t].*$)|(%[^%]+%|"[^"]*")|(^[ \t]*@?[A-Za-z][A-Za-z0-9]*\b)/gm,
+    json: /("[^"\\]*(?:\\.[^"\\]*)*")(?=\s*:)|("[^"\\]*(?:\\.[^"\\]*)*")|\b(true|false|null)\b|\b(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/gm,
+    sql: /(--.*$|\/\*[\s\S]*?\*\/)|('(?:[^'\\]|\\.)*')|\b(\d+(?:\.\d+)?)\b|\b(SELECT|FROM|WHERE|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|DROP|ALTER|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AND|OR|NOT|NULL|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|AS|DISTINCT|PRIMARY|KEY|FOREIGN|REFERENCES|UNIQUE|INDEX|IF|EXISTS|CASE|WHEN|THEN|ELSE|END|BEGIN|COMMIT|ROLLBACK|TRANSACTION|INT|VARCHAR|TEXT|BOOL|DATE|DATETIME|INTEGER|PRIMARY)\b/gmi,
+    html: /(&lt;!--[\s\S]*?--&gt;)|(&lt;\/?[a-zA-Z][\w-]*)|(&lt;[a-zA-Z][\w-]*(?=[\s\/&gt;]))|(&gt;|&lt;\/|&lt;)|("[^"]*"|'[^']*')|(\b[a-zA-Z-]+(?==))/gm,
+    css: /(\/\*[\s\S]*?\*\/)|(#[0-9a-fA-F]{3,8}\b|\b[a-zA-Z-]+(?=\s*:))|(\b\d+(?:\.\d+)?(?:px|em|rem|%|vh|vw|s|ms)?\b)|(\.[a-zA-Z-][\w-]*|#[a-zA-Z-][\w-]*|:[a-zA-Z-]+|\*|\b[a-zA-Z-]+(?=\s*\{))/gm
+  };
+  const HIGHLIGHT_GROUPS = {
+    ts: ["com", "str", "num", "kw", "fn"],
+    js: ["com", "str", "num", "kw", "fn"],
+    python: ["com", "str", "num", "kw", "fn"],
+    ini: ["com", "sec", "key"],
+    bat: ["com", "str", "kw"],
+    json: ["key", "str", "kw", "num"],
+    sql: ["com", "str", "num", "kw"],
+    html: ["com", "tag", "tag", "op", "str", "attr"],
+    css: ["com", "prop", "num", "sel"]
+  };
+  const TOKEN_CLASS = { com:"tok-com", str:"tok-str", num:"tok-num", kw:"tok-kw", fn:"tok-fn", sec:"tok-typ", key:"tok-prop", tag:"tok-var", op:"tok-op", attr:"tok-attr", sel:"tok-typ", prop:"tok-prop" };
+  function highlightCode(code, lang){
+    const re = HIGHLIGHT_LANGS[lang] || HIGHLIGHT_LANGS.ts;
+    const groups = HIGHLIGHT_GROUPS[lang] || HIGHLIGHT_GROUPS.ts;
+    let html = "", last = 0;
+    let m;
+    while ((m = re.exec(code))){
+      if (m.index > last) html += esc(code.slice(last, m.index));
+      let cls = null;
+      for (let g = 1; g < m.length; g++){
+        if (m[g] !== undefined){
+          const name = groups[g-1];
+          cls = TOKEN_CLASS[name] || null;
+          break;
+        }
+      }
+      if (cls) html += `<span class="${cls}">${esc(m[0])}</span>`;
+      else html += esc(m[0]);
+      last = re.lastIndex;
+    }
+    if (last < code.length) html += esc(code.slice(last));
+    return html;
+  }
+  function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+  /* 对页面中已有的 .card.code 卡片做 One Dark 高亮渲染（示例消息） */
+  document.querySelectorAll(".card.code").forEach(card => {
+    const lang = card.getAttribute("data-lang") || "ts";
+    const body = card.querySelector(".code-body");
+    if (!body) return;
+    const code = body.textContent;
+    body.innerHTML = "<pre><code>" + highlightCode(code, lang) + "</code></pre>";
+  });
+  /* 代码消息：底部覆盖层（左下角复制按钮）+ 点击卡片全屏预览 */
+  document.querySelectorAll(".card.code").forEach(card => {
+    const lang = card.getAttribute("data-lang") || "ts";
+    const ovl = document.createElement("div");
+    ovl.className = "code-ovl";
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "btn";
+    copyBtn.textContent = "复制";
+    copyBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const code = card.querySelector(".code-body").textContent;
+      (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject())
+        .then(() => flash("代码已复制"))
+        .catch(() => flash("复制失败，请手动选择复制"));
+    });
+    ovl.appendChild(copyBtn);
+    card.appendChild(ovl);
+    card.addEventListener("click", () => {
+      const code = card.querySelector(".code-body").textContent;
+      openViewer("code", { code, lang });
+    });
+  });
+  /* 已按需求移除代码消息的复制按钮 */
+
+  /* 消息时间格式化：补全年月日 + 时分秒（依据前面的 .day 分组日期） */
+  (function formatTimes(){
+    function parseDay(txt){
+      const m = txt.match(/(\d{4}\/)?(\d{1,2})\/(\d{1,2})/);
+      if (!m) return null;
+      const year = m[1] ? +m[1].slice(0,4) : 2026;
+      return { y: year, mo: +m[2], d: +m[3] };
+    }
+    const pad = n => String(n).padStart(2, "0");
+    let cur = null, idx = 0;
+    document.querySelectorAll(".list > *").forEach(el => {
+      if (el.classList.contains("day")){
+        const p = parseDay(el.textContent);
+        if (p) cur = p;
+        return;
+      }
+      const time = el.querySelector(".head time");
+      if (!time) return;
+      let t = time.textContent.trim();
+      let dayShift = 0;
+      if (/昨天/.test(t)){ dayShift = -1; t = t.replace(/昨天\s*/, ""); }
+      const tm = t.match(/(\d{1,2}):(\d{2})/);
+      if (!tm) return;
+      const base = cur || { y:2026, mo:8, d:5 };
+      const dt = new Date(base.y, base.mo-1, base.d + dayShift, +tm[1], +tm[2]);
+      const sec = (idx * 37 + 11) % 60;
+      dt.setSeconds(sec);
+      time.textContent = `${dt.getFullYear()}/${pad(dt.getMonth()+1)}/${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+      idx++;
+    });
+  })();
+
+  /* 生成模拟真实音频的波形：中间密集高振幅，两侧渐低，相邻平滑 */
+  (function renderWaveforms(){
+    document.querySelectorAll(".card.audio .wave").forEach(wave => {
+      if (wave.dataset.rendered) return;
+      wave.dataset.rendered = "1";
+      const N = 60; // 柱条数量
+      const heights = [];
+      const envelope = t => 0.12 + 0.88 * Math.exp(-Math.pow((t - 0.55) / 0.22, 2));
+      let prev = 0;
+      for (let i = 0; i < N; i++) {
+        const t = i / (N - 1);
+        const env = envelope(t);
+        const r = (Math.sin(i * 12.9898) * 43758.5453) % 1;
+        const noise = Math.abs(r - 0.5) * 0.9;
+        const smooth = 0.3 * noise + 0.7 * prev;
+        prev = smooth;
+        const h = Math.max(5, Math.min(100, env * (40 + smooth * 60)));
+        heights.push(h);
+      }
+      // 重建柱条（进度通过 .played 类变灰表示）+ 细黑指示竖线
+      wave.innerHTML = heights.map(h => `<i style="height:${h.toFixed(1)}%"></i>`).join("") + '<div class="ind"></div>';
+    });
+  })();
+
+  /* ===== 音频播放：点播放按钮播放/暂停，拖动波形选进度 ===== */
+  (function initAudio(){
+    const cards = document.querySelectorAll(".card.audio");
+    if (!cards.length) return;
+    let actx = null, srcBuf = null;
+    function ensureCtx(){
+      if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+      return actx;
+    }
+    function makeBuffer(ctx, seconds){
+      const sr = ctx.sampleRate, n = Math.floor(sr * seconds);
+      const buf = ctx.createBuffer(1, n, sr);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < n; i++){
+        const t = i / sr;
+        const tone = Math.sin(2*Math.PI*220*t) * (0.5 + 0.5*Math.sin(2*Math.PI*2*t));
+        const fade = Math.min(1, t/0.2) * Math.min(1, (seconds-t)/0.5);
+        d[i] = (tone * 0.4 + (Math.random()*2-1)*0.12) * fade;
+      }
+      return buf;
+    }
+    const DUR = 30;
+    const state = { playing:false, offset:0, srcNode:null, startCtx:0, card:null, timer:null };
+
+    // 已播放的波形柱条变灰（前 pct% 的柱条）+ 细黑指示竖线跟随
+    function paintProgress(card, pct){
+      const wave = card.querySelector(".wave");
+      if (!wave) return;
+      const bars = wave.querySelectorAll("i");
+      const n = Math.round(bars.length * Math.max(0, Math.min(100, pct)) / 100);
+      bars.forEach((b, i) => b.classList.toggle("played", i < n));
+      const ind = wave.querySelector(".ind");
+      if (ind){
+        ind.style.left = Math.max(0, Math.min(100, pct)) + "%";
+        // 未播放（进度 0）隐藏指示线，有进度后显示
+        ind.style.opacity = pct > 0 ? "0.85" : "0";
+      }
+    }
+
+    function stopAudio(finished){
+      if (state.srcNode){ try{ state.srcNode.stop(); }catch(e){} state.srcNode = null; }
+      if (state.timer){ clearInterval(state.timer); state.timer = null; }
+      if (state.card){
+        const btn = state.card.querySelector(".play");
+        if (btn) btn.textContent = "▶";
+        state.card.classList.remove("playing");
+        if (finished){ state.offset = 0; paintProgress(state.card, 0); }
+      }
+      state.playing = false;
+      state.card = null;
+    }
+
+    function updateProgress(){
+      if (!state.card || !state.playing) return;
+      const el = (actx.currentTime - state.startCtx) + state.offset;
+      const pct = Math.min(100, el / DUR * 100);
+      state.offset = el; // 记录暂停位置
+      paintProgress(state.card, pct);
+      if (el >= DUR) stopAudio(true);
+    }
+
+    function playCard(card){
+      stopAudio();
+      const ctx = ensureCtx();
+      if (!srcBuf) srcBuf = makeBuffer(ctx, DUR);
+      const src = ctx.createBufferSource();
+      src.buffer = srcBuf;
+      src.connect(ctx.destination);
+      src.start(0, state.offset % DUR);
+      state.srcNode = src;
+      state.playing = true;
+      state.card = card;
+      state.startCtx = ctx.currentTime;
+      const btn = card.querySelector(".play");
+      if (btn) btn.textContent = "⏸";
+      card.classList.add("playing");
+      paintProgress(card, state.offset / DUR * 100);
+      state.timer = setInterval(updateProgress, 100);
+    }
+
+    function seek(card, pct){
+      state.offset = Math.min(DUR-0.1, pct/100 * DUR);
+      paintProgress(card, pct);
+      if (state.playing && state.card === card){
+        playCard(card);
+      }
+    }
+
+    cards.forEach(card => {
+      const wave = card.querySelector(".wave");
+      const btn = card.querySelector(".play");
+      if (btn){
+        btn.addEventListener("click", e => {
+          e.stopPropagation();
+          if (state.playing && state.card === card){ stopAudio(); }
+          else playCard(card);
+        });
+      }
+      let dragging = false;
+      const seekFromEvent = e => {
+        const r = wave.getBoundingClientRect();
+        const x = (e.clientX - r.left) / r.width;
+        seek(card, Math.max(0, Math.min(100, x*100)));
+      };
+      wave.addEventListener("mousedown", e => { dragging = true; seekFromEvent(e); e.preventDefault(); });
+      window.addEventListener("mousemove", e => { if (dragging) seekFromEvent(e); });
+      window.addEventListener("mouseup", () => { dragging = false; });
+      wave.addEventListener("touchstart", e => { dragging = true; seekFromEvent(e.touches[0]); }, { passive:true });
+      wave.addEventListener("touchmove", e => { if (dragging) seekFromEvent(e.touches[0]); }, { passive:true });
+      wave.addEventListener("touchend", () => { dragging = false; });
+    });
+  })();
+
+  /* 已按需求移除所有消息卡片的删除角标（不再注入 del-corner） */
+
+  /* ===== 设备身份（默认按设备指纹自动生成） ===== */
+  const DEVICE_PALETTE = ["#047878","#137a7f","#e12885","#86cecb","#4a90d9","#8a63d2"];
+  function platformName(){
+    const ua = navigator.userAgent;
+    if(/Windows/i.test(ua)) return "Windows";
+    if(/Android/i.test(ua)) return "Android";
+    if(/iPhone|iPad|iPod/i.test(ua)) return "iOS";
+    if(/Mac/i.test(ua)) return "macOS";
+    if(/Linux/i.test(ua)) return "Linux";
+    return "Device";
+  }
+  function fnv1a(str){
+    let h = 0x811c9dc5;
+    for(let i=0;i<str.length;i++){ h ^= str.charCodeAt(i); h = (h * 0x01000193) >>> 0; }
+    return h >>> 0;
+  }
+  function genDeviceId(){
+    const parts = [
+      navigator.userAgent,
+      navigator.language,
+      navigator.platform || (navigator.userAgentData && navigator.userAgentData.platform) || "",
+      screen.width + "x" + screen.height + ":" + screen.colorDepth,
+      new Date().getTimezoneOffset(),
+      navigator.hardwareConcurrency || 0,
+      navigator.deviceMemory || 0
+    ].join("|");
+    return fnv1a(parts).toString(16).padStart(8, "0");
+  }
+  function loadDevice(){
+    const key = "fsex_device";
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored) return JSON.parse(stored);
+    } catch(e) {}
+    const id = genDeviceId();
+    const dev = {
+      deviceId: id,
+      deviceName: "用户-" + String(fnv1a(id) % 10000).padStart(4, "0"),
+      color: DEVICE_PALETTE[fnv1a(id) % DEVICE_PALETTE.length],
+      platform: platformName()
+    };
+    try { localStorage.setItem(key, JSON.stringify(dev)); } catch(e) {}
+    return dev;
+  }
+  let device = loadDevice();
+  function renderDevice(){
+    ["av1","av2","av3","av4"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { el.style.background = device.color; el.textContent = device.deviceName.replace(/^用户-/, "").charAt(0); }
+    });
+    ["who1","who2","who3","who4"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = device.deviceName;
+    });
+    document.querySelectorAll(".from-me .avatar").forEach(el => {
+      el.style.background = device.color;
+      el.textContent = device.deviceName.replace(/^用户-/, "").charAt(0);
+    });
+    document.querySelectorAll(".from-me .who").forEach(el => { el.textContent = device.deviceName; });
+    $("#devNameInput").value = device.deviceName;
+    $("#devFp").textContent = device.deviceId;
+  }
+  function openSettingsSheet(){
+    $("#devNameInput").value = device.deviceName;
+    sheet("sheetAttach").classList.remove("open");
+    sheet("sheetProgress").classList.remove("open");
+    sheet("sheetQr").classList.remove("open");
+    sheet("sheetSettings").classList.add("open");
+    syncSheetMask();
+  }
+  /* 点击左上角 logo（filesyncEX 文字）进入设置界面（阻止冒泡，避免被空白关闭逻辑误关） */
+  document.querySelector(".logo").addEventListener("click", (e) => { e.stopPropagation(); openSettingsSheet(); });
+  renderDevice();
+  /* 昵称：输入即保存（无保存按钮，输入完成自动保存） */
+  $("#devNameInput").addEventListener("input", () => {
+    const name = $("#devNameInput").value.trim();
+    if (!name) return;
+    device.deviceName = name;
+    try { localStorage.setItem("fsex_device", JSON.stringify(device)); } catch(e) {}
+    renderDevice();
+  });
+  /* 点击 Sheet 标题关闭对应面板（设置标题放大后可点击） */
+  document.querySelectorAll(".sheet .stitle").forEach(t => {
+    t.addEventListener("click", () => { t.closest(".sheet").classList.remove("open"); syncSheetMask(); });
+  });
+
+  /* ===== 长按删除确认气泡（所有消息） ===== */
+  const delBubble = $("#delBubble");
+  let delTarget = null, delTimer = null, delClickBlockUntil = 0;
+  function showDelBubble(msg){
+    delTarget = msg;
+    msg.classList.add("del-target");
+    delBubble.style.display = "block";
+    const r = msg.getBoundingClientRect();
+    const bw = delBubble.offsetWidth;
+    const bh = delBubble.offsetHeight;
+    let left = r.left + r.width / 2 - bw / 2;
+    left = Math.max(8, Math.min(left, innerWidth - bw - 8));
+    let top = r.bottom + 8; // 默认：固定在消息下方
+    if (top + bh > innerHeight - 8){ // 下方放不下 → 整体向上滑动
+      top = r.top - bh - 8;
+      if (top < 8) top = 8;
+      delBubble.classList.add("above");
+    } else {
+      delBubble.classList.remove("above");
+    }
+    delBubble.style.left = left + "px";
+    delBubble.style.top = top + "px";
+    delBubble.classList.add("show");
+  }
+  function hideDelBubble(){
+    if (delTarget){ delTarget.classList.remove("del-target"); delTarget = null; }
+    delBubble.classList.remove("show");
+    delBubble.style.display = "none";
+  }
+  $("#dbCancel").addEventListener("click", hideDelBubble);
+  $("#dbDel").addEventListener("click", () => {
+    if (delTarget){ delTarget.remove(); flash("消息已删除"); }
+    hideDelBubble();
+  });
+  /* 长按后抬起产生的 click：在短时间窗口内屏蔽（不关闭气泡、不触发消息行为） */
+  document.addEventListener("click", (e) => {
+    if (Date.now() < delClickBlockUntil) return;
+    if (delBubble.classList.contains("show") && !e.target.closest("#delBubble")) hideDelBubble();
+  }, true);
+  /* 列表滚动时收起气泡 */
+  document.querySelector("main").addEventListener("scroll", hideDelBubble, { passive: true });
+  window.addEventListener("scroll", hideDelBubble, { passive: true });
+  /* 长按检测：触屏 touch + 鼠标 mousedown 均支持 */
+  function longPressStart(e, msg){
+    if (e.target.closest("button") || e.target.closest(".btn")) return; // 不干扰消息内按钮
+    clearTimeout(delTimer);
+    delTimer = setTimeout(() => {
+      delClickBlockUntil = Date.now() + 600; // 屏蔽长按后抬起产生的 click
+      hideDelBubble();
+      showDelBubble(msg);
+    }, 500);
+  }
+  document.querySelectorAll(".msg").forEach(msg => {
+    msg.addEventListener("touchstart", e => longPressStart(e, msg), { passive: true });
+    msg.addEventListener("touchmove", () => clearTimeout(delTimer), { passive: true });
+    msg.addEventListener("touchend", () => clearTimeout(delTimer));
+    msg.addEventListener("mousedown", e => longPressStart(e, msg));
+    msg.addEventListener("mouseup", () => clearTimeout(delTimer));
+    msg.addEventListener("mouseleave", () => clearTimeout(delTimer));
+    /* 长按后屏蔽随后的 click（避免误触打开预览/复制） */
+    msg.addEventListener("click", (e) => {
+      if (Date.now() < delClickBlockUntil){
+        delClickBlockUntil = 0;
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    });
+  });
+
+  /* 文件/音频消息：去掉预览界面入口；左下角「下载」→ 直接开始下载（不进预览） */
+  document.querySelectorAll(".card .file").forEach(f => f.removeAttribute("onclick")); // 文件卡片不再打开预览
+  document.querySelectorAll('.card .ops .btn[onclick*="openViewer"]').forEach(btn => { // 文件/音频下载按钮
+    btn.removeAttribute("onclick");
+    btn.addEventListener("click", () => flash("（原型）已开始下载"));
+  });
+
+  /* ===== 预览窗口删除：纯色粉底白字 + 在预览窗口内弹出删除确认窗 ===== */
+  let viewerMsg = null;
+  /* 事件委托：点击任何消息内元素时记录来源消息（供预览删除定位） */
+  document.addEventListener("click", (e) => {
+    const msg = e.target.closest(".msg");
+    if (msg && !e.target.closest("#delBubble")) viewerMsg = msg;
+  }, true);
+  /* 预览内确认窗：点「删除」直接在预览窗口弹出，预览保持打开 */
+  $("#vDel").addEventListener("click", () => {
+    $("#vDelBox").classList.add("open");
+  });
+  $("#vDelCancel").addEventListener("click", () => {
+    $("#vDelBox").classList.remove("open");
+  });
+  $("#vDelOk").addEventListener("click", () => {
+    $("#vDelBox").classList.remove("open");
+    const target = viewerMsg;
+    closeViewer();
+    if (target){ target.remove(); flash("消息已删除"); }
+    else flash("消息已删除");
+  });
+</script>
+</body>
+</html>

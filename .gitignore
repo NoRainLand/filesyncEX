@@ -1,1 +1,42 @@
+# 旧工程（保留参考，不纳入新仓库）
 filesync
+
+# 依赖
+node_modules/
+
+# 构建产物（各包 tsc / vite / esbuild 输出）
+dist/
+**/dist/
+
+# 打包产物
+release/
+
+# pnpm patch 临时目录（patches/ 补丁文件本身保留提交）
+.pnpm_patches/
+
+# 运行时数据（上传文件 / 数据库 / 实例锁）
+data/
+**/data/
+
+# 日志与临时输出
+*.log
+*.err
+server.log
+server.err
+bt.log
+bt.err
+.tmp/
+
+# 二进制工具：根 tool/（QuickSendTool.exe 等）需提交进 git
+# （打包产物 exe 由上方 release/ 覆盖忽略）
+
+# 测试临时脚本 / 临时目录
+*.tmp
+smoke.mjs
+.exetest/
+.bt/
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+testFiles

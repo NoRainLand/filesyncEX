@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>filesyncEX</title>
+    <style>
+      :root {
+        --primary: #047878;
+        --primary-hover: #137a7f;
+        --primary-active: #035c5c;
+        --accent: #86cecb;
+        --pink: #e12885;
+        --ink: #525658;
+        --muted: #6f7a82;
+        --line: #dde3e7;
+        --bg: #ffffff;
+        --surface: #f6f8fa;
+        --surface-2: #eef2f5;
+        --bubble: #f0f6f6;
+        --shadow: 0 2px 8px rgba(4, 120, 120, 0.08);
+        --radius: 10px;
+        --mono: "JetBrains Mono", Consolas, "Courier New", monospace;
+        --serif: "Source Han Serif CN", "Noto Serif SC", serif;
+      }
+      html[data-theme="dark"] {
+        --primary: #047878;
+        --primary-hover: #137a7f;
+        --primary-active: #035c5c;
+        --accent: #86cecb;
+        --pink: #e12885;
+        --ink: #bec8d1;
+        --muted: #8b98a1;
+        --line: #2a313c;
+        --bg: #13171f;
+        --surface: #1a2029;
+        --surface-2: #20262f;
+        --bubble: #1d262e;
+        --shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      body {
+        background: var(--bg);
+      }
+      * {
+        box-sizing: border-box;
+      }
+    </style>
+  </head>
+  <body>
+    <filesync-app></filesync-app>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

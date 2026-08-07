@@ -1,0 +1,26 @@
+diff --git a/decode-aac.js b/decode-aac.js
+index 8e14285eead0d5f29b2e64fcbf52c05417dcb580..10061afaf35dff8596386c19fdb0933c478b6170 100644
+--- a/decode-aac.js
++++ b/decode-aac.js
+@@ -14,14 +14,8 @@ async function getMod() {
+ 	if (_modP) return _modP
+ 	let p = (async () => {
+ 		let createAAC
+-		if (typeof process !== 'undefined' && process.versions?.node) {
+-			let m = 'module'
+-			let { createRequire } = await import(m)
+-			createAAC = createRequire(import.meta.url)('./src/aac.wasm.cjs')
+-		} else {
+-			let mod = await import('./src/aac.wasm.cjs')
+-			createAAC = mod.default || mod
+-		}
++		let mod = await import('./src/aac.wasm.cjs')
++		createAAC = mod.default || mod
+ 		return createAAC()
+ 	})()
+ 	_modP = p
+@@ -430,3 +424,4 @@ function advanceM4A(st) {
+ function r32(buf, off) {
+ 	return (buf[off] << 24 | buf[off + 1] << 16 | buf[off + 2] << 8 | buf[off + 3]) >>> 0
+ }
++
