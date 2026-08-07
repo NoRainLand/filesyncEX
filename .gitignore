@@ -32,6 +32,7 @@ bt.err
 
 # 测试临时脚本 / 临时目录
 *.tmp
+tmp_log_append.md
 smoke.mjs
 .exetest/
 .bt/
