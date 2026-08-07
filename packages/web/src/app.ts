@@ -64,12 +64,8 @@ function fileKind(name: string, mime?: string): "image" | "audio" | "video" | "f
   return "file";
 }
 
-/** 波形条：优先用服务器生成的真实峰值；无数据时默认全部平线（同高度） */
-const waveBars = (peaks?: number[] | null) => {
-  if (peaks && peaks.length) {
-    return peaks.map((v) => html`<i style="height:${Math.max(8, Math.round(v * 100))}%"></i>`);
-  }
-  // 占位/加载中：模拟真实音频波形（中间密集高振幅、两侧渐低、相邻平滑），避免平条看不出波形
+/** 音频频谱条：模拟波形柱（中间密集高振幅、两侧渐低、相邻平滑）；移动端由 CSS 每 3 根显示 1 根（指示器方式）保证可见 */
+const waveBars = () => {
   const N = 96;
   const bars: unknown[] = [];
   let prev = 0.4;
@@ -80,7 +76,7 @@ const waveBars = (peaks?: number[] | null) => {
     const smooth = 0.3 * noise + 0.7 * prev;
     prev = smooth;
     const h = Math.max(10, Math.min(100, env * (40 + smooth * 60)));
-    bars.push(html`<i style="height:${h.toFixed(1)}%"></i>`);
+    bars.push(html`<i class="bar" style="height:${h.toFixed(1)}%"></i>`);
   }
   return bars;
 };
@@ -160,7 +156,7 @@ export class FilesyncApp extends LitElement {
     connState: { state: true }, notices: { state: true },
     text: { state: true }, codeMode: { state: true }, codeLang: { state: true }, codeText: { state: true },
     uploads: { state: true }, sheet: { state: true }, preview: { state: true }, nick: { state: true },
-    httpUrl: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, langOpen: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, wavePeaks: { state: true },
+    httpUrl: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, langOpen: { state: true }, playingId: { state: true }, qrDataUrl: { state: true },
   };
 
   msgs: MsgDataT[] = [];
@@ -192,14 +188,18 @@ export class FilesyncApp extends LitElement {
   private longPressTimer: number | undefined;
   /** 长按抬起后的 click 屏蔽窗口（避免误触预览/复制） */
   private blockClickUntil = 0;
+  /** 删除气泡打开时：禁止滚动，一旦滑动立即关闭气泡 */
+  private delMoveHandler = (e: TouchEvent) => {
+    if (!this.delBubble) return;
+    e.preventDefault();
+    this.closeDelBubble();
+  };
   /** 自定义语言下拉是否展开 */
   langOpen = false;
 
   private ws: WsClient | null = null;
   private audioEl: HTMLAudioElement | null = null;
   private audioMsgId: string | null = null;
-  /** 音频波形缓存：msg.id → 峰值数组（null = 加载失败/不支持） */
-  wavePeaks: Record<string, number[] | null> = {};
 
   constructor() {
     super();
@@ -326,24 +326,20 @@ export class FilesyncApp extends LitElement {
     let above = false;
     if (top + bh > window.innerHeight - 8) { top = r.top - bh - 8; above = true; if (top < 8) top = 8; }
     this.delBubble = { id: m.id, x: left, y: top, above };
+    // 删除气泡期间禁止滚动，滑动即退出删除模式
+    window.addEventListener("touchmove", this.delMoveHandler, { passive: false });
   }
-  private closeDelBubble(): void { this.delBubble = null; }
+  private closeDelBubble(): void {
+    if (!this.delBubble) return;
+    this.delBubble = null;
+    window.removeEventListener("touchmove", this.delMoveHandler);
+  }
   private confirmDelBubble(): void {
     const b = this.delBubble;
     if (!b) return;
     this.delBubble = null;
+    window.removeEventListener("touchmove", this.delMoveHandler);
     this.deleteMsg(b.id);
-  }
-  /** 向服务器加载音频真实波形（只请求一次） */
-  private loadWave(m: MsgDataT): void {
-    if (this.wavePeaks[m.id] !== undefined) return;
-    const key = m.file?.key;
-    if (!key) { this.wavePeaks = { ...this.wavePeaks, [m.id]: null }; return; }
-    this.wavePeaks = { ...this.wavePeaks, [m.id]: null }; // 占位防重复请求
-    fetch(`/api/wave/${encodeURIComponent(key)}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d) => { this.wavePeaks = { ...this.wavePeaks, [m.id]: d.peaks ?? null }; })
-      .catch(() => { this.wavePeaks = { ...this.wavePeaks, [m.id]: null }; });
   }
   /** 音频统一走服务器转码流（/api/stream/<key> → WAV，任意格式浏览器都能播） */
   private audioSrc(m: MsgDataT): string | null {
@@ -395,20 +391,22 @@ export class FilesyncApp extends LitElement {
       a.load();
     }
   }
-  /** 更新波形进度：已播 bar 变薄荷、未播灰；进度线穿过的 bar 用横向渐变平滑过渡（线性前进，非整格跳变）+ 竖线 .ind 定位 */
-  /** 更新波形播放进度：已播 bar 整根变薄荷（.played 类），未播灰；竖线 .ind 定位（直接改 DOM，不经 lit 重渲染） */
+  /** 更新音频进度：桌面频谱整格高亮 .played（已播薄荷/未播灰）；移动进度条设 fill 宽度；竖线 .ind 定位 */
   private updateWaveInd(msgId: string, forced?: number): void {
     const wave = this.shadowRoot?.querySelector<HTMLElement>(`.card.audio[data-id="${msgId}"] .wave`);
     if (!wave) return;
     const a = this.audioEl && this.audioMsgId === msgId ? this.audioEl : null;
     const ratio = forced ?? (a && a.duration ? a.currentTime / a.duration : 0);
-    const ind = wave.querySelector(".ind") as HTMLElement | null;
-    if (ind) ind.style.left = `${Math.round(ratio * 100)}%`;
-    // 整格跳变：已播 bar 全加 .played（薄荷），未播移除（灰）
-    const bars = Array.from(wave.querySelectorAll("i:not(.ind):not(.prog)"));
+    const pct = Math.round(ratio * 100);
+    // 桌面频谱：整格跳变 .played 高亮；移动进度条：fill 填充
+    const bars = Array.from(wave.querySelectorAll("i.bar"));
     const n = bars.length;
     const played = Math.round(ratio * n);
     bars.forEach((bar, i) => bar.classList.toggle("played", i < played));
+    const fill = wave.querySelector(".fill") as HTMLElement | null;
+    if (fill) fill.style.width = `${pct}%`;
+    const ind = wave.querySelector(".ind") as HTMLElement | null;
+    if (ind) ind.style.left = `${pct}%`;
     // 暂停/播放中（进度 0<x<1）指示器保持显示；未播放/播完隐藏
     wave.classList.toggle("show-ind", ratio > 0 && ratio < 1);
   }
@@ -761,7 +759,7 @@ export class FilesyncApp extends LitElement {
       if (media) {
         phBody = html`<div class="ph-body">${blur}<span class="ph-icon-bg">${uk === "video" ? html`<span class="ph-vplay">▶</span>` : I_IMG}</span>${ring}</div>`;
       } else if (uk === "audio") {
-        phBody = html`<div class="ph-body audio">${blur}<div class="ph-ap"><span class="ph-play">${I_PLAY}</span><div class="ph-wave">${waveBars()}</div></div>${ring}</div>`;
+        phBody = html`<div class="ph-body audio">${blur}<div class="ph-ap"><span class="ph-play">${I_PLAY}</span><div class="ph-wave">${waveBars()}<i class="fill"></i><i class="ind"></i></div></div>${ring}</div>`;
       } else {
         phBody = html`<div class="ph-body file">${blur}<span class="ph-ic">${I_FILE}</span>${ring}</div>`;
       }
@@ -813,13 +811,12 @@ export class FilesyncApp extends LitElement {
         content = html`<div class="card audio ${this.playingId === m.id ? "playing" : ""}" data-id="${m.id}">
             <div class="ap">
               <button class="play" @click=${() => { if (this.debounceKey("play-" + m.id, 400)) this.toggleAudio(m); }}>${this.playingId === m.id ? I_PAUSE : I_PLAY}</button>
-              <div class="wave" @click=${(e: MouseEvent) => this.seekAudio(m, e)}>${waveBars(this.wavePeaks[m.id])}<i class="ind"></i></div>
+              <div class="wave" @click=${(e: MouseEvent) => this.seekAudio(m, e)}>${waveBars()}<i class="fill"></i><i class="ind"></i></div>
               <audio src="${this.audioSrc(m) ?? ""}" preload="none"></audio>
             </div>
             <div class="mm"><span class="name">${f?.name ?? "音频"}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>
             <div class="ops">${downBtn}</div>${delBtn}
           </div>`;
-        this.loadWave(m);
         break;
       case "file":
       default:

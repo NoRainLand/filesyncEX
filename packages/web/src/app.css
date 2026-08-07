@@ -3,7 +3,7 @@
 .container { width: 100%; max-width: 1000px; display: flex; flex-direction: column; height: 100%; overflow-y: auto; padding: 0 0 30px; box-sizing: border-box; scrollbar-width: none; }
 .container::-webkit-scrollbar { display: none; }
 /* ---------- Header ---------- */
-header.app { display: flex; align-items: center; gap: 14px; margin-top: 20px; padding: 12px 6px 16px; border-bottom: 1px solid var(--line); margin-bottom: 16px; flex: none; }
+header.app { display: flex; align-items: center; gap: 14px; margin-top: 8px; padding: 10px 6px 12px; border-bottom: 1px solid var(--line); margin-bottom: 10px; flex: none; }
 .logo { font-size: 22px; font-weight: 700; letter-spacing: .5px; color: var(--primary); display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; transition: color .3s; }
 .logo.connecting { color: var(--warn); }   /* 连接中：与主题色协调的黄色 */
 .logo.connected { color: var(--primary); } /* 正常：主题色 */
@@ -95,7 +95,9 @@ header.app { display: flex; align-items: center; gap: 14px; margin-top: 20px; pa
 .card.upload-ph.audio .ph-play { width: 38px; height: 38px; border-radius: 50%; background: var(--primary); color: #fff; display: flex; align-items: center; justify-content: center; flex: none; }
 .card.upload-ph.audio .ph-play svg { width: 16px; height: 16px; }
 .card.upload-ph.audio .ph-wave { flex: 1; height: 34px; display: flex; align-items: center; gap: 2px; opacity: .8; }
-.card.upload-ph.audio .ph-wave i { flex: 1; background: var(--muted); border-radius: 2px; height: 40%; }
+.card.upload-ph.audio .ph-wave .bar { flex: 1; background: var(--muted); border-radius: 2px; height: 40%; }
+.card.upload-ph.audio .ph-wave .fill { display: none; }
+.card.upload-ph.audio .ph-wave .ind { display: none; }
 /* 文件：图标 + 占位行（同真实文件行高度） */
 .card.upload-ph.file .ph-body { height: 66px; justify-content: flex-start; padding: 0 14px; gap: 12px; }
 .card.upload-ph.file .ph-ic { position: relative; z-index: 2; width: 42px; height: 42px; border-radius: 10px; background: var(--bubble); color: var(--primary); display: flex; align-items: center; justify-content: center; flex: none; }
@@ -141,13 +143,14 @@ header.app { display: flex; align-items: center; gap: 14px; margin-top: 20px; pa
 .card.img .thumb::after, .card.video .vthumb::after { content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 52px; height: 52px; z-index: 1; pointer-events: none; background-color: transparent; background-position: center; background-repeat: no-repeat; }
 .card.img .thumb::after { background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="white" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path stroke-linecap="round" d="m20 20-3.5-3.5M8 11h6M11 8v6"/></svg>'); background-size: 26px; }
 .card.video .vthumb::after { background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="white" d="M8 5.5v13l11-6.5z"/></svg>'); background-size: 26px; background-position: center 1px; }
-/* 音频：播放按钮 + 波形条 + 信息行 */
+/* 音频：播放按钮 + 频谱条（桌面柱状 .bar / 移动进度条 fill+ind） */
 .card.audio .ap { display: flex; align-items: center; gap: 12px; padding: 12px 42px 12px 14px; }
 .card.audio .play { width: 38px; height: 38px; border-radius: 50%; background: var(--primary); color: #fff; border: 0; cursor: pointer; display: flex; align-items: center; justify-content: center; flex: none; }
 .card.audio.playing .play { background: var(--pink); }
 .card.audio .wave { flex: 1; height: 34px; display: flex; align-items: center; gap: 2px; cursor: pointer; position: relative; }
-.card.audio .wave i { flex: 1; background: var(--accent); border-radius: 2px; opacity: .9; }
-.card.audio .wave i.played { background: var(--primary); }
+.card.audio .wave .bar { flex: 1; background: var(--accent); border-radius: 2px; opacity: .9; }
+.card.audio .wave .bar.played { background: var(--primary); }
+.card.audio .wave .fill { display: none; }
 /* 播放进度指示竖线：有进度（0<x<1）时显示，未播放/播完隐藏 */
 .card.audio .wave .ind { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: #000; opacity: 0; border-radius: 1px; pointer-events: none; z-index: 2; transition: opacity .15s; }
 .card.audio .wave.show-ind .ind { opacity: .85; }
@@ -224,7 +227,7 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
 .viewer .vbody .codeview::-webkit-scrollbar-corner { background: transparent; }
 .viewer .vfoot { display: flex; gap: 10px; justify-content: center; padding: 12px 16px; flex: none; }
 .toasts { position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 10px; z-index: 500; pointer-events: none; }
-.toast { background: var(--frost-bg); -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px); color: var(--ink); padding: 14px 28px; border-radius: 8px; font-size: 17px; font-weight: 600; opacity: 0; pointer-events: none; transition: opacity .6s ease, transform .6s ease; white-space: nowrap; box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+.toast { background: var(--bg); color: var(--ink); padding: 14px 28px; border-radius: 8px; font-size: 17px; font-weight: 600; opacity: 0; pointer-events: none; transition: opacity .6s ease, transform .6s ease; white-space: nowrap; box-shadow: 0 6px 24px rgba(0,0,0,.18); }
 .toast.show { opacity: 1; }
 .toast.leaving { opacity: 0; transform: translateY(-24px); }
 /* 长按删除确认气泡（移动端） */
@@ -267,7 +270,7 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
   .container { padding: 0; overflow: hidden; }
   .upload { display: none; }
   footer.composer { display: flex; z-index: 65; }
-  header.app { padding: calc(8px + env(safe-area-inset-top, 0px)) 10px 8px; margin-bottom: 0; }
+  header.app { margin-top: 0; padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px; margin-bottom: 0; }
   .list { flex: 1; overflow-y: auto; padding: 0 10px 10px; }
   .msg .body { max-width: 82%; }
   .del-corner { display: none; }
@@ -275,6 +278,11 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
   .msg, .msg * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   /* 移动端：文本气泡点击直接复制 + 单行上下居中 */
   .card.text .bubble { cursor: pointer; padding: 14px; }
+  /* 移动端：音频频谱条用指示器方式——固定 96 根，每 3 根显示 1 根（32 根）+ 最小宽度，保证每条可见 */
+  .card.audio .wave i.bar { flex: 1 1 0; min-width: 3px; border-radius: 2px; }
+  .card.audio .wave i.bar:not(:nth-child(3n+3)) { display: none; }
+  .card.upload-ph.audio .ph-wave i.bar { flex: 1 1 0; min-width: 3px; border-radius: 2px; }
+  .card.upload-ph.audio .ph-wave i.bar:not(:nth-child(3n+3)) { display: none; }
   /* 移动端：图片卡片 4:3 缩略图（上传占位卡同步） */
   .card.img .thumb { aspect-ratio: 4 / 3; }
   .card.upload-ph.image .ph-body { aspect-ratio: 4 / 3; }

@@ -1108,3 +1108,30 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
 - ①上方箭头不可见根因：`.del-bubble.above::before/::after` 用 `border-top-color` 只设颜色，但 base 里 `border-top: none` 已把顶部边框宽度清零，`above` 又 `border-bottom: none` → 四边全 0 宽，箭头完全不可见（实测 borderTop `0px none`、height `0px`）。修复：above 变体改 `border-top: 6px solid var(--bg)` / `7px solid var(--line)`（恢复顶部宽度，朝下三角可见）。
 - ②浮起去背景：`.msg.del-selected` 去掉 `box-shadow`（整行阴影呈背景块感），仅保留 `transform: translateY(-4px) scale(1.02)` 浮起（头像/用户名日期/消息体随行浮起，无背景块）。
 - web 构建 126.00 kB；Playwright 验证：above 箭头 borderTop 6px/7px solid 可见 ✓、msg box-shadow none ✓、transform 保留 ✓、截图 ✓。
+## [6.0.0-alpha1] 移动端 header 高度减少（用户「头顶空白区域太多」）
+- 根因：基础 `header.app { margin-top:20px }` 未在移动端覆盖，移动端只覆盖了 padding/margin-bottom → 头顶 20px margin + 8px padding 空白。
+- 修复：移动端 `header.app` 加 `margin-top:0`、顶部/底部 padding `8px` → `6px`（保留 safe-area-inset-top）。
+- web 构建 126.01 kB；Playwright 验证：margin-top 0、padding-top/bottom 6px、header 顶部 0（原 28px 空白）、截图 ✓。
+## [6.0.0-alpha1] 桌面端 header 高度也减少（用户「桌面端的也减少一点」）
+- 基础 `header.app`：`margin-top` 20→8px、`padding` 12/16 → 10/12px、`margin-bottom` 16→10px。
+- web 构建 126.01 kB；Playwright 验证：桌面 margin-top 8px、padding 10/12px、margin-bottom 10px、header 高 61px、截图 ✓。
+## [6.0.0-alpha1] 移动端删除模式禁止滚动 + 滑动退出（用户需求）
+- 新增 `delMoveHandler`（window touchmove，passive:false）：删除气泡打开期间 `preventDefault()` 禁止滚动，且滑动立即 `closeDelBubble()` 退出删除模式。
+- `openDelBubble` 末尾 `addEventListener("touchmove", ...)`；`closeDelBubble` / `confirmDelBubble` 移除监听（关闭后滚动恢复）。
+- web 构建 126.30 kB；Playwright 验证：长按打开 ✓、滑动被 preventDefault（scroll 未动）✓、滑动后气泡关闭 ✓、可重开 ✓、点遮罩关闭且监听移除后滚动恢复（不再 preventDefault）✓。
+## [6.0.0-alpha1] toast 提示改为实底（用户「提示弹窗改为实底，不要半透明磨砂」→ 确认为 toast）
+- `.toast`：背景 `var(--frost-bg)` + blur(22px) 半透明磨砂 → `var(--bg)` 实底、去掉 backdrop-filter blur（保留阴影）。
+- web 构建 126.23 kB；Playwright 验证：toast 背景 rgb(255,255,255) 不透明、backdropFilter none、文本正常、居中 ✓。
+## [6.0.0-alpha1] 音频消息波形柱改进度指示条（用户「移动端波形条看不见，所有都用指示条方式实现」）
+- 根因：移动端 `.wave i` 柱状波形（96 根小柱）不可见，仅指示条可见。
+- 改造（两端统一）：`waveBars`（96 根柱 + 真实峰值加载）→ `waveBar()` 进度条结构（`<i class="fill">` 已播填充 + `<i class="ind">` 指示线）；`.wave` 由 34px 柱状 → 8px 圆角轨道（`--surface-2` 背景）；`updateWaveInd` 改设 fill width + ind left；移除 `loadWave`/`wavePeaks` 及 `/api/wave` 请求；上传音频占位卡 ph-wave 同步改为进度条轨道。
+- web 构建 125.54 kB；Playwright 验证：wave 高 8px、radius 4px、轨道 bg --surface-2、初始 fill 0、模拟 50% → fill width 97.7px 且 ind left 对齐、show-ind ✓；桌面端同 ✓、截图 ✓。
+## [6.0.0-alpha1] 桌面端恢复音频频谱图 + 移动端保持进度条（用户「桌面频谱图也没了，只有一个进度条」）
+- 上一轮误把两端都改成进度条，桌面频谱图丢失。本轮恢复：桌面端（>640px）显示 96 根频谱柱 `.bar`（模拟波形，播放整格高亮 .played + ind 竖线）；移动端（≤640px）隐藏 `.bar`、显示进度条（`.wave` 8px 轨道 + `.fill` 填充 + `.ind`）。
+- 两端共用 DOM（`waveBars()` + `<i class="fill">` + `<i class="ind">`），CSS media query 按视口区分；`updateWaveInd` 同时更新 `.played`（桌面）与 `fill` 宽度（移动）。
+- 上传占位卡 ph-wave 同样：桌面频谱柱 / 移动进度条轨道。
+- web 构建 126.54 kB；Playwright 验证：桌面 waveH 34、96 柱、fill hidden、50%→48 柱 .played、ind 227px ✓；移动 waveH 8 轨道、bar hidden、fill block、50%→fill 97.7px ✓；截图 ✓。
+## [6.0.0-alpha1] 移动端恢复音频频谱图（用户「移动端也要频谱图，里边的条用指示器方式实现」）
+- 根因：移动端窄屏下 96 根频谱柱 + 2px 间距，每根仅约 0.4px 宽，几乎不可见（仅 .ind 指示条可见）。
+- 修复（CSS 方案，纯响应式）：waveBars 固定生成 96 根，移动端 media query `.card.audio .wave i.bar:not(:nth-child(3n+3)) { display:none }` 每 3 根显示 1 根（32 根）+ `min-width:3px` + `flex:1 1 0` → 每根约 4px 实心条（指示器方式）可见；ph-wave 占位卡同步。桌面端保持 96 根全显示。
+- web 构建 126.20 kB；Playwright 验证：移动端 96 总/32 可见/首根宽 4px/waveH 34、50%→16 根可见 .played、截图频谱可见 ✓；桌面 96 全可见 ✓。
