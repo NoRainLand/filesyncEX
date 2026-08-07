@@ -1,8 +1,9 @@
 
-
-### 本轮改动（2026-08-07 · 代码消息框去滑条 + 代码预览滚动条去白框）
-- **用户需求**：①代码消息框不允许有任何滑条；②代码预览可以有滑条（代码很长超预览窗口时），但滑条不能有下边那个白色的框。
-- **实现**（packages/web/src/app.css）：
-  - 代码消息框 `.card.code pre`：`overflow: auto` → **`overflow: hidden`**（长代码在卡片内截断，无任何滑条；点击卡片进入预览看完整代码）。
-  - 代码预览 `.viewer .vbody .codeview`：保留 `overflow: auto`（超长时有滑条），新增定制滚动条样式——`scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.25) transparent`（Firefox）+ WebKit `::-webkit-scrollbar{10px}` / `::-webkit-scrollbar-thumb`（半透明白圆角） / `::-webkit-scrollbar-track`（transparent） / **`::-webkit-scrollbar-corner { background: transparent }`（去掉右下角白色框，与深色 #282c34 背景融合）**。
-- **验证**（注入 40 行×超长行代码）：消息框 pre overflow=hidden、scrollable=false（无滑条）✓；预览 codeview overflow=auto、垂直+水平均可滚动（滑条存在）✓；滚动条 corner 透明规则已应用（去白框）✓。已登记 PROJECT_LOG.md。
+### 本轮改动（2026-08-07 · 移动端打磨批次 1：点击复制/长按删除/卡片适配/输入条/安全区）
+- **用户**：「桌面端搞定，一起打磨移动端」。确认方向（多选）：文字消息点击气泡直接复制、长按删除消息、图片/视频卡片适配、底部输入条布局、刘海屏安全区；**logo 与桌面端一致，不要状态圆点**。
+- **① 文字消息点击复制（移动端）**（app.ts + app.css）：`renderMsg` 加 `mobile = window.innerWidth <= 640`；移动端文本消息**不渲染复制按钮**，气泡 `@click` → 新方法 `copyBubble(e,m)`（`.bubble-link` 链接点击放行给 openTextLink；delBubble/blockClick 窗口内不复制；防抖 800ms）。CSS 移动端 `.card.text .bubble{cursor:pointer}`。桌面端保留复制按钮不变。
+- **② 长按删除确认气泡（移动端）**（app.ts + app.css）：新增 `delBubble:{id,x,y,above}|null` state + 长按逻辑 `msgPressStart`（仅 innerWidth<=640 且非 sheet/preview，长按 500ms）→ `openDelBubble` 按消息 `getBoundingClientRect` 定位气泡（下方放不下则 `above` 上翻+箭头朝下）；`msgClickGuard` 点击消息关闭气泡/屏蔽长按后 click（`blockClickUntil` 600ms）；`copyBubble`/`openPreview` 均检查 `delBubble`/`blockClickUntil`；气泡渲染在 render 末尾（fixed z-700，`del-bubble`+`.db-text`+`.db-ops` 取消/删除，`::before` 三角箭头，`.above` 箭头朝下）。确认 → `confirmDelBubble` → `deleteMsg`（走服务器广播删，真实多端同步）。**注意：注入假消息删不掉是正常的（服务器不识别），真实消息由服务器回 del 帧移除**。消息元素加 `data-id` 供定位。
+- **③ 图片/视频卡片移动端适配**（app.css）：`@media(max-width:640px)` 图片 `.card.img .thumb` 16:9→**4:3**（上传占位卡 `.card.upload-ph.image .ph-body` 同步 4:3）；渐变覆盖层/放大图标/播放图标沿用桌面通用（`::after` 已在）；视频保持 16:9。
+- **④ 底部输入条代码模式布局**（app.css + app.ts）：移动端 `.composer-inner{position:relative}`；`.composer-inner .bracebtn` **absolute 压输入框右上角 right:48px**；`.composer input{padding-right:56px}` 让位；`footer.composer.code-mode`（**模板补加 class**）隐藏 `.addbtn`+`.composer-inner>.input`、`.sendbtn` absolute right:0、`.composer-inner{min-height:40px}`；代码编辑器在 footer 内展开。**坑：CSS 选择器 `footer.composer.code-mode` 依赖模板加 class，漏加则样式不生效**。
+- **⑤ 刘海屏安全区**（app.css + index.html 已有 viewport-fit=cover）：移动端 header.app `padding-top:calc(8px+env(safe-area-inset-top))`、footer.composer `padding-bottom:calc(8px+env(safe-area-inset-bottom))`、.panel/.viewer .vtop/.viewer .vfoot/.toasts 均加 safe-area。
+- **验证**（移动 390×844 + 桌面 1280 回归）：文本无复制按钮✓、点击气泡「已复制」✓、图片 ratio 0.75(4:3)+放大图标✓、长按弹出删除气泡定位正确✓、取消保留/删除提示✓（真实删除靠服务器）、代码模式 addbtn+input 隐藏、sendbtn absolute right:0、bracebtn right:48px、code-editor open✓、header safe-area padding 8px（无刘海环境=0）✓、桌面端复制按钮/删除角标不变✓、截图正常✓。web 121.10 kB，纯前端，服务器无需重启。

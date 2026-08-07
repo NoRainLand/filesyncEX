@@ -955,3 +955,59 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
   - 代码消息框 `.card.code pre`：`overflow: auto` → **`overflow: hidden`**（长代码在卡片内截断，无任何滑条；点击卡片进入预览看完整代码）。
   - 代码预览 `.viewer .vbody .codeview`：保留 `overflow: auto`（超长时有滑条），新增定制滚动条样式——`scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.25) transparent`（Firefox）+ WebKit `::-webkit-scrollbar{10px}` / `::-webkit-scrollbar-thumb`（半透明白圆角） / `::-webkit-scrollbar-track`（transparent） / **`::-webkit-scrollbar-corner { background: transparent }`（去掉右下角白色框，与深色 #282c34 背景融合）**。
 - **验证**（注入 40 行×超长行代码）：消息框 pre overflow=hidden、scrollable=false（无滑条）✓；预览 codeview overflow=auto、垂直+水平均可滚动（滑条存在）✓；滚动条 corner 透明规则已应用（去白框）✓。已登记 PROJECT_LOG.md。
+
+
+### 本轮改动（2026-08-07 · 代码消息最大高度 + 图片复制改下载 + 复制成功提示）
+- **用户需求**：①代码消息有最大高度限制；②所有图片消息复制按钮改下载（行为也改下载）；③复制消息没有成功提示。
+- **实现**：
+  - 代码消息最大高度：`.card.code pre` 加 `max-height: 240px`（保留 `overflow:hidden`，超出截断，点击卡片进预览看全）。
+  - 图片消息复制→下载：app.ts image 分支 `copyImgBtn`（copyImage canvas 复制）→ **`downBtn`**（`<a download>` 下载）；删除不再使用的 `copyImage` 私有方法。
+  - 复制成功提示：`copyText` 加 `.then(() => this.flash("已复制"))`（此前仅 catch 失败提示）。
+- **验证**：代码 pre maxHeight=240px + overflow hidden ✓；图片卡片 ovl 按钮为 `a[download]`"下载"、无复制按钮 ✓（截图确认 bg.jpg 等多张图片均显示下载）；copyText mock clipboard 成功 → flash"已复制" ✓。已登记 PROJECT_LOG.md。
+
+
+### 本轮改动（2026-08-07 · 文字/链接/代码复制无成功提示修复）
+- **用户反馈**：「文字消息，链接消息，代码消息都没有复制成功的提示」。
+- **根因**：所有复制路径（`copyText`/`copyCode`/`previewAction`）都用 `navigator.clipboard.writeText`，且 `if (!navigator.clipboard) return;` 静默返回。**局域网 HTTP（非安全上下文）下 `navigator.clipboard` 为 `undefined`** → 复制直接静默失败，无任何提示。
+- **修复**（packages/web/src/app.ts）：新增统一 `copyToClipboard(text): Promise<boolean>`——优先 `navigator.clipboard.writeText`（安全上下文），**降级 `document.execCommand("copy")`（textarea+select，无需安全上下文，局域网也可用）**；`copyText`/`copyCode`/`previewAction`（预览代码复制）统一接入并始终提示：成功 `flash("已复制")`/`flash("代码已复制")`，失败 `flash("复制失败，请手动复制")`。
+- **验证**（局域网页 isSecureContext=false、navigator.clipboard 不存在）：copyExec 降级返回 true（实际复制成功）✓；文字消息复制 →"已复制"✓；链接消息（含 URL 文字）复制按钮 →"已复制"✓；代码消息复制 →"代码已复制"✓。已登记 PROJECT_LOG.md。
+
+### 本轮改动（2026-08-07 · clipboard.js 复制 + 全部按钮防抖 + 通知弹窗池）
+- **用户反馈**：「①用经典的 clipboardjs 库实现复制，而不是自己写；②全部按钮都要防抖；③消息通知弹窗应该是一个弹窗池子，可能同时存在很多消息通知弹窗」。
+- **① 复制改用经典 clipboard.js 库**（packages/web）：安装 `clipboard@2.0.11` + `@types/clipboard@2.0.10`；app.ts 删除自写 `navigator.clipboard`/`execCommand` 方案，`import ClipboardJS from "clipboard"`；`copyToClipboard(text)` 改为：创建临时隐藏 button → `new ClipboardJS(el, { text: () => text })` → `el.click()` 触发，success→true / error→false，2s 兜底超时判定失败。文字/代码/预览复制统一接入，提示逻辑不变。
+  - **坑①**：clipboard.js 内部用 `document.querySelectorAll(selector)` 查找触发器，**无法穿透 lit shadow DOM**，故必须传元素实例（编程式）而非选择器字符串。
+  - **坑②**：程序化 `el.click()` 的事件 isTrusted=false，但 execCommand('copy') 依赖用户真实点击建立的 transient activation（数秒窗口），因此复制入口必须在真实点击手势内调用（现状均满足）。
+- **② 全部按钮防抖**（app.ts）：新增 `clickGuard: Map<string,number>` + `debounceKey(key, wait)`（**leading 语义：首次点击立即执行，wait 毫秒内重复点击直接忽略**，防连点重复触发；map 超 1000 条时清理 30s 前的旧键）。覆盖全部 `<button @click>`（二维码/主题/文件/代码模式×2/发送×2/加号/相册/拍照/文件/删除/复制×2/播放/预览关闭/预览复制下载/预览删除/通知确认与关闭）、回车发送、链接打开（openTextLink）、下载链接（downBtn preventDefault）。防抖窗口：发送/重命名 600ms、复制/下载 800ms、删除 500ms、其余 300ms、通知重连保留原 3s。
+- **③ 通知弹窗池**（app.ts + app.css）：`notice` 单对象 → `notices: {id,level,message}[]` 数组 + `noticeSeq`；`showNotice` 每次追加独立弹窗（**可多个并存**）、新增 `dismissNotice(id)` 单独关闭、`confirmNotice(id)` 保留 3s 防抖重连后移除该条；`renderNotice` 渲染全部面板，各带 ✕ 关闭 + 「确认并重连」。CSS：`.notice-mask` 改 `flex-direction:column` 垂直排列 + gap:16px + overflow-y:auto；`.notice-panel` 加 `position:relative`，新增 `.nclose` 右上角 ✕ 关闭按钮样式。
+- **验证**（局域网页 14100）：
+  - 复制：文字消息真实点击 →「已复制」✓；代码消息 →「代码已复制」✓；代码预览复制（previewAction）→「代码已复制」✓（均 ClipboardJS success，局域网 HTTP 非安全上下文下正常工作）。
+  - 防抖：复制按钮同步连点两次 → flash 仅触发一次（第二次被 800ms 窗口拦截）✓。
+  - 通知池：注入 3 个通知 → 3 个 `.notice-panel` 并存、各有 ✕ 与确认按钮、标题/等级正确（error 红/warn 黄/shutdown 红）、mask flex column；dismiss 一个后剩 2 ✓；截图确认视觉正常。
+- 构建：web 116.83 kB（含 clipboard.js）。纯前端改动，服务器无需重启。
+
+### 本轮改动（2026-08-07 · 提示弹窗池 + 全部半透明黑色遮罩改无色磨砂）
+- **用户澄清**：「我指的是提示弹窗（toast），不是通知弹窗」+「所有的半透明黑色遮罩改为无色磨砂遮罩」。
+- **① 提示弹窗（toast）改为弹窗池**（app.ts + app.css）：上一轮误将通知大窗（notice）做成池子；用户澄清真正要的是**提示 toast 池**。`toastText/toastShow/toastLeaving` 单对象 + `tipTimer/tipClearTimer` → `toasts: {id,text,leaving}[]` + `toastSeq`；`flash(text)` 每次追加一个独立 toast：立即 show → 2200ms 后加 `leaving`（淡出上移）→ 再 700ms 从数组移除；`render` 用 `.toasts` 容器（fixed bottom 居中、flex column、gap 10px、pointer-events:none）渲染多个 `.toast`（各自 show/leaving 动画，leaving 仅 `translateY(-24px)`，因居中移到容器不再需要 translateX(-50%)）。**验证**：连续 flash 3 个 → 3 个 toast 并存全 show ✓、文字正确 ✓、2.9s 后全部移除 ✓、2.3s 时第一个进入 leaving ✓、截图确认垂直排列 ✓。**说明**：通知大窗（notice）上一轮已改池子（多通知并存），与本次澄清不冲突，予以保留。
+- **② 所有半透明黑色遮罩改无色磨砂**（app.css + index.html）：新增主题变量 `--frost-bg`（light `rgba(255,255,255,.42)` / dark `rgba(42,48,58,.5)` 中性无色）+ `--frost-line`（磨砂边框）。四处遮罩/背景统一改 `background: var(--frost-bg)` + `backdrop-filter: blur(...)`：
+  - `.mask`（弹层遮罩）rgba(0,0,0,.45) → blur(14px)
+  - `.notice-mask`（通知遮罩）rgba(0,0,0,.55) → blur(14px)
+  - `.viewer`（全屏预览）rgba(0,0,0,.94) → blur(24px)，文字 `#fff`→`var(--ink)`、关闭按钮 `#fff`→`var(--ink)`（保证磨砂亮背景上可读）
+  - `.toast` 背景 rgba(0,0,0,.6) → `var(--frost-bg)` + blur(12px) + `1px solid var(--frost-line)` + 文字 `#fff`→`var(--ink)`（磨砂气泡）
+  - **不改**：图片底部 `.ovl` 渐变 rgba(0,0,0,.7)、代码背景 #282c34（非遮罩）。
+- **验证**（局域网页 14100）：light 下 toast/mask/viewer/notice-mask 背景均 `rgba(255,255,255,.42)` + 对应 blur、文字 #525658 可读 ✓；dark 下 `rgba(42,48,58,.5)` + 文字 #bec8d1 可读 ✓；截图确认磨砂（背后内容模糊）✓。web 117.20 kB，纯前端，服务器无需重启。
+
+### 本轮微调（2026-08-07 · 磨砂更细腻 + 提示弹窗去边框）
+- **用户反馈**：「磨砂更加细腻一点，提示弹窗不需要边框」。
+- **改动**（packages/web/src/app.css）：
+  - **磨砂更细腻**：各遮罩 `backdrop-filter: blur()` 值提高——`.mask`/`.notice-mask` 14px→**22px**、`.viewer` 24px→**36px**、`.toast` 12px→**22px**（更高 blur = 更柔和细腻的磨砂质感，仍保持 `--frost-bg` 中性无色）。
+  - **提示弹窗去边框**：`.toast` 删除 `border: 1px solid var(--frost-line)`（保留磨砂背景 + 阴影 + 圆角）。
+- **验证**（局域网页 14100）：toast/mask/viewer/notice-mask 计算样式 blur 分别为 22/22/36/22px ✓；toast `border-top: 0px none`（无边框）✓；截图确认磨砂更柔和、toast 无边框 ✓。web 117.17 kB，纯前端，服务器无需重启。
+
+### 本轮改动（2026-08-07 · 移动端打磨批次 1：点击复制/长按删除/卡片适配/输入条/安全区）
+- **用户**：「桌面端搞定，一起打磨移动端」。确认方向（多选）：文字消息点击气泡直接复制、长按删除消息、图片/视频卡片适配、底部输入条布局、刘海屏安全区；**logo 与桌面端一致，不要状态圆点**。
+- **① 文字消息点击复制（移动端）**（app.ts + app.css）：`renderMsg` 加 `mobile = window.innerWidth <= 640`；移动端文本消息**不渲染复制按钮**，气泡 `@click` → 新方法 `copyBubble(e,m)`（`.bubble-link` 链接点击放行给 openTextLink；delBubble/blockClick 窗口内不复制；防抖 800ms）。CSS 移动端 `.card.text .bubble{cursor:pointer}`。桌面端保留复制按钮不变。
+- **② 长按删除确认气泡（移动端）**（app.ts + app.css）：新增 `delBubble:{id,x,y,above}|null` state + 长按逻辑 `msgPressStart`（仅 innerWidth<=640 且非 sheet/preview，长按 500ms）→ `openDelBubble` 按消息 `getBoundingClientRect` 定位气泡（下方放不下则 `above` 上翻+箭头朝下）；`msgClickGuard` 点击消息关闭气泡/屏蔽长按后 click（`blockClickUntil` 600ms）；`copyBubble`/`openPreview` 均检查 `delBubble`/`blockClickUntil`；气泡渲染在 render 末尾（fixed z-700，`del-bubble`+`.db-text`+`.db-ops` 取消/删除，`::before` 三角箭头，`.above` 箭头朝下）。确认 → `confirmDelBubble` → `deleteMsg`（走服务器广播删，真实多端同步）。**注意：注入假消息删不掉是正常的（服务器不识别），真实消息由服务器回 del 帧移除**。消息元素加 `data-id` 供定位。
+- **③ 图片/视频卡片移动端适配**（app.css）：`@media(max-width:640px)` 图片 `.card.img .thumb` 16:9→**4:3**（上传占位卡 `.card.upload-ph.image .ph-body` 同步 4:3）；渐变覆盖层/放大图标/播放图标沿用桌面通用（`::after` 已在）；视频保持 16:9。
+- **④ 底部输入条代码模式布局**（app.css + app.ts）：移动端 `.composer-inner{position:relative}`；`.composer-inner .bracebtn` **absolute 压输入框右上角 right:48px**；`.composer input{padding-right:56px}` 让位；`footer.composer.code-mode`（**模板补加 class**）隐藏 `.addbtn`+`.composer-inner>.input`、`.sendbtn` absolute right:0、`.composer-inner{min-height:40px}`；代码编辑器在 footer 内展开。**坑：CSS 选择器 `footer.composer.code-mode` 依赖模板加 class，漏加则样式不生效**。
+- **⑤ 刘海屏安全区**（app.css + index.html 已有 viewport-fit=cover）：移动端 header.app `padding-top:calc(8px+env(safe-area-inset-top))`、footer.composer `padding-bottom:calc(8px+env(safe-area-inset-bottom))`、.panel/.viewer .vtop/.viewer .vfoot/.toasts 均加 safe-area。
+- **验证**（移动 390×844 + 桌面 1280 回归）：文本无复制按钮✓、点击气泡「已复制」✓、图片 ratio 0.75(4:3)+放大图标✓、长按弹出删除气泡定位正确✓、取消保留/删除提示✓（真实删除靠服务器）、代码模式 addbtn+input 隐藏、sendbtn absolute right:0、bracebtn right:48px、code-editor open✓、header safe-area padding 8px（无刘海环境=0）✓、桌面端复制按钮/删除角标不变✓、截图正常✓。web 121.10 kB，纯前端，服务器无需重启。

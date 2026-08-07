@@ -1,6 +1,7 @@
 import { html, unsafeCSS, LitElement, nothing } from "lit";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import QRCode from "qrcode";
+import ClipboardJS from "clipboard";
 import type { DeviceInfoT, MsgDataT } from "@filesyncex/protocol";
 import { getDevice, saveDevice } from "./device.js";
 import { WsClient } from "./ws.js";
@@ -141,10 +142,10 @@ export class FilesyncApp extends LitElement {
 
   static properties = {
     msgs: { state: true }, peers: { state: true }, self: { state: true }, connected: { state: true },
-    connState: { state: true }, notice: { state: true },
+    connState: { state: true }, notices: { state: true },
     text: { state: true }, codeMode: { state: true }, codeLang: { state: true }, codeText: { state: true },
     uploads: { state: true }, sheet: { state: true }, preview: { state: true }, nick: { state: true },
-    httpUrl: { state: true }, theme: { state: true }, toastText: { state: true }, toastShow: { state: true }, toastLeaving: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, wavePeaks: { state: true },
+    httpUrl: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, wavePeaks: { state: true },
   };
 
   msgs: MsgDataT[] = [];
@@ -153,8 +154,9 @@ export class FilesyncApp extends LitElement {
   connected = false;
   /** WS 连接状态：connecting 连接中 / connected 正常 / disconnected 断开 */
   connState: "connecting" | "connected" | "disconnected" = "connecting";
-  /** 服务器通知（异常/维护/关闭）：非空时弹不可关闭大窗 */
-  notice: { level: string; message: string } | null = null;
+  /** 服务器通知弹窗池：可同时存在多个通知（异常/维护/关闭/警告…），各自可关闭/重连 */
+  notices: { id: number; level: string; message: string }[] = [];
+  private noticeSeq = 0;
   text = "";
   codeMode = false;
   codeLang = "ts";
@@ -167,13 +169,16 @@ export class FilesyncApp extends LitElement {
   httpUrl = "";
   qrDataUrl = "";
   theme: "light" | "dark" = "light";
-  toastText = "";
-  toastShow = false;
-  toastLeaving = false;
+  /** 提示弹窗池：可同时存在多个 toast，各自独立淡入/淡出/移除 */
+  toasts: { id: number; text: string; leaving: boolean }[] = [];
+  private toastSeq = 0;
+  /** 移动端长按删除确认气泡：非空时在 (x,y) 显示（above 时箭头朝下） */
+  delBubble: { id: string; x: number; y: number; above: boolean } | null = null;
+  private longPressTimer: number | undefined;
+  /** 长按抬起后的 click 屏蔽窗口（避免误触预览/复制） */
+  private blockClickUntil = 0;
 
   private ws: WsClient | null = null;
-  private tipTimer: number | undefined;
-  private tipClearTimer: number | undefined;
   private audioEl: HTMLAudioElement | null = null;
   private audioMsgId: string | null = null;
   /** 音频波形缓存：msg.id → 峰值数组（null = 加载失败/不支持） */
@@ -264,30 +269,51 @@ export class FilesyncApp extends LitElement {
     if (ta && ta.value) ta.value = "";
   }
   private deleteMsg(id: string): void { this.ws?.send({ type: "del", id }); this.flash("消息已删除"); }
-  private copyImage(m: MsgDataT): void {
-    const url = m.file?.url;
-    if (!url) return this.flash("图片地址无效");
-    // 剪贴板图片写入仅在 HTTPS/localhost 安全上下文可用
-    if (!window.ClipboardItem || !navigator.clipboard) {
-      this.flash("当前浏览器不支持复制图片（需 HTTPS 安全上下文）");
-      return;
+
+  /* ---------- 移动端：长按删除确认气泡 ---------- */
+  /** 移动端：点击文本气泡直接复制（链接点击交给 openTextLink；气泡打开/长按屏蔽窗口内不复制） */
+  private copyBubble(e: MouseEvent, m: MsgDataT): void {
+    if ((e.target as HTMLElement).closest(".bubble-link")) return;
+    if (this.delBubble || Date.now() < this.blockClickUntil) return;
+    if (!this.debounceKey("copy-" + m.id, 800)) return;
+    this.copyText(m.text ?? "");
+  }
+  /** 长按删除：仅移动端，长按消息 500ms 弹出删除确认气泡 */
+  private msgPressStart(m: MsgDataT): void {
+    if (window.innerWidth > 640 || this.sheet || this.preview) return;
+    clearTimeout(this.longPressTimer);
+    this.longPressTimer = window.setTimeout(() => {
+      this.blockClickUntil = Date.now() + 600; // 屏蔽长按抬起后产生的 click
+      this.openDelBubble(m);
+    }, 500);
+  }
+  private msgPressEnd(): void { clearTimeout(this.longPressTimer); }
+  private msgClickGuard(e: Event): void {
+    if (this.delBubble) { this.closeDelBubble(); return; }
+    if (Date.now() < this.blockClickUntil) {
+      this.blockClickUntil = 0;
+      e.stopPropagation();
+      e.preventDefault();
     }
-    const img = new Image();
-    img.onload = () => {
-      const c = document.createElement("canvas");
-      c.width = img.naturalWidth;
-      c.height = img.naturalHeight;
-      c.getContext("2d")?.drawImage(img, 0, 0);
-      c.toBlob((b) => {
-        if (!b) return this.flash("图片复制失败");
-        navigator.clipboard
-          .write([new ClipboardItem({ "image/png": b })])
-          .then(() => this.flash("图片已复制"))
-          .catch(() => this.flash("复制失败，请手动保存图片"));
-      }, "image/png");
-    };
-    img.onerror = () => this.flash("图片加载失败");
-    img.src = url;
+  }
+  private openDelBubble(m: MsgDataT): void {
+    const el = this.shadowRoot?.querySelector<HTMLElement>(`.msg[data-id="${m.id}"]`);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const bw = 200, bh = 118;
+    let left = r.left + r.width / 2 - bw / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - bw - 8));
+    let top = r.bottom + 8;
+    let above = false;
+    if (top + bh > window.innerHeight - 8) { top = r.top - bh - 8; above = true; if (top < 8) top = 8; }
+    this.delBubble = { id: m.id, x: left, y: top, above };
+  }
+  private closeDelBubble(): void { this.delBubble = null; }
+  private confirmDelBubble(): void {
+    const b = this.delBubble;
+    if (!b) return;
+    this.delBubble = null;
+    this.deleteMsg(b.id);
   }
   /** 向服务器加载音频真实波形（只请求一次） */
   private loadWave(m: MsgDataT): void {
@@ -412,6 +438,8 @@ export class FilesyncApp extends LitElement {
   private pvZoom = { s: 1, tx: 0, ty: 0, bx: 0, by: 0, init: false };
   private pvDrag = { active: false, sx: 0, sy: 0, stx: 0, sty: 0 };
   private openPreview(kind: string, msg: MsgDataT): void {
+    if (this.delBubble) { this.closeDelBubble(); return; }
+    if (Date.now() < this.blockClickUntil) return;
     this.pvZoom = { s: 1, tx: 0, ty: 0, bx: 0, by: 0, init: false };
     this.pvDrag.active = false;
     this.preview = { kind, msg };
@@ -492,23 +520,33 @@ export class FilesyncApp extends LitElement {
     if (!p) return;
     if (p.kind === "code") {
       const t = p.msg.code?.content ?? "";
-      if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => this.flash("代码已复制")).catch(() => this.flash("复制失败，请手动复制"));
+      void this.copyToClipboard(t).then((ok) => this.flash(ok ? "代码已复制" : "复制失败，请手动复制"));
     } else {
       this.flash("（原型）已开始下载");
     }
   }
+  /** 按钮防抖（leading）：首次点击立即执行，wait 毫秒内重复点击直接忽略（防连点重复触发） */
+  private clickGuard = new Map<string, number>();
+  private debounceKey(key: string, wait: number): boolean {
+    const now = Date.now();
+    const last = this.clickGuard.get(key) ?? 0;
+    if (now - last < wait) return false;
+    if (this.clickGuard.size > 1000) {
+      for (const [k, t] of this.clickGuard) if (now - t > 30000) this.clickGuard.delete(k);
+    }
+    this.clickGuard.set(key, now);
+    return true;
+  }
+  /** 提示弹窗池：每次追加一个独立 toast，2200ms 后淡出上移，再 700ms 移除 */
   private flash(t: string): void {
-    this.toastText = t;
-    this.toastShow = true;
-    this.toastLeaving = false;
-    clearTimeout(this.tipTimer);
-    clearTimeout(this.tipClearTimer);
-    this.tipTimer = window.setTimeout(() => {
-      // 先移除 show（触发淡出动画，文字保留、窗口不收缩），并加上移标记
-      this.toastShow = false;
-      this.toastLeaving = true;
-      this.tipClearTimer = window.setTimeout(() => { this.toastText = ""; this.toastLeaving = false; }, 700);
+    const id = ++this.toastSeq;
+    this.toasts = [...this.toasts, { id, text: t, leaving: false }];
+    window.setTimeout(() => {
+      this.toasts = this.toasts.map((x) => (x.id === id ? { ...x, leaving: true } : x));
     }, 2200);
+    window.setTimeout(() => {
+      this.toasts = this.toasts.filter((x) => x.id !== id);
+    }, 2900);
   }
 
   /* ---------- 服务器通知（异常/维护/关闭） ---------- */
@@ -522,33 +560,62 @@ export class FilesyncApp extends LitElement {
     }
   }
   private showNotice(level: string, message: string): void {
-    // 更新内容；若已弹出不可关闭大窗则复用，否则新弹
-    this.notice = { level, message };
+    // 通知弹窗池：每次追加一个独立弹窗（可多个并存），各自可关闭/重连
+    this.notices = [...this.notices, { id: ++this.noticeSeq, level, message }];
+  }
+  private dismissNotice(id: number): void {
+    this.notices = this.notices.filter((n) => n.id !== id);
   }
   private confirmReconnectAt = 0;
-  private confirmNotice(): void {
+  private confirmNotice(id: number): void {
     // 防抖：确认按钮快速连点只触发一次重连
     const now = Date.now();
     if (now - this.confirmReconnectAt < 3000) return;
     this.confirmReconnectAt = now;
-    const n = this.notice;
-    this.notice = null;
+    const n = this.notices.find((x) => x.id === id);
+    this.dismissNotice(id);
     this.connState = "connecting";
     this.ws?.forceReconnect();
     this.flash(n?.level === "shutdown" ? "正在尝试重新连接…" : "正在重新连接…");
   }
 
   private renderNotice() {
-    if (!this.notice) return nothing;
-    const n = this.notice;
-    return html`<div class="notice-mask"><div class="notice-panel ${n.level}">
+    if (this.notices.length === 0) return nothing;
+    return html`<div class="notice-mask">${this.notices.map((n) => html`<div class="notice-panel ${n.level}">
+      <button class="nclose" title="关闭" @click=${() => { if (this.debounceKey("notice-close-" + n.id, 300)) this.dismissNotice(n.id); }}>✕</button>
       <div class="ntitle">${this.noticeLevelLabel(n.level)}</div>
       <div class="nbody">${n.message}</div>
-      <button class="btn" @click=${this.confirmNotice}>确认并重连</button>
-    </div></div>`;
+      <button class="btn" @click=${() => this.confirmNotice(n.id)}>确认并重连</button>
+    </div>`)}</div>`;
   }
-  private copyText(t: string): void { if (navigator.clipboard) navigator.clipboard.writeText(t).catch(() => this.flash("复制失败，请手动复制")); }
-  private copyCode(m: MsgDataT): void { if (navigator.clipboard) navigator.clipboard.writeText(m.code?.content ?? "").then(() => this.flash("代码已复制")).catch(() => this.flash("复制失败，请手动复制")); }
+  private copyText(t: string): void {
+    void this.copyToClipboard(t).then((ok) => this.flash(ok ? "已复制" : "复制失败，请手动复制"));
+  }
+  private copyCode(m: MsgDataT): void {
+    void this.copyToClipboard(m.code?.content ?? "").then((ok) => this.flash(ok ? "代码已复制" : "复制失败，请手动复制"));
+  }
+  /** 复制到剪贴板：使用经典 clipboard.js 库（内部 execCommand+选区回退，兼容局域网 HTTP 非安全上下文） */
+  private copyToClipboard(text: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.style.cssText = "position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;";
+      document.body.appendChild(el);
+      const cp = new ClipboardJS(el, { text: () => text });
+      let done = false;
+      const finish = (ok: boolean): void => {
+        if (done) return;
+        done = true;
+        cp.destroy();
+        el.remove();
+        resolve(ok);
+      };
+      cp.on("success", () => finish(true));
+      cp.on("error", () => finish(false));
+      el.click();
+      window.setTimeout(() => finish(false), 2000); // 兜底：异常时判定失败
+    });
+  }
 
   /* ---------- 消息渲染（按天分组；桌面端从新到旧，最新在上） ---------- */
   private renderMessages() {
@@ -587,11 +654,13 @@ export class FilesyncApp extends LitElement {
   private openTextLink(e: MouseEvent, url: string): void {
     e.preventDefault();
     e.stopPropagation();
+    if (!this.debounceKey("link-" + url, 500)) return;
     window.open(url, "_blank", "noopener");
   }
 
   private renderMsg(m: MsgDataT) {
     const f = m.file;
+    const mobile = window.innerWidth <= 640;
     // 上传占位卡：结构与真实消息完全一致（对应类型主体 + mm 信息行 + ops 操作行），主体叠磨砂层 + 中心圆形进度环
     if (m.id.startsWith("upload-")) {
       const rec = this.uploads.find((u) => u.key === m.id);
@@ -638,37 +707,38 @@ export class FilesyncApp extends LitElement {
         </div>
       </div>`;
     }
-    const delBtn = html`<button class="del-corner" title="删除" @click=${() => this.deleteMsg(m.id)}>${I_TRASH}</button>`;
-    const copyBtn = html`<button class="btn" @click=${() => this.copyText(m.text ?? "")}>${I_COPY}复制</button>`;
-    const copyCodeBtn = html`<button class="btn" @click=${() => this.copyCode(m)}>${I_COPY}复制</button>`;
-    const copyImgBtn = html`<button class="btn" @click=${() => this.copyImage(m)}>${I_COPY}复制</button>`;
-    const downBtn = html`<a class="btn" href="${f?.url ?? "#"}" download>${I_DOWN}下载</a>`;
+    const delBtn = html`<button class="del-corner" title="删除" @click=${() => { if (this.debounceKey("del-" + m.id, 500)) this.deleteMsg(m.id); }}>${I_TRASH}</button>`;
+    const copyBtn = html`<button class="btn" @click=${() => { if (this.debounceKey("copy-" + m.id, 800)) this.copyText(m.text ?? ""); }}>${I_COPY}复制</button>`;
+    const copyCodeBtn = html`<button class="btn" @click=${() => { if (this.debounceKey("copy-" + m.id, 800)) this.copyCode(m); }}>${I_COPY}复制</button>`;
+    const downBtn = html`<a class="btn" href="${f?.url ?? "#"}" download @click=${(e: Event) => { if (!this.debounceKey("down-" + m.id, 800)) e.preventDefault(); }}>${I_DOWN}下载</a>`;
     const head = html`<span class="who">${m.sender.deviceName}</span>${this.self && m.sender.deviceId === this.self.deviceId ? html`<span class="me">本机</span>` : ""}<time>${fmtTime(m.ts)}</time>`;
 
     let content: unknown;
     switch (m.kind) {
       case "text":
-        content = html`<div class="card text"><div class="bubble">${this.renderText(m.text ?? "")}</div><div class="ops">${copyBtn}</div>${delBtn}</div>`;
+        content = mobile
+          ? html`<div class="card text"><div class="bubble" @click=${(e: MouseEvent) => this.copyBubble(e, m)}>${this.renderText(m.text ?? "")}</div>${delBtn}</div>`
+          : html`<div class="card text"><div class="bubble">${this.renderText(m.text ?? "")}</div><div class="ops">${copyBtn}</div>${delBtn}</div>`;
         break;
       case "code":
-        content = html`<div class="card code"><div class="code-head"><span class="lang">${m.code?.lang ?? "code"}</span></div><pre @click=${() => this.openPreview("code", m)}>${unsafeHTML(highlightCode(m.code?.content ?? "", m.code?.lang ?? "ts"))}</pre><div class="ops">${copyCodeBtn}</div>${delBtn}</div>`;
+        content = html`<div class="card code"><div class="code-head"><span class="lang">${m.code?.lang ?? "code"}</span></div><pre @click=${() => { if (this.debounceKey("pv-" + m.id, 400)) this.openPreview("code", m); }}>${unsafeHTML(highlightCode(m.code?.content ?? "", m.code?.lang ?? "ts"))}</pre><div class="ops">${copyCodeBtn}</div>${delBtn}</div>`;
         break;
       case "image":
         content = html`<div class="card img">
-            <div class="thumb" @click=${() => this.openPreview("image", m)}><img src="${f?.url ?? ""}" alt="" /></div>
-            <div class="ovl" @click=${(e: Event) => e.stopPropagation()}><span class="mm"><span class="name">${f?.name ?? ""}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></span><span class="ops">${copyImgBtn}</span></div>${delBtn}
+            <div class="thumb" @click=${() => { if (this.debounceKey("pv-" + m.id, 400)) this.openPreview("image", m); }}><img src="${f?.url ?? ""}" alt="" /></div>
+            <div class="ovl" @click=${(e: Event) => e.stopPropagation()}><span class="mm"><span class="name">${f?.name ?? ""}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></span><span class="ops">${downBtn}</span></div>${delBtn}
           </div>`;
         break;
       case "video":
         content = html`<div class="card video">
-            <div class="vthumb" @click=${() => this.openPreview("video", m)}><video src="${f?.url ?? ""}" muted preload="metadata"></video></div>
+            <div class="vthumb" @click=${() => { if (this.debounceKey("pv-" + m.id, 400)) this.openPreview("video", m); }}><video src="${f?.url ?? ""}" muted preload="metadata"></video></div>
             <div class="ovl" @click=${(e: Event) => e.stopPropagation()}><span class="mm"><span class="name">${f?.name ?? ""}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></span><span class="ops">${downBtn}</span></div>${delBtn}
           </div>`;
         break;
       case "audio":
         content = html`<div class="card audio ${this.playingId === m.id ? "playing" : ""}" data-id="${m.id}">
             <div class="ap">
-              <button class="play" @click=${() => this.toggleAudio(m)}>${this.playingId === m.id ? I_PAUSE : I_PLAY}</button>
+              <button class="play" @click=${() => { if (this.debounceKey("play-" + m.id, 400)) this.toggleAudio(m); }}>${this.playingId === m.id ? I_PAUSE : I_PLAY}</button>
               <div class="wave" @click=${(e: MouseEvent) => this.seekAudio(m, e)}>${waveBars(this.wavePeaks[m.id])}<i class="ind"></i></div>
               <audio src="${this.audioSrc(m) ?? ""}" preload="none"></audio>
             </div>
@@ -689,7 +759,7 @@ export class FilesyncApp extends LitElement {
         break;
     }
 
-    return html`<div class="msg">
+    return html`<div class="msg" data-id="${m.id}" @touchstart=${() => this.msgPressStart(m)} @touchmove=${this.msgPressEnd} @touchend=${this.msgPressEnd} @mousedown=${() => this.msgPressStart(m)} @mouseup=${this.msgPressEnd} @mouseleave=${this.msgPressEnd} @click=${(e: Event) => this.msgClickGuard(e)}>
       <div class="avatar">${(m.sender.deviceName[0] ?? "?").toUpperCase()}</div>
       <div class="body">
         <div class="head">${head}</div>
@@ -704,27 +774,27 @@ export class FilesyncApp extends LitElement {
     return html`
       <div class="container">
       <header class="app">
-        <div class="logo ${this.connState}" @click=${() => (this.sheet = "settings")}>filesyncEX<small>v6.0.0-alpha1 · 网页端</small></div>
+        <div class="logo ${this.connState}" @click=${() => { if (this.debounceKey("settings", 300)) this.sheet = "settings"; }}>filesyncEX<small>v6.0.0-alpha1 · 网页端</small></div>
         <div class="spacer"></div>
-        <button class="iconbtn" title="二维码" @click=${this.openQr}>${I_QR}</button>
-        <button class="iconbtn" title="切换主题" @click=${this.toggleTheme}>${this.theme === "dark" ? I_MOON : I_SUN}</button>
+        <button class="iconbtn" title="二维码" @click=${() => { if (this.debounceKey("qr", 300)) this.openQr(); }}>${I_QR}</button>
+        <button class="iconbtn" title="切换主题" @click=${() => { if (this.debounceKey("theme", 300)) this.toggleTheme(); }}>${this.theme === "dark" ? I_MOON : I_SUN}</button>
       </header>
 
       <!-- 桌面端：顶部上传区 -->
       <section class="upload" @drop=${this.onDrop} @dragover=${(e: DragEvent) => e.preventDefault()}>
         <div class="upload-row ${this.codeMode ? "code-mode" : ""}">
-          <button class="btn btn-file" @click=${() => this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click()}>${I_UP}文件</button>
-          <input class="input" .value=${this.text} placeholder="输入文本，或拖拽 / 粘贴文件到此处…" @input=${(e: Event) => (this.text = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.sendText()} />
+          <button class="btn btn-file" @click=${() => { if (this.debounceKey("file", 400)) this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); }}>${I_UP}文件</button>
+          <input class="input" .value=${this.text} placeholder="输入文本，或拖拽 / 粘贴文件到此处…" @input=${(e: Event) => (this.text = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("send", 600)) this.sendText(); }} />
           <div class="code-editor ${this.codeMode ? "open" : ""}">
             <div class="ce-top"><label>语言</label>
               <select .value=${this.codeLang} @change=${(e: Event) => (this.codeLang = (e.target as HTMLSelectElement).value)}>
                 <option value="ts">TypeScript</option><option value="js">JavaScript</option><option value="python">Python</option><option value="ini">INI / Config</option><option value="bat">Batch (.bat)</option><option value="json">JSON</option><option value="sql">SQL</option><option value="html">HTML</option><option value="css">CSS</option>
               </select>
             </div>
-            <textarea .value=${this.codeText} placeholder="在这里输入代码…（保持格式）" @input=${(e: Event) => (this.codeText = (e.target as HTMLTextAreaElement).value)} @keydown=${(e: KeyboardEvent) => e.ctrlKey && e.key === "Enter" && this.sendCode()}></textarea>
+            <textarea .value=${this.codeText} placeholder="在这里输入代码…（保持格式）" @input=${(e: Event) => (this.codeText = (e.target as HTMLTextAreaElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.ctrlKey && e.key === "Enter" && this.debounceKey("send", 600)) this.sendCode(); }}></textarea>
           </div>
-          <button class="bracebtn ${this.codeMode ? "on" : ""}" title="代码模式" @click=${() => (this.codeMode = !this.codeMode)}>&#123;&#125;</button>
-          <button class="btn send" @click=${this.codeMode ? this.sendCode : this.sendText}>发送</button>
+          <button class="bracebtn ${this.codeMode ? "on" : ""}" title="代码模式" @click=${() => { if (this.debounceKey("codemode", 300)) this.codeMode = !this.codeMode; }}>&#123;&#125;</button>
+          <button class="btn send" @click=${() => { if (this.debounceKey("send", 600)) this.codeMode ? this.sendCode() : this.sendText(); }}>发送</button>
         </div>
         <input type="file" class="file-input" multiple hidden @change=${(e: Event) => void this.handleFiles((e.target as HTMLInputElement).files)} />
       </section>
@@ -732,23 +802,30 @@ export class FilesyncApp extends LitElement {
       <main class="list">${this.renderMessages()}</main>
 
       <!-- 移动端：底部输入条 -->
-      <footer class="composer">
+      <footer class="composer ${this.codeMode ? "code-mode" : ""}">
         <div class="composer-inner">
-          <button class="addbtn" @click=${() => (this.sheet = "attach")}>${I_PLUS}</button>
-          <button class="bracebtn ${this.codeMode ? "on" : ""}" @click=${() => (this.codeMode = !this.codeMode)}>&#123;&#125;</button>
+          <button class="addbtn" @click=${() => { if (this.debounceKey("attach", 300)) this.sheet = "attach"; }}>${I_PLUS}</button>
+          <button class="bracebtn ${this.codeMode ? "on" : ""}" @click=${() => { if (this.debounceKey("codemode", 300)) this.codeMode = !this.codeMode; }}>&#123;&#125;</button>
           ${this.codeMode
-            ? html`<input class="input" .value=${this.codeText} placeholder="// 输入代码，Ctrl+Enter 发送" @input=${(e: Event) => (this.codeText = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => e.ctrlKey && e.key === "Enter" && this.sendCode()} />`
-            : html`<input class="input" .value=${this.text} placeholder="输入消息" @input=${(e: Event) => (this.text = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.sendText()} />`}
-          <button class="sendbtn" @click=${this.codeMode ? this.sendCode : this.sendText}>${I_SEND}</button>
+            ? html`<input class="input" .value=${this.codeText} placeholder="// 输入代码，Ctrl+Enter 发送" @input=${(e: Event) => (this.codeText = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.ctrlKey && e.key === "Enter" && this.debounceKey("send", 600)) this.sendCode(); }} />`
+            : html`<input class="input" .value=${this.text} placeholder="输入消息" @input=${(e: Event) => (this.text = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("send", 600)) this.sendText(); }} />`}
+          <button class="sendbtn" @click=${() => { if (this.debounceKey("send", 600)) this.codeMode ? this.sendCode() : this.sendText(); }}>${I_SEND}</button>
         </div>
-        ${this.codeMode ? html`<div class="code-editor open"><div class="ce-top"><label>语言</label><select .value=${this.codeLang} @change=${(e: Event) => (this.codeLang = (e.target as HTMLSelectElement).value)}>${LANG_OPTS}</select></div><textarea .value=${this.codeText} placeholder="// 粘贴代码，Ctrl+Enter 发送" @input=${(e: Event) => (this.codeText = (e.target as HTMLTextAreaElement).value)} @keydown=${(e: KeyboardEvent) => e.ctrlKey && e.key === "Enter" && this.sendCode()}></textarea></div>` : nothing}
+        ${this.codeMode ? html`<div class="code-editor open"><div class="ce-top"><label>语言</label><select .value=${this.codeLang} @change=${(e: Event) => (this.codeLang = (e.target as HTMLSelectElement).value)}>${LANG_OPTS}</select></div><textarea .value=${this.codeText} placeholder="// 粘贴代码，Ctrl+Enter 发送" @input=${(e: Event) => (this.codeText = (e.target as HTMLTextAreaElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.ctrlKey && e.key === "Enter" && this.debounceKey("send", 600)) this.sendCode(); }}></textarea></div>` : nothing}
       </footer>
       </div>
 
       ${this.sheet ? this.renderSheet() : nothing}
       ${pv ? this.renderPreview(pv) : nothing}
       ${this.renderNotice()}
-      <div class="toast ${this.toastShow ? "show" : ""} ${this.toastLeaving ? "leaving" : ""}">${this.toastText}</div>
+      ${this.delBubble ? html`<div class="del-bubble ${this.delBubble.above ? "above" : ""}" style="left:${this.delBubble.x}px;top:${this.delBubble.y}px">
+        <div class="db-text">删除这条消息？</div>
+        <div class="db-ops">
+          <button class="btn cancel" @click=${() => { if (this.debounceKey("del-cancel", 300)) this.closeDelBubble(); }}>取消</button>
+          <button class="btn del" @click=${() => { if (this.debounceKey("del-ok", 600)) this.confirmDelBubble(); }}>删除</button>
+        </div>
+      </div>` : nothing}
+      ${this.toasts.length ? html`<div class="toasts">${this.toasts.map((to) => html`<div class="toast ${to.leaving ? "leaving" : "show"}">${to.text}</div>`)}</div>` : nothing}
     `;
   }
 
@@ -758,9 +835,9 @@ export class FilesyncApp extends LitElement {
     let content: unknown;
     if (s === "attach") {
       content = html`<div class="attach-grid">
-        <button class="att" @click=${() => this.flash("（原型）打开相册")}><span class="ai">${I_IMG}</span>相册</button>
-        <button class="att" @click=${() => this.flash("（原型）打开相机")}><span class="ai pink">📷</span>拍照</button>
-        <button class="att" @click=${() => { this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); close(); }}><span class="ai">${I_FILE}</span>文件</button>
+        <button class="att" @click=${() => { if (this.debounceKey("attach-album", 300)) this.flash("（原型）打开相册"); }}><span class="ai">${I_IMG}</span>相册</button>
+        <button class="att" @click=${() => { if (this.debounceKey("attach-camera", 300)) this.flash("（原型）打开相机"); }}><span class="ai pink">📷</span>拍照</button>
+        <button class="att" @click=${() => { if (this.debounceKey("attach-file", 400)) { this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); close(); } }}><span class="ai">${I_FILE}</span>文件</button>
       </div>`;
     } else if (s === "progress") {
       content = html`<div class="qlist">${this.uploads.length === 0 ? html`<div class="qitem-row"><div class="qname" style="color:var(--muted)">暂无上传任务</div></div>` : this.uploads.map((u) => html`<div class="qitem-row"><div class="qname">${u.name} <small>${u.pct < 0 ? "失败" : fmtSize(u.size)}</small></div><div class="qbar"><i style="width:${u.pct < 0 ? 100 : u.pct}%"></i></div><div class="qmeta"><span>${u.pct < 0 ? "上传失败" : u.pct + "%"}</span></div></div>`)}</div>`;
@@ -777,7 +854,7 @@ export class FilesyncApp extends LitElement {
         <!-- 设备身份 / 昵称 -->
         <p class="st-note">默认昵称 <strong>user_XXXX</strong>（四位数字），按<strong>设备指纹</strong>自动生成，可在此修改（仅本机保存）。</p>
         <label>我的昵称
-          <input class="field" .value=${this.nick} maxlength="10" placeholder="仅字母/数字/下划线，最长 10 位" @input=${(e: Event) => (this.nick = (e.target as HTMLInputElement).value.replace(/[^A-Za-z0-9_]/g, ""))} @keydown=${(e: KeyboardEvent) => e.key === "Enter" && this.rename()} />
+          <input class="field" .value=${this.nick} maxlength="10" placeholder="仅字母/数字/下划线，最长 10 位" @input=${(e: Event) => (this.nick = (e.target as HTMLInputElement).value.replace(/[^A-Za-z0-9_]/g, ""))} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("rename", 600)) this.rename(); }} />
         </label>
         <p class="muted">设备指纹（仅用于本地生成稳定 ID，不上传原始信息）：</p>
         <code class="fp">${this.self?.deviceId ?? ""}</code>
@@ -805,8 +882,8 @@ export class FilesyncApp extends LitElement {
     else if (pv.kind === "audio") body = html`<audio class="ph" src="${f?.url ?? ""}" controls style="width:80%"></audio>`;
     else if (pv.kind === "code") body = html`<div class="codeview">${unsafeHTML(highlightCode(pv.msg.code?.content ?? "", pv.msg.code?.lang ?? "ts"))}</div>`;
     const title = pv.kind === "image" ? "图片预览" : pv.kind === "video" ? "视频预览" : pv.kind === "audio" ? "音频播放" : "代码预览";
-    const footBtn = pv.kind === "code" ? html`<button class="btn" @click=${this.previewAction}>复制</button>` : html`<button class="btn" @click=${this.previewAction}>下载</button>`;
-    return html`<div class="viewer open"><div class="vtop"><span class="vt">${title}</span><button class="close" @click=${this.closePreview}>✕</button></div><div class="vbody ${pv.kind === "image" ? "pv-img" : ""}" @click=${(e: Event) => e.target === e.currentTarget && this.closePreview()}>${body}</div><div class="vfoot">${footBtn}<button class="btn pink" @click=${() => { this.deleteMsg(pv.msg.id); this.closePreview(); }}>删除</button></div></div>`;
+    const footBtn = pv.kind === "code" ? html`<button class="btn" @click=${() => { if (this.debounceKey("pv-action", 600)) this.previewAction(); }}>复制</button>` : html`<button class="btn" @click=${() => { if (this.debounceKey("pv-action", 600)) this.previewAction(); }}>下载</button>`;
+    return html`<div class="viewer open"><div class="vtop"><span class="vt">${title}</span><button class="close" @click=${() => { if (this.debounceKey("pv-close", 300)) this.closePreview(); }}>✕</button></div><div class="vbody ${pv.kind === "image" ? "pv-img" : ""}" @click=${(e: Event) => { if (e.target === e.currentTarget && this.debounceKey("pv-close", 300)) this.closePreview(); }}>${body}</div><div class="vfoot">${footBtn}<button class="btn pink" @click=${() => { if (this.debounceKey("pv-del", 600)) { this.deleteMsg(pv.msg.id); this.closePreview(); } }}>删除</button></div></div>`;
   }
 }
 
