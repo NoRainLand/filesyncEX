@@ -1011,3 +1011,100 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
 - **④ 底部输入条代码模式布局**（app.css + app.ts）：移动端 `.composer-inner{position:relative}`；`.composer-inner .bracebtn` **absolute 压输入框右上角 right:48px**；`.composer input{padding-right:56px}` 让位；`footer.composer.code-mode`（**模板补加 class**）隐藏 `.addbtn`+`.composer-inner>.input`、`.sendbtn` absolute right:0、`.composer-inner{min-height:40px}`；代码编辑器在 footer 内展开。**坑：CSS 选择器 `footer.composer.code-mode` 依赖模板加 class，漏加则样式不生效**。
 - **⑤ 刘海屏安全区**（app.css + index.html 已有 viewport-fit=cover）：移动端 header.app `padding-top:calc(8px+env(safe-area-inset-top))`、footer.composer `padding-bottom:calc(8px+env(safe-area-inset-bottom))`、.panel/.viewer .vtop/.viewer .vfoot/.toasts 均加 safe-area。
 - **验证**（移动 390×844 + 桌面 1280 回归）：文本无复制按钮✓、点击气泡「已复制」✓、图片 ratio 0.75(4:3)+放大图标✓、长按弹出删除气泡定位正确✓、取消保留/删除提示✓（真实删除靠服务器）、代码模式 addbtn+input 隐藏、sendbtn absolute right:0、bracebtn right:48px、code-editor open✓、header safe-area padding 8px（无刘海环境=0）✓、桌面端复制按钮/删除角标不变✓、截图正常✓。web 121.10 kB，纯前端，服务器无需重启。
+
+### 本轮改动（2026-08-07 · 移动端打磨批次 2：代码框在上/真实波形/单行居中/磨砂遮罩/上滑动画/缩回动画）
+- **用户 6 项需求**：
+- **① 移动端代码输入框应在上**（app.css）：`footer.composer .code-editor` 移动端改为 **`position:absolute; left/right:10px; bottom:calc(100% + 8px)`**（悬浮在输入条上方覆盖主界面，不再向下展开）；`flex:none; width:auto; max-height:none; margin:0; border:1px; border-radius:12px; box-shadow:0 -6px 24px`；textarea min-height:150 max-height:240。验证：ce absolute、bottom 64px、width 368px、截图 ✓。
+- **② 移动端音频消息没有波形条（根因：占位波形是等高平条 40% 无起伏）**（app.ts）：`waveBars` 无真实峰值（`/api/wave` 未加载/失败）时改为**模拟真实波形**：96 柱，包络 `0.12+0.88*exp(-((t-0.55)/0.22)^2)`（中间密集高振幅、两侧渐低）+ 相邻平滑噪声 `0.3*noise+0.7*prev`（`Math.sin(i*12.9898)*43758.5453 % 1`）。验证：30 种不同柱高、两侧低中间高 ✓、截图见真实波形起伏 ✓。
+- **③ 移动端文字消息单行不上下居中**（app.css）：移动端 `.card.text .bubble` 原 `padding:12px 14px 0`（底部 0 偏上）→ **`padding:14px`**（上下对称居中）。验证：padTop=padBottom=14px ✓。
+- **④ 移动端代码模式加磨砂遮罩、点击空白关闭**（app.ts + app.css）：render 末尾 `codeMode && innerWidth<=640` 时渲染 `.code-mask`（fixed inset:0 z-index:60，`--frost-bg` + blur(14px)），点击 → `debounceKey("code-mask")` → `codeMode=false`；`footer.composer` 移动端 `z-index:65`（输入条+代码框在遮罩之上可操作，主界面被盖住不可操作）。验证：codeMask 存在、blur(14px)、点击后 codeMode=false 遮罩消失 ✓。
+- **⑤ 移动端设置/二维码界面上滑动画**（app.css）：移动端 `.panel { animation: sheetUp .28s ease }` + `@keyframes sheetUp { from{transform:translateY(100%)} to{transform:translateY(0)} }`（lit 每次打开 sheet 重新渲染 panel → 触发上滑）。验证：animationName sheetUp、dur 0.28s ✓。
+- **⑥ 桌面端关闭代码模式缩回动画**（app.css）：`.code-editor` 从 `display:none`（无法过渡）→ **`display:flex; flex:0 0 0; width:0; max-height:0; opacity:0; transition:max-height .25s, opacity .2s`**（收起不占空间）；`.upload-row.code-mode .code-editor, .code-editor.open { flex:1 1 0; width:auto; max-height:460px; opacity:1 }`（展开）。**坑：收起若保留 flex:1 会与输入框各占一半宽度 → 必须 flex:0 + width:0**；移动端覆盖 `width:auto` 防 absolute 定位被 width:0 锁死。验证：开→maxH 0→460/opacity 1、关→460→0/opacity 0 过渡 ✓、input 恢复 ✓、收起 flex 0 width 0 布局正常 ✓。
+- 验证环境：移动 390×844 + 桌面 1280 回归，截图全部正常。web 122.22 kB，纯前端，服务器无需重启。
+
+### 本轮改动（2026-08-07 · 移动端打磨批次 3：去版本字样/语言下移/下拉统一/波形可见/滚轮屏蔽/双指缩放）
+- **用户 6 项需求**：
+- **① 去掉 logo 的「v6.0.0-alpha1 · 网页端」字样**（app.ts）：`<div class="logo">filesyncEX<small>v6.0.0-alpha1 · 网页端</small></div>` → 去掉 `<small>`。桌面/移动端一致。验证：logoText="filesyncEX" ✓。
+- **② 移动端代码模式语言/选项放下面**（app.css）：`footer.composer .code-editor` 加 `flex-direction: column-reverse`（textarea 在上、`.ce-top` 语言栏在底部）。验证：ceFlexDir=column-reverse、ceTop 在 textarea 下方 ✓、截图 ✓。
+- **③ 桌面/移动端语言下拉框风格统一**（app.css）：`.ce-top select` 加 `appearance:none; -webkit-appearance:none; -moz-appearance:none` + 自定义下拉箭头（`url(data:image/svg+xml,…) no-repeat right 8px center`）+ `padding:5px 24px 5px 8px` + `:focus` 边框 primary（两端共用同一规则，彻底一致，不再依赖浏览器原生 select 外观）。验证：appearance none、bgImage 含箭头、padding-right 24px ✓。
+- **④ 移动端音频波形不可见（用户排查：元素存在，怀疑颜色）**（app.ts + app.css）：**根因：柱条颜色 `var(--muted)` 灰 + 占位模拟波形两端最小高度太小（6%）→ 两端柱条仅 ~2.7px 几乎看不见**。修复：①颜色 `.card.audio .wave i` `background: var(--muted)` → **`var(--accent)`（薄荷绿醒目）**、`.played` `var(--accent)` → **`var(--primary)`**；②`waveBars` 最小高度 `Math.max(6/8)` → **`Math.max(8)`（真实）/`Math.max(10)`（模拟）**，两端不再细到不可见。验证：barBg=rgb(134,206,203) accent、两端柱条 ~3.4px、wave align-items center、截图波形清晰可见 ✓。
+- **⑤ 移动端代码模式屏蔽主界面滚轮**（app.ts）：`code-mask` 加 `@wheel` → `e.preventDefault(); e.stopPropagation()`；`onHostWheel` 开头加 `if (this.codeMode && window.innerWidth<=640) return;`（双保险）。验证：对 mask dispatch wheel → defaultPrevented=true ✓。
+- **⑥ 移动端图片预览双指缩放**（app.ts）：图片预览 `<img>` 加 `@touchstart/@touchmove/@touchend/@touchcancel`；新方法 `touchStart/touchMove/touchEnd` + `pvTouch` state + `touchDist`：**双指 pinch 围绕图片当前中心缩放**（`k=s2/z.s`，`tx += r.width/2*(1-k)` 保持中心不动，clamp 1~8，s<=1 时重置清 transform）；**单指 pan 平移**（仅 s>1 时）；`e.preventDefault()` 防页面缩放/滚动。**坑：tsconfig noUncheckedIndexedAccess → `e.touches[0]!`/`touches[1]!` 需非空断言**。验证：两指 20→100px pinch 后 s=5、transform translate(0,0) scale(5)、touchend 后 pvTouch=null ✓。
+- 验证环境：移动 390×844（波形/代码模式/select/滚轮/双指缩放）+ 桌面 1280 回归（代码编辑器/删除角标正常）。web 123.98 kB，纯前端，服务器无需重启。
+
+### 本轮改动（2026-08-07 · 移动端打磨批次 4：seek 播放位置/语言放输入条/下拉向上/下拉圆角）
+- **用户 4 项需求**：
+- **① 拖动音频进度条到中间后自动播放，却从最前面播**（app.ts seekAudio）：**根因：新创建的 Audio（未播放过）`duration` 未知（NaN）→ `a.duration && isFinite` 为假 → `a.currentTime = ratio * duration`（NaN）无效 → `play()` 从 0 开始**。修复：`seekAudio` 分两分支——**就绪**（`readyState>=1 && duration 有限且>0`）：直接 `setTime()` + `updateWaveInd` + `playFrom()`（从目标位置播）；**未就绪**：`addEventListener("loadedmetadata")` + `a.load()`，就绪回调里 `setTime()`（跳目标位置）+ `updateWaveInd` + `playFrom()`。验证：mock duration=100 readyState=1 点 50% → currentTime=50 + played ✓；readyState=0 → load() 被调 + loadedmetadata 监听注册，触发后 duration=100 → currentTime=50 + played ✓。
+- **② 移动端代码模式语言放「原本输入框的位置」**（app.ts）：composer-inner 里 codeMode 时原本渲染 codeText 输入框的位置 → 改为 `this.renderLangBar(true)`（语言栏）；移动端 `.code-editor` **去掉 ce-top**（只剩 textarea）。CSS 移动端 `.composer-inner .lang-bar{flex:1; min-width:0; padding-right:48px}`（右侧给 `{}` 让位）。验证：langInComposer=true、codeEditorHasLang=false ✓、截图 ✓。
+- **③ 移动端语言下拉向上**（app.ts + app.css）：**原生 `<select>` 无法控制展开方向** → 改用**自定义语言下拉**（`renderLangBar(upward)`）：`.lang-pick`（显示当前语言 + ▾ 箭头，点击 toggle `langOpen`）+ `.lang-list`（绝对定位列表，`.lang-bar.up` → `bottom:calc(100%+6px)` 向上弹出；否则 `top:calc(100%+6px)` 向下）。点击外部关闭：`window click` 监听 `onDocClick` + lang-pick `stopPropagation`；选择语言 `debounceKey("lang-"+l)` → `codeLang=l; langOpen=false`。**桌面端 ce-top 用 `renderLangBar(false)`（向下）**。新增 `langOpen` state + `LANG_LIST`/`LANG_LABEL`/`langLabel`（替换原 `LANG_OPTS`）。验证：移动 footer lang-bar 有 `up` class、桌面 `.upload` lang-bar 无（down）✓。
+- **④ 下拉框不是圆角**（app.css）：`.lang-list { border-radius: 10px; box-shadow: var(--shadow); overflow: hidden }`（自定义列表可控圆角，替代原生 select 系统弹层）。验证：radius 10px（桌面/移动）✓、截图 ✓。
+- **注意**：本次 seekAudio 替换 oldString 只到 `currentTime=...` 行、newString 是完整方法 → **残留原方法尾行导致 TS 语法错误**（第一次构建失败），已手动删除残留三行修复。
+- 验证环境：移动 373 + 桌面 1280，截图全部正常。web 124.54 kB，纯前端，服务器无需重启。
+
+### 本轮改动（2026-08-07 · 移动端打磨批次 5：代码提示一致/代码框顶到头/自动聚焦/箭头向上）
+- **用户 4 项需求**：
+- **① 移动端代码输入框提示与桌面端一致**（app.ts）：移动端 codeMode textarea placeholder `// 粘贴代码，Ctrl+Enter 发送` → **`在这里输入代码…（保持格式）`**（与桌面端相同）。验证：mobilePlaceholder === desktopPlaceholder ✓。
+- **② 移动端代码输入框没有顶到头、上面还有一截白色**（app.css）：**根因：`.code-editor` absolute 相对 `footer.composer`（position:relative），`top:0` = footer 顶部而非屏幕顶部 → 代码框从 footer 顶部向下，顶部露出主界面/遮罩**。修复：`top: calc(100% - 100dvh)`（100%=footer 高、100dvh=视口高 → 负值使元素顶部上移到屏幕顶），`bottom: calc(100% + 8px)`（输入条上方 8px）；`border-radius: 0 0 12px 12px`（顶部直角顶到头）、`textarea max-height: none`（flex:1 撑满，去掉原 240px 限制）。验证：ceTop=0（顶到屏幕顶）、ceAboveInput=true、截图无顶部留白 ✓。
+- **③ 点击代码模式后代码输入框直接获取焦点**（app.ts）：新增 `focusCodeEditor()`：`updateComplete.then` → 按视口选 `footer.composer .code-editor.open textarea`（移动）/ `.upload .code-editor.open textarea`（桌面）→ `focus()`；两个 bracebtn（桌面 upload + 移动 composer）点击时 `this.codeMode = !this.codeMode; this.focusCodeEditor();`。**坑①：不能 `querySelector(".code-editor.open textarea")`（DOM 顺序第一个是隐藏的桌面 .upload 的）→ 必须按视口选**；**坑②：shadow DOM 内 `document.activeElement` 返回 shadow host（filesync-app），需用 `shadowRoot.activeElement` 验证聚焦**。验证：移动端点 bracebtn → shadowRoot.activeElement === footer textarea ✓。
+- **④ 语言选择保持桌面端样子、只是箭头向上**（app.ts）：`renderLangBar` 箭头 `▾` → `${upward ? "▴" : "▾"}`（移动端 up 显示 ▴ 表示列表向上、桌面端 ▾ 向下），其余样式不变（.lang-bar/.lang-pick 桌面/移动共用）。验证：移动 mobileArrow=▴、桌面 desktopArrow=▾ ✓。
+- 验证环境：移动 373（placeholder 一致/ceTop 0/聚焦/▴）+ 桌面 1280（▾/placeholder 一致）。web 124.84 kB，纯前端，服务器无需重启。
+
+### 本轮改动（2026-08-07 · 移动端代码框高度改为屏幕 1/2）
+- **用户澄清**：「我说的代码输入顶到头是指黑色部分相对自身父节点而言，现在把移动端代码输入框改为屏幕的 1/2」。
+- **理解修正**：上一轮我把"顶到头"误做成顶到屏幕顶部（`top: calc(100% - 100dvh)`）；用户原意是 **textarea（黑色）相对代码编辑器容器顶到头**（填满容器无顶部空隙），且**高度改为屏幕一半**。
+- **改动**（app.css）：移动端 `footer.composer .code-editor`：
+  - `top: calc(100% - 100dvh)`（顶到屏幕顶）→ **`height: 50dvh`**（高度 = 屏幕一半），保留 `bottom: calc(100% + 8px)`（悬浮输入条上方 8px）；
+  - `border-radius: 0 0 12px 12px`（顶部直角）→ **`12px`**（不再顶屏幕顶，恢复顶部圆角）；
+  - `box-shadow: 0 6px 24px` → **`0 -6px 24px`**（向上投影，框在输入条上方）。
+  - textarea 加 **`margin-top: 0`**（去掉全局 `.code-editor textarea` 的 `margin-top: 8px`，**黑色区域顶到容器顶部**，无白色间隙）。
+- **验证**（移动 373×800）：代码框高度 402px ≈ 屏幕一半（400）✓、`heightIsHalf` true ✓、textarea `margin-top 0`、顶部与容器间隙仅 1px（边框）→ **黑色填满容器** ✓、textarea 高度占比 1.00、代码框在输入条上方 ✓、截图（半屏 + 黑色顶到容器顶 + 语言栏 ▴ + 磨砂遮罩）✓。
+- web 124.83 kB，纯前端，服务器无需重启。
+
+### 本轮改动（2026-08-07 · 移动端设置隐藏工具栏 + 上传按钮直接选文件）
+- **用户 2 项需求**：
+- **① 移动端设置界面不要有"下载工具"那一栏**（app.ts + app.css）：renderSheet 设置面板的「工具」部分（hr + `st-sec 工具` + `a.btn.tool 下载 QuickSendTool` + 安装提示）包一层 `<div class="tool-sec">`；移动端 `@media(max-width:640px)` 加 `.settings .tool-sec { display: none; }`。桌面端设置面板仍显示工具栏。验证：移动端 toolSec display:none、设置面板只剩 连接/昵称/设备指纹/关于（截图确认无 QuickSendTool）✓。
+- **② 移动端去掉「发送内容」界面，点上传按钮直接选文件**（app.ts）：`footer.composer .addbtn` 原 `@click` → `this.sheet = "attach"`（打开发送内容面板）改为 `this.debounceKey("file",400)` → `this.shadowRoot.querySelector(".file-input")?.click()`（直接触发隐藏 file input 打开文件选择器）。attach sheet（相册/拍照/文件占位）代码保留但不再被 addbtn 触发。验证：点加号 → file input click 被调用（fileClicked=1）且出现系统文件选择对话框、`sheet !== "attach"`（未打开发送内容）✓。
+- 验证环境：移动 373。web 124.97 kB，纯前端，服务器无需重启。
+
+### 本轮改动（2026-08-07 · 回滚「移动端设置隐藏工具栏 + 上传按钮直接选文件」）
+- **用户**：「立马回滚本次修改」。回滚最近一次实际代码改动（移动端设置隐藏工具栏 + 上传按钮直接选文件）。
+- **回滚内容**（app.ts + app.css）：
+  - `footer.composer .addbtn`：`this.shadowRoot.querySelector(".file-input")?.click()`（直接选文件）→ 恢复 `this.sheet = "attach"`（打开发送内容面板：相册/拍照/文件）。
+  - 设置面板「工具」部分：去掉 `<div class="tool-sec">` 包裹，恢复直接渲染 hr + st-sec 工具 + 下载 QuickSendTool + 安装提示（移动端重新显示下载工具栏）。
+  - app.css 移动端：删除 `.settings .tool-sec { display: none }`。
+- **验证**（移动 390）：设置面板恢复含 QuickSendTool（tool-sec 已无包裹、toolSecDisplay n/a）✓；点加号 → `sheet === "attach"`（打开发送内容：相册/拍照/文件）、file input 未触发（fileClicked=0）✓。
+- 构建 124.83 kB，纯前端，服务器无需重启。
+## [6.0.0-alpha1] 移动端语言选择控件改回默认长度（用户反馈）
+- 用户指出移动端语言选择触发控件被拉长。根因：移动端代码模式 `.composer-inner .lang-bar { flex: 1 }` 使语言栏占满输入行、`.lang-pick`（flex:1）随之拉满。
+- 修复：移动端 `.composer-inner .lang-bar`、`.composer-inner .lang-pick` 改 `flex: none`（不拉伸，与桌面端一致保持自然默认长度）；桌面端不受影响。
+- web 构建 125.01 kB；Playwright 验证：移动端 lang-pick 宽 290px → 106px（flex 0 0 auto）、桌面端仍 946px（flex 1 1 0%）✓。
+## [6.0.0-alpha1] 桌面端语言选择控件也改为不拉伸（用户反馈）
+- 续上一条：桌面端语言触发控件同样由 `flex:1` 拉伸改为不拉伸。修改 `.lang-pick` 基础样式 `flex:1` → `flex:none`（桌面端/移动端共用基础样式，两处一致；移动端 `.composer-inner .lang-pick` 覆盖保留）。
+- web 构建 125.01 kB；Playwright 验证：桌面端 lang-pick 946px → 106px（flex 0 0 auto）、移动端仍 106px ✓。
+## [6.0.0-alpha1] 桌面端语言选择列表截断修复（用户反馈）
+- 根因：`.lang-pick` 改 `flex:none` 后，绝对定位的 `.lang-list`（`left:0; right:0`）宽度跟随触发控件（106px），语言选项（如 TypeScript / INI / Config / Batch (.bat)）被截断。
+- 修复：`.lang-list` 加 `min-width:150px`（两端共用）。
+- web 构建 125.03 kB；Playwright 验证：列表宽 152px、scrollW==clientW==150 无截断、9 项全部可见（TypeScript…CSS）✓。
+## [6.0.0-alpha1] 桌面端语言列表上下截断修复（用户反馈）
+- 根因：`.code-editor { overflow: hidden }`（用于圆角裁剪）裁剪了向下弹出的绝对定位 `.lang-list`——code-editor 实际高仅 204px，列表 290px，从第 6 项（JSON）起被裁剪，只剩前 5 项。
+- 修复：移除 `.code-editor` 的 `overflow: hidden`，圆角改由子元素承担：`.ce-top` 加 `border-radius:10px 10px 0 0`、桌面 textarea 加 `border-radius:0 0 10px 10px`、移动端 textarea 覆盖 `border-radius:12px`。
+- web 构建 125.09 kB；Playwright 验证：桌面 ce overflow visible、9 项全渲染可见（147-437px）、ce-top/textarea 圆角正确；移动端同样 9 项完整、ta radius 12px ✓。
+## [6.0.0-alpha1] 语言选择箭头放大 3 倍（用户反馈）
+- `.lang-arr`（语言触发控件右侧小箭头 ▾/▴）`font-size: 10px` → `30px`（放大 3 倍），加 `line-height: 1` 防裁剪；桌面/移动共用基础样式。
+- web 构建 125.10 kB；Playwright 验证：桌面/移动箭头均 30px、高 30px 完整显示（▾ / ▴）✓。
+## [6.0.0-alpha1] 语言箭头 30px → 20px（用户「不好看，改为 20px」）
+- 续上条：`.lang-arr` 字体 `30px` → `20px`（保留 `line-height:1`）。
+- web 构建 125.10 kB；Playwright 验证：桌面箭头 20px、高 20px 完整显示（▾）✓。
+## [6.0.0-alpha1] 移动端长按删除三项优化（用户 3 项）
+- ①气泡箭头描边：新增 `::after` 描边三角（大 1px，`--line` 色）+ 原 `::before` 填充三角（`--bg` 色，z-index:1 盖住中间留出描边），`.above` 方向同步。
+- ②按钮文字居中：`.del-bubble .db-ops .btn` 加 `justify-content: center`（基础 .btn 是 inline-flex 无水平居中）。
+- ③选中消息浮起 + 磨砂遮罩：`.msg` 按 `delBubble.id` 加 `del-selected` class（z-index 695、translateY(-4px) scale(1.02) + 阴影浮起）；新增 `.del-mask` 磨砂遮罩（fixed inset0、z-index 690、--frost-bg + blur 14px）盖住其他消息；气泡 z-index 700 在其上；点击遮罩 → `closeDelBubble()` 取消删除。
+- web 构建 125.88 kB；Playwright 验证：箭头 ::after 描边色 --line / ::before 填充 --bg ✓、btn justify-content center ✓、del-selected + transform 浮起 + 阴影 + z695 ✓、del-mask z690 blur14 ✓、点击遮罩后 delBubble 关闭 ✓、截图 ✓。
+## [6.0.0-alpha1] 移动端长按屏蔽原生事件 + 气泡上方位置/箭头修复（用户 2 项）
+- ①屏蔽原生长按：移动端 `.msg, .msg *` 加 `user-select:none; -webkit-user-select:none; -webkit-touch-callout:none`（屏蔽文字选取 + iOS 图片长按菜单）；`.msg` 加 `@contextmenu` handler（≤640px 时 preventDefault，屏蔽 Android 长按系统菜单）。
+- ②气泡在上方（above）位置/箭头修复：根因 `.del-bubble` 是 content-box（`width:200px` + padding 24 + border 2 = 实际 226px），且 `openDelBubble` 估算 `bh=118`（实际气泡仅约 88px）→ 上方时气泡离消息 38px 空隙、箭头水平偏 13px 未对准消息中心。修复：`.del-bubble` 加 `box-sizing:border-box`（实际宽 200px，箭头对准）、`bh` 118→90（上方空隙缩到 3px 紧贴消息）。
+- web 构建 126.04 kB；Playwright 验证：user-select none ✓、contextmenu 被 preventDefault ✓（用目标元素监听而非 document，合成事件需 composed:true 才能穿 shadow boundary）、气泡 w200 box-sizing border-box ✓、above 空隙 3px（原 38px）✓、箭头偏移 0 对准消息中心 ✓、截图 ✓。
+## [6.0.0-alpha1] 移动端长按：上方箭头可见修复 + 浮起去背景（用户 2 项）
+- ①上方箭头不可见根因：`.del-bubble.above::before/::after` 用 `border-top-color` 只设颜色，但 base 里 `border-top: none` 已把顶部边框宽度清零，`above` 又 `border-bottom: none` → 四边全 0 宽，箭头完全不可见（实测 borderTop `0px none`、height `0px`）。修复：above 变体改 `border-top: 6px solid var(--bg)` / `7px solid var(--line)`（恢复顶部宽度，朝下三角可见）。
+- ②浮起去背景：`.msg.del-selected` 去掉 `box-shadow`（整行阴影呈背景块感），仅保留 `transform: translateY(-4px) scale(1.02)` 浮起（头像/用户名日期/消息体随行浮起，无背景块）。
+- web 构建 126.00 kB；Playwright 验证：above 箭头 borderTop 6px/7px solid 可见 ✓、msg box-shadow none ✓、transform 保留 ✓、截图 ✓。

@@ -66,8 +66,23 @@ function fileKind(name: string, mime?: string): "image" | "audio" | "video" | "f
 
 /** 波形条：优先用服务器生成的真实峰值；无数据时默认全部平线（同高度） */
 const waveBars = (peaks?: number[] | null) => {
-  const arr = peaks && peaks.length ? peaks : Array.from({ length: 96 }, () => 0.4);
-  return arr.map((v) => html`<i style="height:${Math.max(6, Math.round(v * 100))}%"></i>`);
+  if (peaks && peaks.length) {
+    return peaks.map((v) => html`<i style="height:${Math.max(8, Math.round(v * 100))}%"></i>`);
+  }
+  // 占位/加载中：模拟真实音频波形（中间密集高振幅、两侧渐低、相邻平滑），避免平条看不出波形
+  const N = 96;
+  const bars: unknown[] = [];
+  let prev = 0.4;
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1);
+    const env = 0.12 + 0.88 * Math.exp(-Math.pow((t - 0.55) / 0.22, 2));
+    const noise = Math.abs(((Math.sin(i * 12.9898) * 43758.5453) % 1) - 0.5) * 0.9;
+    const smooth = 0.3 * noise + 0.7 * prev;
+    prev = smooth;
+    const h = Math.max(10, Math.min(100, env * (40 + smooth * 60)));
+    bars.push(html`<i style="height:${h.toFixed(1)}%"></i>`);
+  }
+  return bars;
 };
 
 /* ================= One Dark 语法高亮 ================= */
@@ -145,7 +160,7 @@ export class FilesyncApp extends LitElement {
     connState: { state: true }, notices: { state: true },
     text: { state: true }, codeMode: { state: true }, codeLang: { state: true }, codeText: { state: true },
     uploads: { state: true }, sheet: { state: true }, preview: { state: true }, nick: { state: true },
-    httpUrl: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, wavePeaks: { state: true },
+    httpUrl: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, langOpen: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, wavePeaks: { state: true },
   };
 
   msgs: MsgDataT[] = [];
@@ -177,6 +192,8 @@ export class FilesyncApp extends LitElement {
   private longPressTimer: number | undefined;
   /** 长按抬起后的 click 屏蔽窗口（避免误触预览/复制） */
   private blockClickUntil = 0;
+  /** 自定义语言下拉是否展开 */
+  langOpen = false;
 
   private ws: WsClient | null = null;
   private audioEl: HTMLAudioElement | null = null;
@@ -219,14 +236,16 @@ export class FilesyncApp extends LitElement {
     });
     this.ws.connect();
     window.addEventListener("resize", this.onResize);
+    window.addEventListener("click", this.onDocClick);
     // 主界面任何位置滚轮都转发到滚动容器（桌面 .container / 移动 .list）
     this.addEventListener("wheel", this.onHostWheel);
   }
-  disconnectedCallback(): void { window.removeEventListener("resize", this.onResize); this.removeEventListener("wheel", this.onHostWheel); this.ws?.close(); super.disconnectedCallback(); }
+  disconnectedCallback(): void { window.removeEventListener("resize", this.onResize); window.removeEventListener("click", this.onDocClick); this.removeEventListener("wheel", this.onHostWheel); this.ws?.close(); super.disconnectedCallback(); }
   private onResize = (): void => { this.requestUpdate(); this.scrollToLatest(); };
   /** 全局滚轮：弹层/预览打开时不劫持；否则把滚轮统一转发到当前滚动容器 */
   private onHostWheel = (e: WheelEvent): void => {
     if (this.sheet || this.preview) return; // 弹层/预览内部自己滚
+    if (this.codeMode && window.innerWidth <= 640) return; // 移动端代码模式屏蔽主界面滚轮
     const scroller = this.shadowRoot?.querySelector<HTMLElement>(window.innerWidth <= 640 ? ".list" : ".container");
     if (!scroller) return;
     const inScroller = scroller.contains(e.target as Node);
@@ -300,7 +319,7 @@ export class FilesyncApp extends LitElement {
     const el = this.shadowRoot?.querySelector<HTMLElement>(`.msg[data-id="${m.id}"]`);
     if (!el) return;
     const r = el.getBoundingClientRect();
-    const bw = 200, bh = 118;
+    const bw = 200, bh = 90;
     let left = r.left + r.width / 2 - bw / 2;
     left = Math.max(8, Math.min(left, window.innerWidth - bw - 8));
     let top = r.bottom + 8;
@@ -352,16 +371,29 @@ export class FilesyncApp extends LitElement {
     this.playingId = m.id;
     void a.play().catch(() => { this.playingId = null; this.audioEl = null; this.audioMsgId = null; });
   }
-  /** 点击/拖动波形条跳转播放进度 */
+  /** 点击/拖动波形条跳转播放进度：元数据未就绪时先加载，就绪后跳转目标位置再播放（避免从 0 开始） */
   private seekAudio(m: MsgDataT, e: MouseEvent): void {
     const a = this.ensureAudio(m);
     if (!a) return;
     const wave = e.currentTarget as HTMLElement;
     const r = wave.getBoundingClientRect();
     const ratio = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-    if (a.duration && isFinite(a.duration)) a.currentTime = ratio * a.duration;
-    this.updateWaveInd(m.id, ratio);
-    if (a.paused) { this.playingId = m.id; void a.play().catch(() => { this.playingId = null; this.audioEl = null; this.audioMsgId = null; }); }
+    const setTime = (): void => {
+      if (a.duration && isFinite(a.duration) && a.duration > 0) a.currentTime = ratio * a.duration;
+    };
+    const playFrom = (): void => {
+      if (a.paused) { this.playingId = m.id; void a.play().catch(() => { this.playingId = null; this.audioEl = null; this.audioMsgId = null; }); }
+    };
+    if (a.readyState >= 1 && a.duration && isFinite(a.duration) && a.duration > 0) {
+      setTime();
+      this.updateWaveInd(m.id, ratio);
+      playFrom();
+    } else {
+      // 新 Audio 元数据未就绪（duration 未知 → 直接设 currentTime 无效 → 会从 0 播）：先加载，就绪后跳转并播放
+      const onMeta = (): void => { a.removeEventListener("loadedmetadata", onMeta); setTime(); this.updateWaveInd(m.id, ratio); playFrom(); };
+      a.addEventListener("loadedmetadata", onMeta);
+      a.load();
+    }
   }
   /** 更新波形进度：已播 bar 变薄荷、未播灰；进度线穿过的 bar 用横向渐变平滑过渡（线性前进，非整格跳变）+ 竖线 .ind 定位 */
   /** 更新波形播放进度：已播 bar 整根变薄荷（.played 类），未播灰；竖线 .ind 定位（直接改 DOM，不经 lit 重渲染） */
@@ -515,6 +547,46 @@ export class FilesyncApp extends LitElement {
     window.removeEventListener("mousemove", this.onDragMove);
     window.removeEventListener("mouseup", this.onDragEnd);
   };
+  /** 移动端图片双指缩放 / 单指平移（围绕图片当前中心缩放，双指收拢/张开 + 单指拖动） */
+  private pvTouch: { type: "pinch" | "pan"; d0: number; s0: number; x: number; y: number } | null = null;
+  private touchDist(e: TouchEvent): number {
+    return Math.hypot(e.touches[0]!.clientX - e.touches[1]!.clientX, e.touches[0]!.clientY - e.touches[1]!.clientY);
+  }
+  private touchStart(e: TouchEvent): void {
+    e.preventDefault();
+    const z = this.pvZoom;
+    const img = e.currentTarget as HTMLElement;
+    if (!z.init) { const r = img.getBoundingClientRect(); z.bx = r.left; z.by = r.top; z.init = true; }
+    if (e.touches.length >= 2) {
+      this.pvTouch = { type: "pinch", d0: this.touchDist(e), s0: z.s, x: 0, y: 0 };
+    } else if (e.touches.length === 1) {
+      this.pvTouch = { type: "pan", d0: 0, s0: 0, x: e.touches[0]!.clientX, y: e.touches[0]!.clientY };
+    }
+  }
+  private touchMove(e: TouchEvent): void {
+    e.preventDefault();
+    const z = this.pvZoom;
+    const g = this.pvTouch;
+    const img = e.currentTarget as HTMLElement;
+    if (!g || !img) return;
+    if (g.type === "pinch" && e.touches.length >= 2) {
+      const s2 = Math.min(8, Math.max(1, (g.s0 * this.touchDist(e)) / g.d0));
+      const r = img.getBoundingClientRect();
+      const k = s2 / z.s;
+      z.tx += (r.width / 2) * (1 - k);
+      z.ty += (r.height / 2) * (1 - k);
+      z.s = s2;
+      if (z.s <= 1.001) { z.tx = 0; z.ty = 0; z.s = 1; img.style.transform = ""; }
+      else img.style.transform = `translate(${z.tx}px, ${z.ty}px) scale(${z.s})`;
+    } else if (g.type === "pan" && e.touches.length === 1 && z.s > 1.001) {
+      z.tx += e.touches[0]!.clientX - g.x;
+      z.ty += e.touches[0]!.clientY - g.y;
+      g.x = e.touches[0]!.clientX;
+      g.y = e.touches[0]!.clientY;
+      img.style.transform = `translate(${z.tx}px, ${z.ty}px) scale(${z.s})`;
+    }
+  }
+  private touchEnd(): void { this.pvTouch = null; }
   private previewAction(): void {
     const p = this.preview;
     if (!p) return;
@@ -537,6 +609,8 @@ export class FilesyncApp extends LitElement {
     this.clickGuard.set(key, now);
     return true;
   }
+  /** 点击文档其它区域时关闭语言下拉 */
+  private onDocClick = (): void => { if (this.langOpen) this.langOpen = false; };
   /** 提示弹窗池：每次追加一个独立 toast，2200ms 后淡出上移，再 700ms 移除 */
   private flash(t: string): void {
     const id = ++this.toastSeq;
@@ -759,7 +833,7 @@ export class FilesyncApp extends LitElement {
         break;
     }
 
-    return html`<div class="msg" data-id="${m.id}" @touchstart=${() => this.msgPressStart(m)} @touchmove=${this.msgPressEnd} @touchend=${this.msgPressEnd} @mousedown=${() => this.msgPressStart(m)} @mouseup=${this.msgPressEnd} @mouseleave=${this.msgPressEnd} @click=${(e: Event) => this.msgClickGuard(e)}>
+    return html`<div class="msg ${this.delBubble?.id === m.id ? "del-selected" : ""}" data-id="${m.id}" @touchstart=${() => this.msgPressStart(m)} @touchmove=${this.msgPressEnd} @touchend=${this.msgPressEnd} @mousedown=${() => this.msgPressStart(m)} @mouseup=${this.msgPressEnd} @mouseleave=${this.msgPressEnd} @contextmenu=${(e: Event) => { if (window.innerWidth <= 640) e.preventDefault(); }} @click=${(e: Event) => this.msgClickGuard(e)}>
       <div class="avatar">${(m.sender.deviceName[0] ?? "?").toUpperCase()}</div>
       <div class="body">
         <div class="head">${head}</div>
@@ -768,13 +842,35 @@ export class FilesyncApp extends LitElement {
     </div>`;
   }
 
+  /** 自定义语言下拉栏：upward=true 列表向上弹出（移动端输入条），否则向下（桌面端代码框顶） */
+  private renderLangBar(upward: boolean): unknown {
+    return html`<div class="lang-bar ${upward ? "up" : ""}">
+      <label>语言</label>
+      <div class="lang-pick" @click=${(e: Event) => { e.stopPropagation(); if (this.debounceKey("lang-toggle", 250)) this.langOpen = !this.langOpen; }}>
+        <span class="lang-cur">${langLabel(this.codeLang)}</span><span class="lang-arr">${upward ? "▴" : "▾"}</span>
+        ${this.langOpen ? html`<div class="lang-list">${LANG_LIST.map((l) => html`<div class="lang-opt ${l === this.codeLang ? "on" : ""}" @click=${() => { if (this.debounceKey("lang-" + l, 300)) { this.codeLang = l; this.langOpen = false; } }}>${langLabel(l)}</div>`)}</div>` : nothing}
+      </div>
+    </div>`;
+  }
+
+  /** 进入代码模式后自动聚焦代码输入框（按视口选可见的：移动端 footer / 桌面端 upload） */
+  private focusCodeEditor(): void {
+    if (!this.codeMode) return;
+    void this.updateComplete.then(() => {
+      const sel = window.innerWidth <= 640
+        ? "footer.composer .code-editor.open textarea"
+        : ".upload .code-editor.open textarea";
+      this.shadowRoot?.querySelector<HTMLTextAreaElement>(sel)?.focus();
+    });
+  }
+
   /* ---------- render ---------- */
   render() {
     const pv = this.preview;
     return html`
       <div class="container">
       <header class="app">
-        <div class="logo ${this.connState}" @click=${() => { if (this.debounceKey("settings", 300)) this.sheet = "settings"; }}>filesyncEX<small>v6.0.0-alpha1 · 网页端</small></div>
+        <div class="logo ${this.connState}" @click=${() => { if (this.debounceKey("settings", 300)) this.sheet = "settings"; }}>filesyncEX</div>
         <div class="spacer"></div>
         <button class="iconbtn" title="二维码" @click=${() => { if (this.debounceKey("qr", 300)) this.openQr(); }}>${I_QR}</button>
         <button class="iconbtn" title="切换主题" @click=${() => { if (this.debounceKey("theme", 300)) this.toggleTheme(); }}>${this.theme === "dark" ? I_MOON : I_SUN}</button>
@@ -786,14 +882,10 @@ export class FilesyncApp extends LitElement {
           <button class="btn btn-file" @click=${() => { if (this.debounceKey("file", 400)) this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); }}>${I_UP}文件</button>
           <input class="input" .value=${this.text} placeholder="输入文本，或拖拽 / 粘贴文件到此处…" @input=${(e: Event) => (this.text = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("send", 600)) this.sendText(); }} />
           <div class="code-editor ${this.codeMode ? "open" : ""}">
-            <div class="ce-top"><label>语言</label>
-              <select .value=${this.codeLang} @change=${(e: Event) => (this.codeLang = (e.target as HTMLSelectElement).value)}>
-                <option value="ts">TypeScript</option><option value="js">JavaScript</option><option value="python">Python</option><option value="ini">INI / Config</option><option value="bat">Batch (.bat)</option><option value="json">JSON</option><option value="sql">SQL</option><option value="html">HTML</option><option value="css">CSS</option>
-              </select>
-            </div>
+            <div class="ce-top">${this.renderLangBar(false)}</div>
             <textarea .value=${this.codeText} placeholder="在这里输入代码…（保持格式）" @input=${(e: Event) => (this.codeText = (e.target as HTMLTextAreaElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.ctrlKey && e.key === "Enter" && this.debounceKey("send", 600)) this.sendCode(); }}></textarea>
           </div>
-          <button class="bracebtn ${this.codeMode ? "on" : ""}" title="代码模式" @click=${() => { if (this.debounceKey("codemode", 300)) this.codeMode = !this.codeMode; }}>&#123;&#125;</button>
+          <button class="bracebtn ${this.codeMode ? "on" : ""}" title="代码模式" @click=${() => { if (this.debounceKey("codemode", 300)) { this.codeMode = !this.codeMode; this.focusCodeEditor(); } }}>&#123;&#125;</button>
           <button class="btn send" @click=${() => { if (this.debounceKey("send", 600)) this.codeMode ? this.sendCode() : this.sendText(); }}>发送</button>
         </div>
         <input type="file" class="file-input" multiple hidden @change=${(e: Event) => void this.handleFiles((e.target as HTMLInputElement).files)} />
@@ -804,27 +896,30 @@ export class FilesyncApp extends LitElement {
       <!-- 移动端：底部输入条 -->
       <footer class="composer ${this.codeMode ? "code-mode" : ""}">
         <div class="composer-inner">
-          <button class="addbtn" @click=${() => { if (this.debounceKey("attach", 300)) this.sheet = "attach"; }}>${I_PLUS}</button>
-          <button class="bracebtn ${this.codeMode ? "on" : ""}" @click=${() => { if (this.debounceKey("codemode", 300)) this.codeMode = !this.codeMode; }}>&#123;&#125;</button>
+          <button class="addbtn" title="选择文件" @click=${() => { if (this.debounceKey("file", 400)) this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); }}>${I_PLUS}</button>
+          <button class="bracebtn ${this.codeMode ? "on" : ""}" @click=${() => { if (this.debounceKey("codemode", 300)) { this.codeMode = !this.codeMode; this.focusCodeEditor(); } }}>&#123;&#125;</button>
           ${this.codeMode
-            ? html`<input class="input" .value=${this.codeText} placeholder="// 输入代码，Ctrl+Enter 发送" @input=${(e: Event) => (this.codeText = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.ctrlKey && e.key === "Enter" && this.debounceKey("send", 600)) this.sendCode(); }} />`
+            ? this.renderLangBar(true)
             : html`<input class="input" .value=${this.text} placeholder="输入消息" @input=${(e: Event) => (this.text = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("send", 600)) this.sendText(); }} />`}
           <button class="sendbtn" @click=${() => { if (this.debounceKey("send", 600)) this.codeMode ? this.sendCode() : this.sendText(); }}>${I_SEND}</button>
         </div>
-        ${this.codeMode ? html`<div class="code-editor open"><div class="ce-top"><label>语言</label><select .value=${this.codeLang} @change=${(e: Event) => (this.codeLang = (e.target as HTMLSelectElement).value)}>${LANG_OPTS}</select></div><textarea .value=${this.codeText} placeholder="// 粘贴代码，Ctrl+Enter 发送" @input=${(e: Event) => (this.codeText = (e.target as HTMLTextAreaElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.ctrlKey && e.key === "Enter" && this.debounceKey("send", 600)) this.sendCode(); }}></textarea></div>` : nothing}
+        ${this.codeMode ? html`<div class="code-editor open"><textarea .value=${this.codeText} placeholder="在这里输入代码…（保持格式）" @input=${(e: Event) => (this.codeText = (e.target as HTMLTextAreaElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.ctrlKey && e.key === "Enter" && this.debounceKey("send", 600)) this.sendCode(); }}></textarea></div>` : nothing}
       </footer>
       </div>
 
       ${this.sheet ? this.renderSheet() : nothing}
       ${pv ? this.renderPreview(pv) : nothing}
       ${this.renderNotice()}
-      ${this.delBubble ? html`<div class="del-bubble ${this.delBubble.above ? "above" : ""}" style="left:${this.delBubble.x}px;top:${this.delBubble.y}px">
-        <div class="db-text">删除这条消息？</div>
-        <div class="db-ops">
-          <button class="btn cancel" @click=${() => { if (this.debounceKey("del-cancel", 300)) this.closeDelBubble(); }}>取消</button>
-          <button class="btn del" @click=${() => { if (this.debounceKey("del-ok", 600)) this.confirmDelBubble(); }}>删除</button>
-        </div>
-      </div>` : nothing}
+      ${this.codeMode && window.innerWidth <= 640 ? html`<div class="code-mask" @wheel=${(e: WheelEvent) => { e.preventDefault(); e.stopPropagation(); }} @click=${() => { if (this.debounceKey("code-mask", 300)) this.codeMode = false; }}></div>` : nothing}
+      ${this.delBubble ? html`
+        <div class="del-mask" @click=${() => { if (this.debounceKey("del-mask", 300)) this.closeDelBubble(); }}></div>
+        <div class="del-bubble ${this.delBubble.above ? "above" : ""}" style="left:${this.delBubble.x}px;top:${this.delBubble.y}px">
+          <div class="db-text">删除这条消息？</div>
+          <div class="db-ops">
+            <button class="btn cancel" @click=${() => { if (this.debounceKey("del-cancel", 300)) this.closeDelBubble(); }}>取消</button>
+            <button class="btn del" @click=${() => { if (this.debounceKey("del-ok", 600)) this.confirmDelBubble(); }}>删除</button>
+          </div>
+        </div>` : nothing}
       ${this.toasts.length ? html`<div class="toasts">${this.toasts.map((to) => html`<div class="toast ${to.leaving ? "leaving" : "show"}">${to.text}</div>`)}</div>` : nothing}
     `;
   }
@@ -858,11 +953,13 @@ export class FilesyncApp extends LitElement {
         </label>
         <p class="muted">设备指纹（仅用于本地生成稳定 ID，不上传原始信息）：</p>
         <code class="fp">${this.self?.deviceId ?? ""}</code>
-        <!-- 工具 -->
-        <hr />
-        <p class="st-sec">工具</p>
-        <a class="btn tool" href="/tool/QuickSendTool.exe" download>${I_DOWN}下载 QuickSendTool（Windows 右键发送）</a>
-        <p class="muted">安装后在文件管理器右键选中文件，即可一键发送到本服务器。</p>
+        <!-- 工具（移动端隐藏） -->
+        <div class="tool-sec">
+          <hr />
+          <p class="st-sec">工具</p>
+          <a class="btn tool" href="/tool/QuickSendTool.exe" download>${I_DOWN}下载 QuickSendTool（Windows 右键发送）</a>
+          <p class="muted">安装后在文件管理器右键选中文件，即可一键发送到本服务器。</p>
+        </div>
         <!-- 关于 -->
         <hr />
         <p class="st-sec">关于</p>
@@ -877,7 +974,7 @@ export class FilesyncApp extends LitElement {
   private renderPreview(pv: { kind: string; msg: MsgDataT }) {
     const f = pv.msg.file;
     let body: unknown;
-    if (pv.kind === "image") body = html`<img class="ph" src="${f?.url ?? ""}" alt="" @wheel=${(e: WheelEvent) => this.zoomPreview(e)} @mousedown=${(e: MouseEvent) => this.startDrag(e)} />`;
+    if (pv.kind === "image") body = html`<img class="ph" src="${f?.url ?? ""}" alt="" @wheel=${(e: WheelEvent) => this.zoomPreview(e)} @mousedown=${(e: MouseEvent) => this.startDrag(e)} @touchstart=${(e: TouchEvent) => this.touchStart(e)} @touchmove=${(e: TouchEvent) => this.touchMove(e)} @touchend=${this.touchEnd} @touchcancel=${this.touchEnd} />`;
     else if (pv.kind === "video") body = html`<video class="ph" src="${f?.url ?? ""}" controls></video>`;
     else if (pv.kind === "audio") body = html`<audio class="ph" src="${f?.url ?? ""}" controls style="width:80%"></audio>`;
     else if (pv.kind === "code") body = html`<div class="codeview">${unsafeHTML(highlightCode(pv.msg.code?.content ?? "", pv.msg.code?.lang ?? "ts"))}</div>`;
@@ -887,6 +984,8 @@ export class FilesyncApp extends LitElement {
   }
 }
 
-const LANG_OPTS = html`<option value="ts">TypeScript</option><option value="js">JavaScript</option><option value="python">Python</option><option value="ini">INI / Config</option><option value="bat">Batch (.bat)</option><option value="json">JSON</option><option value="sql">SQL</option><option value="html">HTML</option><option value="css">CSS</option>`;
+const LANG_LIST = ["ts", "js", "python", "ini", "bat", "json", "sql", "html", "css"];
+const LANG_LABEL: Record<string, string> = { ts: "TypeScript", js: "JavaScript", python: "Python", ini: "INI / Config", bat: "Batch (.bat)", json: "JSON", sql: "SQL", html: "HTML", css: "CSS" };
+const langLabel = (l: string): string => LANG_LABEL[l] ?? l;
 
 customElements.define("filesync-app", FilesyncApp);
