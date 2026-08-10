@@ -3,6 +3,7 @@ import path from "node:path";
 import http from "node:http";
 import express from "express";
 import { WebSocketServer } from "ws";
+import Database from "better-sqlite3";
 import { MemoryStore, SqliteStore, SyncEngine, type Store } from "@filesyncex/core";
 import { loadConfig, type ServerConfig } from "./config.js";
 import { createHttpApp } from "./HttpServer.js";
@@ -70,8 +71,7 @@ async function createStore(cfg: ServerConfig): Promise<Store> {
     return s;
   }
   try {
-    const Database = (await import("better-sqlite3")).default;
-    const db: import("better-sqlite3").Database = new Database(cfg.dbFile);
+    const db = new Database(cfg.dbFile);
     const s = new SqliteStore(db);
     await s.init();
     return s;

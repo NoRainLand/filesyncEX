@@ -66,6 +66,24 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     res.json(r.res);
   });
 
+  /* 上传：小文件直接上传（body 为整个文件，query 携带 name/mime/device；≤ DIRECT_LIMIT 跳过哈希/分片） */
+  app.post(
+    "/api/upload/direct",
+    express.raw({ type: ["application/octet-stream", "*/*"], limit: "64mb" }),
+    async (req, res) => {
+      const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? []);
+      let device: import("@filesyncex/protocol").DeviceInfoT | undefined;
+      try {
+        device = JSON.parse(String(req.query.device ?? "null"));
+      } catch {
+        device = undefined;
+      }
+      const r = await uploads.direct(String(req.query.name ?? ""), buf.length, String(req.query.mime || "") || undefined, device, buf);
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      res.json(r.res);
+    }
+  );
+
   /* 下载 */
   app.get("/api/file/:key", (req, res) => {
     const p = uploads.filePath(String(req.params.key));

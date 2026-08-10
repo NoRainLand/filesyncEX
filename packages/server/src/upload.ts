@@ -4,6 +4,9 @@ import { randomUUID, createHash } from "node:crypto";
 import { SyncEngine, type Store } from "@filesyncex/core";
 import { parse, UploadInitReq, UploadInitRes, UploadChunkRes, UploadCompleteRes } from "@filesyncex/protocol";
 
+/** 小于该大小（字节）的文件走「直接上传」，跳过整文件 SHA-256 与分片（小文件哈希/分片开销大于收益） */
+export const DIRECT_LIMIT = 8 * 1024 * 1024; // 8 MiB
+
 export interface UploadServiceOptions {
   store: Store;
   engine: SyncEngine;
@@ -112,20 +115,30 @@ export class UploadService {
       parts.push(fs.readFileSync(p));
     }
     const data = Buffer.concat(parts);
-    const sha = createHash("sha256").update(data).digest("hex");
-    // 落盘到 uploads/<sha>_<name>（key 即文件名）
-    const safeName = s.name.replace(/[\\/:*?"<>|]/g, "_");
-    const key = sha.slice(0, 12) + "_" + safeName;
-    fs.writeFileSync(path.join(this.uploadDir, key), data);
-
     // 清理分片临时目录与会话
     fs.rmSync(dir, { recursive: true, force: true });
     await this.store.removeUpload(uploadId);
+    return this.finalize(s.name, s.size, s.mime, s.device, data);
+  }
+
+  /** 小文件直接上传：整块落盘并广播（前端保证 ≤ DIRECT_LIMIT，跳过哈希/分片） */
+  async direct(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer): Promise<{ ok: true; res: UploadCompleteRes } | { ok: false; error: string }> {
+    if (size > DIRECT_LIMIT) return { ok: false, error: "文件过大，请用分片上传" };
+    return this.finalize(name, size, mime, device, data);
+  }
+
+  /** 落盘最终文件 + 建索引 + 广播文件消息（分片 complete 与小文件 direct 共用） */
+  private async finalize(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer): Promise<{ ok: true; res: UploadCompleteRes }> {
+    const sha = createHash("sha256").update(data).digest("hex");
+    // 落盘到 uploads/<sha>_<name>（key 即文件名）
+    const safeName = (name || "unnamed").replace(/[\\/:*?"<>|]/g, "_");
+    const key = sha.slice(0, 12) + "_" + safeName;
+    fs.writeFileSync(path.join(this.uploadDir, key), data);
 
     const meta = {
-      name: s.name,
-      size: s.size,
-      mime: s.mime,
+      name,
+      size,
+      mime,
       sha256: sha,
       key,
       url: "/api/file/" + encodeURIComponent(key),
@@ -133,7 +146,7 @@ export class UploadService {
     await this.store.saveFile(key, meta);
 
     // 广播文件消息（发送者 = 上传者设备，或引擎默认设备）
-    const sender = s.device ?? this.engine.self;
+    const sender = device ?? this.engine.self;
     const msg = sender ? await this.fileMessage(sender, meta) : undefined;
     if (msg) await this.engine.addMessage(msg);
     return { ok: true, res: { ok: true, msg } };

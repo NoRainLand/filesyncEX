@@ -88,6 +88,18 @@ export async function apiUploadComplete(uploadId: string): Promise<UploadComplet
   throw lastErr instanceof Error ? lastErr : new Error("上传完成失败");
 }
 
+/** 小文件直接上传：一次 POST 整个文件，跳过 SHA-256 哈希与分片（消除「上传前等待」） */
+export async function apiUploadDirect(file: File, device: import("@filesyncex/protocol").DeviceInfoT): Promise<UploadCompleteResT> {
+  const q = new URLSearchParams({ name: file.name, mime: file.type || "", device: JSON.stringify(device) });
+  const r = await fetch(`/api/upload/direct?${q.toString()}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: file,
+  });
+  if (!r.ok) throw new Error((await r.json()).error ?? "上传失败");
+  return (await r.json()) as UploadCompleteResT;
+}
+
 /** 纯 JS 增量 SHA-256（不依赖 crypto.subtle，兼容局域网 HTTP 非安全上下文） */
 class IncrementalSha256 {
   private static readonly K = new Uint32Array([
@@ -178,6 +190,7 @@ function rotr32(x: number, n: number): number {
 const SHA_CHUNK = 4 * 1024 * 1024; // 4MB，避免大文件整块读入内存
 const CHUNK_TIMEOUT_MS = 30_000; // 单个分片请求超时（WiFi 抖动时避免永久挂起）
 const CHUNK_MAX_RETRIES = 4; // 单个分片最大重试次数（网络瞬时断连自动恢复）
+const DIRECT_UPLOAD_LIMIT = 8 * 1024 * 1024; // ≤ 该大小直接上传（跳过哈希/分片，消除上传前等待）
 
 /** 计算文件 SHA-256（分块增量，用于秒传/断点续传；兼容局域网 HTTP 非安全上下文） */
 export async function fileSha256(file: Blob): Promise<string> {
@@ -189,8 +202,13 @@ export async function fileSha256(file: Blob): Promise<string> {
   return hasher.digestHex();
 }
 
-/** 分片上传整个文件（断点续传 + 秒传）。中断时保存 uploadId，下次按同 sha 自动续传 */
+/** 上传文件：≤ DIRECT_UPLOAD_LIMIT 直接整块上传（跳过哈希/分片）；更大走分片（断点续传 + 秒传） */
 export async function uploadFile(file: File, onProgress?: (sent: number, total: number) => void): Promise<UploadCompleteResT> {
+  // 小文件直接上传：跳过整文件 SHA-256 与分片，消除「上传前等待」
+  if (file.size <= DIRECT_UPLOAD_LIMIT) {
+    onProgress?.(file.size, file.size);
+    return await apiUploadDirect(file, getDevice());
+  }
   const sha = await fileSha256(file);
   const cacheKey = "fsex_upload_" + sha;
   let savedUploadId: string | undefined;

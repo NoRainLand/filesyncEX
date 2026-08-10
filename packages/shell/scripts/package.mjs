@@ -60,6 +60,45 @@ run("pnpm --filter @filesyncex/shell build", root);
 const outDir = path.join(root, "release");
 fs.mkdirSync(outDir, { recursive: true });
 
+// 复制 better-sqlite3（含原生 .node 二进制）及其依赖 bindings/file-uri-to-path 到 shell/node_modules，
+// 供 pkg 打包进 exe（否则 exe 内 sqlite 初始化失败降级内存存储）。
+// 注意：cpSync 带 filter 时 Windows 会给路径加 \\?\ 前缀，p.relative 匹配失败导致整目录被 SKIP（复制后 dst 不存在），
+// 因此这里对整个目录整体复制（dereference 解引用 pnpm 符号链接），并复制后校验 .node 存在。
+console.log("▶ 复制 better-sqlite3 + bindings + file-uri-to-path → shell/node_modules");
+{
+  const copyDir = (src, dst) => {
+    fs.rmSync(dst, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.cpSync(src, dst, { recursive: true, dereference: true });
+  };
+  const src = path.join(root, "packages", "server", "node_modules", "better-sqlite3");
+  const dst = path.join(shellDir, "node_modules", "better-sqlite3");
+  if (fs.existsSync(src)) {
+    copyDir(src, dst);
+    const nodeBin = path.join(dst, "build", "Release", "better_sqlite3.node");
+    if (!fs.existsSync(nodeBin)) throw new Error("复制 better-sqlite3 后缺少 build/Release/better_sqlite3.node");
+    console.log("   ✔ 已复制 better-sqlite3（含原生 .node）");
+    // bindings：better-sqlite3 运行时查找 .node 的依赖（位于 .pnpm/better-sqlite3*/node_modules/bindings）
+    const bindingsSrc = path.join(path.dirname(fs.realpathSync(src)), "bindings");
+    if (fs.existsSync(bindingsSrc)) {
+      copyDir(bindingsSrc, path.join(shellDir, "node_modules", "bindings"));
+      console.log("   ✔ 已复制 bindings");
+      // file-uri-to-path：bindings 的依赖（位于 .pnpm/bindings@*/node_modules/file-uri-to-path）
+      const futpSrc = path.join(path.dirname(fs.realpathSync(bindingsSrc)), "file-uri-to-path");
+      if (fs.existsSync(futpSrc)) {
+        copyDir(futpSrc, path.join(shellDir, "node_modules", "file-uri-to-path"));
+        console.log("   ✔ 已复制 file-uri-to-path");
+      } else {
+        console.warn("   ⚠ 未找到 file-uri-to-path（bindings 依赖）");
+      }
+    } else {
+      console.warn("   ⚠ 未找到 bindings（.pnpm/better-sqlite3*/node_modules/bindings）");
+    }
+  } else {
+    console.warn("   ⚠ 未找到 better-sqlite3（server/node_modules），请先 pnpm install");
+  }
+}
+
 // ESM → 单文件 CJS bundle（pkg 无法对 import.meta/ESM 生成 bytecode，需先 bundle）
 console.log("▶ esbuild bundle（ESM → 单文件 CJS）");
 run(
@@ -67,7 +106,23 @@ run(
   shellDir
 );
 
+// rcedit 修改应用 icon / 版本信息：在 pkg 打包之后执行（fix-icon.mjs 会 rcedit 改资源，
+// 然后把从原 exe 提取的 pkg payload+prelude 重新拼回并更新 PAYLOAD_POSITION/PRELUDE_POSITION，
+// 避免破坏 pkg 快照。直接修补 fetched 会被 pkg 完整性校验覆盖，无效。）
+
 console.log("▶ pkg 打包（node18-win-x64）");
 run(`pnpm exec pkg ${JSON.stringify(path.join(shellDir, "dist/bundle.cjs"))} --targets node18-win-x64 --output ${JSON.stringify(path.join(outDir, "filesyncex.exe"))} --config ${JSON.stringify(path.join(shellDir, "package.json"))}`, shellDir);
+
+// 打包后修补 icon / 版本信息（保留 pkg payload）
+console.log("▶ rcedit 修改 icon / 版本信息（并恢复 pkg payload）");
+{
+  const exe = path.join(outDir, "filesyncex.exe");
+  const fs = await import("node:fs");
+  if (fs.existsSync(exe) && fs.existsSync(path.join(root, "FS.ico"))) {
+    run(`node scripts/fix-icon.mjs ${JSON.stringify(exe)} ${JSON.stringify(path.join(root, "FS.ico"))}`, shellDir);
+  } else {
+    console.warn("   ⚠ 未找到 exe 或 FS.ico，跳过 icon 修补");
+  }
+}
 
 console.log("✔ 打包完成：", path.join(outDir, "filesyncex.exe"));

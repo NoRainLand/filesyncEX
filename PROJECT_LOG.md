@@ -1135,3 +1135,54 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
 - 根因：移动端窄屏下 96 根频谱柱 + 2px 间距，每根仅约 0.4px 宽，几乎不可见（仅 .ind 指示条可见）。
 - 修复（CSS 方案，纯响应式）：waveBars 固定生成 96 根，移动端 media query `.card.audio .wave i.bar:not(:nth-child(3n+3)) { display:none }` 每 3 根显示 1 根（32 根）+ `min-width:3px` + `flex:1 1 0` → 每根约 4px 实心条（指示器方式）可见；ph-wave 占位卡同步。桌面端保持 96 根全显示。
 - web 构建 126.20 kB；Playwright 验证：移动端 96 总/32 可见/首根宽 4px/waveH 34、50%→16 根可见 .played、截图频谱可见 ✓；桌面 96 全可见 ✓。
+
+## 工作进度临时归档（电脑重启 · 2026-08-07）
+> 重启后按此恢复进行中的工作。
+
+### 进行中（已改代码，未构建 / 未打包验证）
+- **应用图标（进行中）**：
+  - `FS.ico`（456KB）已从旧工程 `filesync/source/` 复制到根目录（git 未跟踪 `?? FS.ico`）。
+  - `packages/shell/package.json`：devDependencies 加 `rcedit@^4.0.1`。
+  - `packages/shell/scripts/package.mjs`：pkg 打包后新增 rcedit 步骤，修补 `release/filesyncex.exe` 的 icon（`FS.ico`）+ 版本信息（ProductName filesyncEX 等），参考旧工程 `filesync/plugins/rcedit.js`。
+  - ⚠ **rcedit 依赖尚未 `pnpm install` 完成**（安装被中断）。重启后先 `pnpm install`，再 `pnpm run package` 验证 exe 图标。
+- **伪 3D 字符 logo（进行中）**：
+  - `packages/shell/src/index.ts`：新增 `ASCII_ART` 常量（旧工程 `filesync/src/server/ServerConfig.ts` 的 FS 3D 字符 logo），`main()` 开头打印。已改未构建。
+
+### 遗留问题（上上轮）
+- **better-sqlite3 打包进 exe 后运行仍报 `Invalid host defined options`，降级内存存储**：
+  - 已做：`package.mjs` 打包前复制 better-sqlite3（`dereference:true` 处理 pnpm 符号链接）→ `packages/shell/node_modules/better-sqlite3`；`shell/package.json` 的 `pkg.assets` 加 `node_modules/better-sqlite3/**/*`；esbuild `--external:better-sqlite3`。
+  - 已验证：exe 内已含 `better_sqlite3.node`（94MB exe，搜到 build/Release）。但运行仍报 "Invalid host defined options"（bindings 加载失败），**尚未解决**，待排查（可能需显式 `nativeBinding` 路径或 pkg scripts 处理）。
+
+### 待办清单（重启后）
+1. `pnpm install`（装 rcedit）
+2. 构建验证 shell（tsc）确认 logo 打印无语法错
+3. `pnpm run package` 重新打包，验证：exe 图标已改（rcedit）+ 启动打印 FS 3D logo
+4. （可选继续）排查 better-sqlite3 "Invalid host defined options"
+
+## 工作进度归档更新（2026-08-10 · 自主完成）
+> 补充：上次归档的「待办清单」已全部完成，并额外修复 better-sqlite3 打包问题。
+
+### ✅ 已完成
+- **应用图标（FS.ico）+ 版本信息**：
+  - 根因：@yao-pkg/pkg 不支持 icon 配置；rcedit 修补 fetched 会被 pkg 完整性校验覆盖；rcedit 修补打包后 exe 会丢失 pkg 追加的 payload（94MB→42MB，报 Pkg: Error reading from file）。
+  - 破解：exe 布局 = fetched(PAYLOAD_POSITION) + payload(PAYLOAD_SIZE) + prelude(PRELUDE_POSITION/PRELUDE_SIZE)，readPrelude 函数（fetched 内）用 4 个占位符定位。rcedit 只保留 fetched、丢弃 payload+prelude。
+  - 方案：新脚本 packages/shell/scripts/fix-icon.mjs：解析 4 占位符 → 提取 payload+prelude → rcedit 改 icon+版本 → 更新 PAYLOAD_POSITION/PRELUDE_POSITION → 拼回。已集成进 package.mjs（pkg 打包后执行）。
+  - 结果：exe icon=FS 蓝色图标、ProductName=filesyncEX、FileVersion=6.0.0-alpha1、logo 打印、功能正常，均已运行验证。
+- **伪 3D logo**：packages/shell/src/index.ts 的 ASCII_ART 在 main() 开头打印，exe 启动验证输出 FS 3D logo。
+- **better-sqlite3 `Invalid host defined options` 修复（重点）**：
+  - 根因 1：server 用动态 import("better-sqlite3") → pkg V8 快照环境 ModuleWrap 校验失败（node module_wrap.cc:604 host defined options）。改为静态 import Database from "better-sqlite3"（esbuild --external 转 require，走 CJS 不触发 ModuleWrap）。
+  - 根因 2：better-sqlite3 依赖 bindings → file-uri-to-path，未打包进 exe → MODULE_NOT_FOUND。assets 追加 bindings/file-uri-to-path，package.mjs 一并复制。
+  - 根因 3（坑）：fs.cpSync 带 filter 时 Windows 会把路径转 \\?\ 长路径前缀，p.relative 匹配失败导致整目录被 SKIP（复制后 dst 不存在，偶发）。改为无 filter 整体复制 + 复制后校验 build/Release/better_sqlite3.node 存在。
+  - 结果：exe 运行无 sqlite 报错，data/ 生成 filesync.db + -wal + -shm（WAL 真实落盘），不再降级内存存储。
+
+### 产物
+- release/filesyncex.exe（106.9MB）：FS 图标 + 版本信息 + logo 打印 + better-sqlite3 正常。
+
+## [6.0.0-alpha1] 小文件直接上传，跳过哈希/分片（用户「能不能小于一定大小的文件直接上传」）
+- 背景：上传前等待 = 整文件 SHA-256 计算（纯 JS，局域网 HTTP 非安全上下文无 crypto.subtle）+ 分片。小文件（≤8MB）走这套开销大于收益。
+- 改动：
+  - 前端 packages/web/src/api.ts：常量 `DIRECT_UPLOAD_LIMIT = 8 * 1024 * 1024`（8MB）；新增 `apiUploadDirect`（POST /api/upload/direct，body=整个文件，query 带 name/mime/device JSON）；`uploadFile` 开头 `file.size <= 8MB` 直接上传（onProgress 立即 100%），跳过 `fileSha256` 与分片；大文件仍走分片（断点续传+秒传）。
+  - 服务端 packages/server/src/upload.ts：抽公共私有方法 `finalize(name,size,mime,device,data)`（算 sha → 落盘 uploads/<sha12>_<name> → store.saveFile → 广播文件消息）；`complete` 组装分片后调用 finalize；新增 `direct()` 与 complete 共用 finalize；常量 `DIRECT_LIMIT = 8MB` 防御。
+  - 服务端 packages/server/src/HttpServer.ts：新增 `POST /api/upload/direct`（express.raw limit 64mb，query 带 name/mime/device）。
+- 验证（临时脚本调 run() 启动构建后 server + HTTP 实测）：direct 上传 100KB → 200、返回文件消息、落盘 c3bfc7d2d061_test_small.bin(102400) ✓；分片链路 init→chunk→complete 走 finalize 仍正常（big.bin 102400）✓；测试后已清理。
+- 注意：小文件直接上传无秒传（跳过 sha 查重），可接受；阈值 8MB 如需调整改前端 DIRECT_UPLOAD_LIMIT + 服务端 DIRECT_LIMIT。

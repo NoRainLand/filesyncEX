@@ -19,6 +19,7 @@
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@yao-pkg/pkg": "^5.16.1",
+    "rcedit": "^4.0.1",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4"
   },
@@ -28,7 +29,10 @@
     ],
     "outputPath": "../../release",
     "assets": [
-      "../web/dist/**/*"
+      "../web/dist/**/*",
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/bindings/**/*",
+      "node_modules/file-uri-to-path/**/*"
     ]
   }
 }
