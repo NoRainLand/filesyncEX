@@ -23,7 +23,7 @@ function detectPlatform(): PlatformT {
 }
 
 /** 设备指纹：UA+语言+平台+屏幕+时区+核数 → FNV-1a hash（只存 hash，不上传原始信号） */
-export function deviceFingerprint(): string {
+function deviceFingerprint(): string {
   const parts = [
     navigator.userAgent,
     navigator.language,

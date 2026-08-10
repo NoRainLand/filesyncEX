@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import net from "node:net";
-import express from "express";
 import { WebSocketServer } from "ws";
 import Database from "better-sqlite3";
 import { MemoryStore, SqliteStore, SyncEngine, type Store } from "@filesyncex/core";

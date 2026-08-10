@@ -8,33 +8,9 @@ import decodeOpus from "@audio/decode-opus";     // OGG/Opus
 /* ---------- 音频解码：按格式选解码器（WASM 内嵌、零外置二进制），WAV 用内置解析。
    波形（/api/wave）与转码流（/api/stream）共用 decodeToChannels。 ---------- */
 
-export interface Decoded {
+interface Decoded {
   channelData: Float32Array[];
   sampleRate: number;
-}
-
-/** 从解码后多声道采样计算峰值（0~1，共 count 点） */
-function peaksFromChannels(data: Float32Array[], count: number): number[] {
-  const n = data[0]?.length ?? 0;
-  if (n < 2) return [];
-  const block = Math.max(1, Math.floor(n / count));
-  const step = Math.max(1, Math.floor(block / 512));
-  const peaks: number[] = [];
-  for (let b = 0; b < count; b++) {
-    const start = b * block;
-    const end = Math.min(start + block, n);
-    let max = 0;
-    for (let i = start; i < end; i += step) {
-      let m = 0;
-      for (const ch of data) {
-        const v = Math.abs(ch[i] ?? 0);
-        if (v > m) m = v;
-      }
-      if (m > max) max = m;
-    }
-    peaks.push(Math.min(1, max));
-  }
-  return peaks;
 }
 
 /** 识别音频格式（读魔数） */
@@ -66,7 +42,7 @@ function detectKind(buf: Buffer): AudioKind {
 export async function decodeToChannels(p: string): Promise<Decoded | null> {
   let buf: Buffer;
   try {
-    buf = fs.readFileSync(p);
+    buf = await fs.promises.readFile(p);
   } catch {
     return null;
   }
@@ -84,14 +60,6 @@ export async function decodeToChannels(p: string): Promise<Decoded | null> {
   } catch {
     return null;
   }
-}
-
-/** 解析音频文件生成波形峰值数组（0~1，共 count 点）；失败返回 null */
-export async function wavePeaksFromFile(p: string, count = 96): Promise<number[] | null> {
-  const decoded = await decodeToChannels(p);
-  if (!decoded?.channelData?.length) return null;
-  const peaks = peaksFromChannels(decoded.channelData, count);
-  return peaks.length === count ? peaks : null;
 }
 
 /** 内置 WAV 解析：解码为多声道 Float32（format code 1=PCM、3=IEEE float、0xFFFE=extensible 读 subformat） */

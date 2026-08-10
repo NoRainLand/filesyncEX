@@ -44,7 +44,7 @@ const fmtSize = (n: number): string => {
 /** 文件类型中文描述 */
 function fmtType(name: string, mime?: string): string {
   const ext = name.split(".").pop()?.toLowerCase();
-  const map: Record<string, string> = { sh: "脚本", py: "脚本", js: "脚本", ts: "脚本", txt: "文本", md: "文档", pdf: "PDF", doc: "文档", docx: "文档", xlsx: "表格", xls: "表格", zip: "压缩包", rar: "压缩包", "7z": "压缩包", exe: "程序", ico: "图标", mp3: "音频", wav: "音频", m4a: "音频", mp4: "视频", avi: "视频", mov: "视频", mk4: "视频", webm: "视频", png: "图片", jpg: "图片", jpeg: "图片", gif: "图片", webp: "图片", svg: "图片", bmp: "图片" };
+  const map: Record<string, string> = { sh: "脚本", py: "脚本", js: "脚本", ts: "脚本", txt: "文本", md: "文档", pdf: "PDF", doc: "文档", docx: "文档", xlsx: "表格", xls: "表格", zip: "压缩包", rar: "压缩包", "7z": "压缩包", exe: "程序", ico: "图标", mp3: "音频", wav: "音频", m4a: "音频", mp4: "视频", avi: "视频", mov: "视频", mkv: "视频", webm: "视频", png: "图片", jpg: "图片", jpeg: "图片", gif: "图片", webp: "图片", svg: "图片", bmp: "图片" };
   if (mime?.startsWith("image/")) return "图片";
   if (mime?.startsWith("audio/")) return "音频";
   if (mime?.startsWith("video/")) return "视频";
@@ -132,12 +132,8 @@ const I_SUN = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" vie
 const I_MOON = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z"/></svg>`;
 const I_PLUS = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="22" height="22"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>`;
 const I_SEND = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"/></svg>`;
-const I_CLIP = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13"/></svg>`;
-const I_BRACE = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5"/></svg>`;
 const I_FILE = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>`;
 const I_IMG = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>`;
-const I_AUDIO = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"/></svg>`;
-const I_VIDEO = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25h-9A2.25 2.25 0 0 0 2.25 7.5v9a2.25 2.25 0 0 0 2.25 2.25Z"/></svg>`;
 const I_COPY = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75"/></svg>`;
 const I_DOWN = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>`;
 const I_LINK = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"/></svg>`;
@@ -152,7 +148,7 @@ export class FilesyncApp extends LitElement {
   static styles = unsafeCSS(appCss);
 
   static properties = {
-    msgs: { state: true }, peers: { state: true }, self: { state: true }, connected: { state: true },
+    msgs: { state: true }, peers: { state: true }, self: { state: true },
     connState: { state: true }, notices: { state: true },
     text: { state: true }, codeMode: { state: true }, codeLang: { state: true }, codeText: { state: true },
     uploads: { state: true }, sheet: { state: true }, preview: { state: true }, nick: { state: true },
@@ -162,7 +158,6 @@ export class FilesyncApp extends LitElement {
   msgs: MsgDataT[] = [];
   peers: DeviceInfoT[] = [];
   self: DeviceInfoT | null = null;
-  connected = false;
   /** WS 连接状态：connecting 连接中 / connected 正常 / disconnected 断开 */
   connState: "connecting" | "connected" | "disconnected" = "connecting";
   /** 服务器通知弹窗池：可同时存在多个通知（异常/维护/关闭/警告…），各自可关闭/重连 */
@@ -222,8 +217,8 @@ export class FilesyncApp extends LitElement {
       .catch(() => { /* 保持 location.host */ });
     this.ws = new WsClient(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`, {
       onConnecting: () => { this.connState = "connecting"; },
-      onOpen: () => { this.connected = true; this.connState = "connected"; if (this.self) this.ws?.send({ type: "hello", device: this.self }); },
-      onClose: () => { this.connected = false; this.connState = "disconnected"; },
+      onOpen: () => { this.connState = "connected"; if (this.self) this.ws?.send({ type: "hello", device: this.self }); },
+      onClose: () => { this.connState = "disconnected"; },
       onNotice: (level, message) => { this.showNotice(level, message); },
       onWelcome: (_s, msgs, peers) => { this.msgs = msgs; this.peers = peers; this.scrollToLatest(); },
       onAdd: (msg) => { if (!this.msgs.some((m) => m.id === msg.id)) { this.msgs = [...this.msgs, msg]; this.scrollToLatest(); } },
@@ -592,7 +587,19 @@ export class FilesyncApp extends LitElement {
       const t = p.msg.code?.content ?? "";
       void this.copyToClipboard(t).then((ok) => this.flash(ok ? "代码已复制" : "复制失败，请手动复制"));
     } else {
-      this.flash("（原型）已开始下载");
+      // 真正下载：临时 <a download> 触发浏览器下载（与消息列表下载按钮一致）
+      const f = p.msg.file;
+      if (f?.url) {
+        const a = document.createElement("a");
+        a.href = f.url;
+        a.download = f.name ?? "";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        this.flash("已开始下载");
+      } else {
+        this.flash("暂无可下载内容");
+      }
     }
   }
   /** 按钮防抖（leading）：首次点击立即执行，wait 毫秒内重复点击直接忽略（防连点重复触发） */

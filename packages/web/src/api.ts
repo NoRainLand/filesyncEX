@@ -1,23 +1,9 @@
-import type { MsgDataT, UploadInitResT, UploadCompleteResT } from "@filesyncex/protocol";
+import type { UploadInitResT, UploadCompleteResT } from "@filesyncex/protocol";
 import { getDevice } from "./device.js";
 
 /** HTTP API 客户端（相对路径，走 Vite 代理或同源静态服务） */
 
-export async function apiHealth(): Promise<boolean> {
-  try {
-    const r = await fetch("/api/health");
-    return r.ok;
-  } catch {
-    return false;
-  }
-}
-
-export async function apiMsgs(): Promise<MsgDataT[]> {
-  const r = await fetch("/api/msgs");
-  return (await r.json()) as MsgDataT[];
-}
-
-export interface InitUploadInput {
+interface InitUploadInput {
   name: string;
   size: number;
   mime?: string;

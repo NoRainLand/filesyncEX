@@ -5,12 +5,29 @@ import type { ServerConfig } from "./config.js";
 import type { UploadService } from "./upload.js";
 import { SyncEngine } from "@filesyncex/core";
 import { lanAddress } from "./net.js";
-import { wavePeaksFromFile, decodeToChannels, toWavBuffer } from "./wave.js";
+import { decodeToChannels, toWavBuffer } from "./wave.js";
 
-/* 波形缓存：key → 峰值数组（只生成一次） */
-const waveCache = new Map<string, number[]>();
-/* 转码流缓存：key → WAV Buffer（只解码一次） */
+/* 转码流缓存：key → WAV Buffer（只解码一次）；LRU 上限，防止大音频常驻内存 */
+const STREAM_CACHE_MAX = 8; // 最多同时缓存 8 个转码流
 const streamCache = new Map<string, Buffer>();
+/** 读缓存并刷新到末尾（LRU 命中） */
+function streamCacheGet(key: string): Buffer | undefined {
+  const v = streamCache.get(key);
+  if (v !== undefined) {
+    streamCache.delete(key);
+    streamCache.set(key, v);
+  }
+  return v;
+}
+/** 写缓存，超出上限淘汰最久未用 */
+function streamCacheSet(key: string, buf: Buffer): void {
+  streamCache.delete(key);
+  streamCache.set(key, buf);
+  if (streamCache.size > STREAM_CACHE_MAX) {
+    const oldest = streamCache.keys().next().value;
+    if (oldest !== undefined) streamCache.delete(oldest);
+  }
+}
 
 /**
  * HTTP 传输层：
@@ -91,30 +108,18 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     res.download(p);
   });
 
-  /* 音频波形：解析文件生成峰值数组（WAV/MP3/FLAC/OGG/M4A） */
-  app.get("/api/wave/:key", async (req, res) => {
-    const key = String(req.params.key);
-    if (waveCache.has(key)) return res.json({ peaks: waveCache.get(key) });
-    const p = uploads.filePath(key);
-    if (!p) return res.status(404).json({ error: "文件不存在" });
-    const peaks = await wavePeaksFromFile(p);
-    if (!peaks) return res.status(415).json({ error: "不支持的音频格式" });
-    waveCache.set(key, peaks);
-    res.json({ peaks });
-  });
-
   /* 音频转码流：任意受支持格式 → 16-bit PCM WAV 流（浏览器原生可播，统一播放源）。
      支持 Range 请求（audio 拖动 seek 需要）；解码结果缓存，只解码一次。 */
   app.get("/api/stream/:key", async (req, res) => {
     const key = String(req.params.key);
-    let wav = streamCache.get(key);
+    let wav = streamCacheGet(key);
     if (!wav) {
       const p = uploads.filePath(key);
       if (!p) return res.status(404).json({ error: "文件不存在" });
       const decoded = await decodeToChannels(p);
       if (!decoded?.channelData?.length) return res.status(415).json({ error: "不支持的音频格式" });
       wav = toWavBuffer(decoded);
-      streamCache.set(key, wav);
+      streamCacheSet(key, wav);
     }
     const total = wav.length;
     res.setHeader("Content-Type", "audio/wav");

@@ -1200,3 +1200,22 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
 - server/src/HttpServer.ts：health 接口 `port` 改用 `req.socket.localPort ?? cfg.httpPort`（返回实际监听端口，前端二维码/地址自动切换后显示正确）。
 - 验证：①脚本级（dist）——blocker 占 4100 → 自动切 4101，health port=4101 ✓；②exe 级（release exe）——blocker 占 4100 → exe 打印「⚠ 端口 4100 已被占用，已自动切换到端口 4101」+ banner 4101 + 4101 实际监听 ✓。均已清理测试进程。
 - 注：esbuild 会把中文字符转成 \uXXXX 存进 bundle.cjs/exe，用中文搜不到不代表代码没打进（改用 findFreePort 等 ASCII 标识搜）。
+
+## [6.0.0-beta1] 全局代码清理 + 修复（用户「清理无用代码/引用，看优化点」）
+- **未使用引用**（tsc --noUnusedLocals 定位）：core/Store.ts 的 DeviceInfoT import；server/index.ts 的 express import；web/app.ts 的 I_CLIP/I_BRACE/I_AUDIO/I_VIDEO 图标常量（其余图标都在用）。
+- **死代码**：server /api/wave 整条链路删除（HttpServer.ts 的 /api/wave 路由 + waveCache Map + wave.ts 的 wavePeaksFromFile/peaksFromChannels——前端已改前端模拟频谱，无消费者；decodeToChannels/toWavBuffer/streamCache 保留给 /api/stream）；web api.ts 的 apiHealth/apiMsgs（无消费者）；web app.ts 的 connected state（写了从不读，UI 由 connState 驱动）。
+- **去冗余 export**：web FilesyncApp/deviceFingerprint/InitUploadInput/WsHandlers；server Decoded；protocol 死类型别名 SenderT/MsgKindT/CodeMetaT/MsgInputT/UploadInitReqT/UploadChunkResT（z import 实际被 parse() 用，保留）。
+- **去未用依赖**：web devDependencies @types/node（web 无 Node 代码、tsconfig types 只有 vite/client）。
+- **Bug 修复**：①app.ts fmtType map 里 `mk4`→`mkv`（真实 .mkv 之前被显示成"文件"）；②预览弹窗"下载"按钮从"（原型）已开始下载"占位逻辑 → 真正用 <a download> 触发下载。
+- **验证**：5 包 tsc --noUnusedLocals --noUnusedParameters 全通过 + pnpm build 9.4s 成功。
+- **优化点分析**（未实施，供决策）：①clipboard 库**不能**换 navigator.clipboard（局域网 HTTP 非安全上下文无此 API，同 crypto.subtle 限制，clipboard 库的降级是必要的）；②可选：streamCache/内存缓存加 LRU 上限（防大音频占内存）、wave.ts/upload.ts 同步 fs → 异步（大文件不阻塞事件循环）、思源宋体 6MB 子集化、zod 3→4 升级（breaking changes 大，建议后续单独做）。
+
+## [6.0.0-beta1] 性能优化 + zod v4 升级 + README 同步（用户「字体子集化不做，其他都做，同步 README」）
+- **streamCache LRU**：HttpServer.ts 转码流缓存加 `STREAM_CACHE_MAX = 8` 上限 + LRU（命中刷新到末尾、超限淘汰最久未用），防大音频常驻内存。
+- **异步文件 IO**：upload.ts 的 `chunk` 分片写盘改 `fs.promises.writeFile`；`complete` 改**流式组装**（createWriteStream 边读分片边写 + 流式 SHA-256，临时文件 .tmp-<id> 写完 rename 成最终 key，大文件不整块入内存）；wave.ts 的 `decodeToChannels` 改 `fs.promises.readFile`。
+  - **坑**：Node `stream.end(cb)` 回调无参，写 `(e) => ...` 触发 TS7006（e 隐式 any）→ 改 `out.once("error", rej)` + `end(() => res())`。
+- **zod v3 → v4**：protocol/server 升级 zod `^4.0.0`（实际 4.4.3）。
+  - **坑**：protocol/core/server **之前没声明 typescript devDep**，隐式解析到旧 TS 4.9.5，无法解析 zod v4 的 `const` 类型参数（.d.cts 报 TS1005）。给这 3 个包显式加 `typescript ^5.5.4`（实际 5.9.3）统一构建版本。
+- **冒烟验证**：health、上传 init(zod v4)、2 片分片 complete(流式)、下载内容一致、direct 上传 全 ✅。
+- **README 同步**：删 /api/wave 接口描述（路由已删）、zod 标 v4、优化表新增（LRU/异步 IO/zod v4/死代码清理）、限制更新（音频转码已 LRU 限制）。**字体子集化按用户要求不做**（README 保留为已知限制）。
+- 已重新打包 exe（75.1MB，略增因 zod v4 + 完整重建）运行验证通过（无 err、版本 beta1）。

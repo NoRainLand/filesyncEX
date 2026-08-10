@@ -1,4 +1,4 @@
-import type { DeviceInfoT, FileMetaT, MsgDataT } from "@filesyncex/protocol";
+import type { FileMetaT, MsgDataT } from "@filesyncex/protocol";
 
 /** 上传会话（分片/断点续传元数据） */
 export interface UploadSession {

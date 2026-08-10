@@ -92,33 +92,69 @@ export class UploadService {
     return { ok: true, res };
   }
 
-  /** 保存一个分片 */
+  /** 保存一个分片（异步写盘，单片 ≤ 1MiB 不阻塞事件循环） */
   async chunk(uploadId: string, index: number, buf: Buffer): Promise<{ ok: true; res: UploadChunkRes } | { ok: false; error: string }> {
     const s = await this.store.getUpload(uploadId);
     if (!s) return { ok: false, error: "上传会话不存在" };
     if (index < 0 || index >= s.chunkCount) return { ok: false, error: "分片下标越界" };
     fs.mkdirSync(this.sessionDir(uploadId), { recursive: true });
-    fs.writeFileSync(path.join(this.sessionDir(uploadId), index + ".part"), buf);
+    await fs.promises.writeFile(path.join(this.sessionDir(uploadId), index + ".part"), buf);
     await this.store.addUploadChunk(uploadId, index);
     return { ok: true, res: { ok: true, index } };
   }
 
-  /** 组装分片为最终文件并广播文件消息 */
+  /** 组装分片为最终文件并广播文件消息（流式：边读分片边写盘 + 流式 SHA-256，大文件不整块入内存） */
   async complete(uploadId: string): Promise<{ ok: true; res: UploadCompleteRes } | { ok: false; error: string }> {
     const s = await this.store.getUpload(uploadId);
     if (!s) return { ok: false, error: "上传会话不存在" };
     const dir = this.sessionDir(uploadId);
-    const parts: Buffer[] = [];
-    for (let i = 0; i < s.chunkCount; i++) {
-      const p = path.join(dir, i + ".part");
-      if (!fs.existsSync(p)) return { ok: false, error: "缺少分片 " + i };
-      parts.push(fs.readFileSync(p));
+    const safeName = (s.name || "unnamed").replace(/[\\\/:*?"<>|]/g, "_");
+    const tmpPath = path.join(this.uploadDir, ".tmp-" + uploadId);
+    const sha = createHash("sha256");
+    try {
+      const out = fs.createWriteStream(tmpPath);
+      for (let i = 0; i < s.chunkCount; i++) {
+        const p = path.join(dir, i + ".part");
+        if (!fs.existsSync(p)) {
+          out.destroy();
+          fs.rmSync(tmpPath, { force: true });
+          return { ok: false, error: "缺少分片 " + i };
+        }
+        const data = await fs.promises.readFile(p);
+        sha.update(data);
+        await new Promise<void>((res, rej) => out.write(data, (e) => (e ? rej(e) : res())));
+      }
+      await new Promise<void>((res, rej) => {
+        out.once("error", rej);
+        out.end(() => {
+          out.removeListener("error", rej);
+          res();
+        });
+      });
+      const digest = sha.digest("hex");
+      const key = digest.slice(0, 12) + "_" + safeName;
+      fs.renameSync(tmpPath, path.join(this.uploadDir, key));
+      // 清理分片临时目录与会话
+      fs.rmSync(dir, { recursive: true, force: true });
+      await this.store.removeUpload(uploadId);
+
+      const meta = {
+        name: s.name,
+        size: s.size,
+        mime: s.mime,
+        sha256: digest,
+        key,
+        url: "/api/file/" + encodeURIComponent(key),
+      };
+      await this.store.saveFile(key, meta);
+      const sender = s.device ?? this.engine.self;
+      const msg = sender ? await this.fileMessage(sender, meta) : undefined;
+      if (msg) await this.engine.addMessage(msg);
+      return { ok: true, res: { ok: true, msg } };
+    } catch (e) {
+      fs.rmSync(tmpPath, { force: true });
+      return { ok: false, error: "组装失败: " + String((e as Error).message) };
     }
-    const data = Buffer.concat(parts);
-    // 清理分片临时目录与会话
-    fs.rmSync(dir, { recursive: true, force: true });
-    await this.store.removeUpload(uploadId);
-    return this.finalize(s.name, s.size, s.mime, s.device, data);
   }
 
   /** 小文件直接上传：整块落盘并广播（前端保证 ≤ DIRECT_LIMIT，跳过哈希/分片） */

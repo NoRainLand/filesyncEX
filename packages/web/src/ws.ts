@@ -1,6 +1,6 @@
 import type { ClientFrameT, ServerFrameT, DeviceInfoT, MsgDataT } from "@filesyncex/protocol";
 
-export interface WsHandlers {
+interface WsHandlers {
   onConnecting?: () => void;
   onOpen?: () => void;
   onClose?: () => void;
