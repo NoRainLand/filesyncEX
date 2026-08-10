@@ -35,10 +35,10 @@ header.app { display: flex; align-items: center; gap: 14px; margin-top: 8px; pad
 /* 发送按钮：默认 relative+z-index 高于悬浮编辑器（收起瞬间不被编辑器盖住而“消失又出现”闪烁）；代码模式切 absolute 压编辑器右上角 */
 .upload-row .send { position: relative; z-index: 6; }
 .upload-row.code-mode .send { position: absolute; top: 0; right: 0; z-index: 5; }
-.code-editor { display: flex; flex: 0 0 0; width: 0; min-width: 0; flex-direction: column; background: var(--surface); border: 0; border-radius: 10px; transform-origin: top center; max-height: 0; opacity: 0; transition: max-height .25s ease, opacity .2s ease; }
+.code-editor { display: flex; flex: 0 0 0; width: 0; min-width: 0; flex-direction: column; background: var(--surface); border: 0; border-radius: 10px; transform-origin: top center; max-height: 0; opacity: 0; overflow: hidden; visibility: hidden; pointer-events: none; transition: max-height .25s ease, opacity .2s ease, visibility 0s .25s; }
 /* 桌面端：编辑器 absolute 悬浮覆盖卡片（不占行高），收起时发送按钮不再被居中撑动闪跳 */
 .upload-row .code-editor { position: absolute; top: -10px; left: -12px; right: -12px; flex: none; width: auto; border: 1px solid var(--line); box-shadow: var(--shadow); }
-.upload-row.code-mode .code-editor, .code-editor.open { max-height: 460px; opacity: 1; }
+.upload-row.code-mode .code-editor, .code-editor.open { max-height: 460px; opacity: 1; visibility: visible; pointer-events: auto; transition: max-height .25s ease, opacity .2s ease, visibility 0s; }
 @keyframes codeIn { from { opacity: 0; transform: scaleY(.45); } to { opacity: 1; transform: scaleY(1); } }
 .ce-top { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--surface); border-radius: 10px 10px 0 0; }
 .ce-top label { font-size: 12px; color: var(--muted); flex: none; }

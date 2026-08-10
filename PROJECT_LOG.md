@@ -1299,3 +1299,10 @@ equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器�
 - **修复（app.css）**：给 `.upload-row .send` 设 `position:relative; z-index:6`（默认态），高于编辑器（absolute z-index:auto）——收起瞬间 send 从 absolute 切 relative 后仍在编辑器之上，全程可见；code-mode 仍由 `.upload-row.code-mode .send` 切 absolute 压编辑器右上角。
 - 验证（Playwright 连续 3 次收起动画）：send 中心点 elementFromPoint 全程命中 btn send（visible=true）、y=91 恒定；非 code-mode send 位于输入框右侧（x=1145，与 input 右缘 1135 无重叠）✓。移动端不受影响。
 - 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 修复大文件消息删除按钮无法点击（用户「上传大文件成功后删除按钮点不了，刷新也不行，文字消息可删」）
+- **根因（上一轮 absolute 悬浮编辑器的回归）**：桌面端 `.upload-row .code-editor` 常驻 DOM，改为 `absolute` 悬浮覆盖后，**收起态 `max-height:0` 但没有 `overflow:hidden`**——内部 textarea（min-height:150px）溢出可见，且编辑器 `opacity:0` **仍可交互**（opacity 不阻止 pointer-events）→ 一个不可见的 textarea 悬浮覆盖在消息区（实测 rect y:139-289）上，拦截了覆盖范围内所有点击。大文件消息在列表中部（del-corner y:224 恰在覆盖区）→ 删除按钮点不了；文字消息在更下方（y:382 超出覆盖区）→ 可删。刷新后 `.code-editor` 仍常驻，故依旧被挡。
+- **诊断**：Playwright `elementFromPoint(del-corner 中心)` 命中 `TEXTAREA.code-editor textarea`（rect 996x150 覆盖消息区）而非 del-corner。
+- **修复（app.css）**：`.code-editor` 基础加 `overflow:hidden; visibility:hidden; pointer-events:none`（收起态裁剪溢出 + 不可交互 + 不拦截点击），transition 加 `visibility 0s .25s`（收起动画结束后再隐藏，动画期间仍可见）；展开规则加 `visibility:visible; pointer-events:auto` + `transition visibility 0s`（展开立即显示可输入）。移动端编辑器是条件渲染（非 code-mode 不在 DOM），无此问题；`.code-editor.open` 也匹配移动端 `.open`，可见性不受影响。
+- 验证（Playwright 真实上传 9MB 分片文件）：修复前 del-corner 命中 TEXTAREA 不可点；修复后命中 del-corner 内 svg，**点击删除成功**（toast「消息已删除」、文件消息移除）✓；展开态编辑器 visible/auto 可输入、收起态 hidden/none/overflow 裁剪（消息区 elementFromPoint 命中正常 bubble）✓。
+- 本次未打包 exe（按用户要求只增量构建 web）。
