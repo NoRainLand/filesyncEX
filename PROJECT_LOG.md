@@ -1400,3 +1400,29 @@ equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器�
   - 顺带修 TS2532（`noUncheckedIndexedAccess` 下 `d[i]` 可能 undefined，用 `?? 0`）。
 - 验证（Playwright 上传真实 mp4）：服务器封面 `1280×720`、**平均亮度 54.2**（非黑）、`isBlack=false` ✓。
 - 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 提示消息动画重做（用户「淡入→停留→上移固定距离淡出→移除，多个堆叠」）
+- **旧问题**：toast 首次渲染即带 `show`（opacity 1），**没有真正淡入**；淡出只上移 -24px。
+- **改动（app.ts + app.css）**：
+  - `toasts` 类型加 `show: boolean`；`flash()` 初始 `show:false`，**下一帧 rAF 再加 show** → CSS transition 淡入（opacity 0→1，0.3s）；停留 **2000ms**；置 `leaving` 后**上移固定距离 -60px 同时淡出**（opacity→0，0.4s）；动画完（2500ms）移除。
+  - 渲染 class：`toast ${leaving ? "leaving" : show ? "show" : ""}`（初始无 show 透明）。
+  - CSS：`.toast` opacity 0 + transition opacity .3s；`.toast.show` opacity 1；`.toast.leaving` opacity 0 + `translateY(-60px)` + transition .4s；`.toasts` flex column gap 10 垂直堆叠成卡片。
+- 验证（Playwright 连续 3 个 flash 采样）：t150/t400 三个 toast 堆叠 opacity 1（淡入完成）✓；t2100 逐个 leaving 上移淡出中（-18.8/-4.25）✓；t2600 到达 -60px + opacity 0、前两个已移除 ✓。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 桌面端设置/二维码弹窗淡入+轻微放大动画（用户「设置、二维码界面需要淡入以及轻微放大弹出动画，磨砂背景不要动」）
+- **改动（app.css）**：新增 `@keyframes panelIn`（opacity 0→1 + `scale(.94→1)`），`.panel` 加 `animation: panelIn .28s ease; transform-origin: bottom center`（面板贴底，从底部轻微放大弹出）。**`.mask` 磨砂背景（--frost-bg + blur 10px）未动**。移动端 media 内已有 `animation: sheetUp .28s ease` 覆盖，保留滑上动画不受影响（仅桌面端生效）。
+- 验证（Playwright）：设置面板 `animationName=panelIn`，逐帧 opacity 0→1、scale 0.94→1 平滑（t1 0.94/透明 → t289 1.0/scale1）✓；二维码面板 `panelIn` ✓；`.mask` `backdropFilter=blur(10px)` 保持 ✓。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 修复：弹窗放大动画导致阴影被 scale 缩放（「加动画后阴影不对劲」）
+- **根因**：`.panel` 的 `animation: panelIn`（`transform: scale(.94→1)`）会**整体缩放元素含 `box-shadow`**，动画中阴影随内容缩放/偏移，视觉上"阴影不对劲"。
+- **改动（app.ts + app.css）**：把背景/圆角/阴影移到**外层 `.panel-shell`**（静态，只 `panelFade` 淡入 opacity，无 transform → 阴影不被缩放）；`.panel` 只做内容 **`panelIn` scale 放大**（背景透明）。`renderSheet` 结构改为 `mask > .panel-shell(.qr/.settings-panel) > .panel > 内容`；`.panel.settings-panel`/`.panel.qr` 选择器同步为 `.settings-panel .panel`/`.qr .panel`；桌面 media 的宽度/圆角（`.panel`→`.panel-shell`）、移动端 `sheetUp` 移到 `.panel-shell` + `.panel { animation: none }`（禁用内容 scale 避免与滑上叠加）。
+- 验证（Playwright 采样动画中 t≈120ms）：二维码面板 `.panel-shell` `box-shadow=0 -10px 30px` **完整未缩放**、`transform:none`、只 opacity 0.83 淡入；`.panel` `scale≈0.987` 放大中 ✓。设置面板同 ✓（shell 宽 640、阴影完整、panel scale 0.982）。`.mask` `backdropFilter=blur(10px)` 磨砂未动 ✓。动画后 shadow 完整、transform:none ✓。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 修复：弹窗阴影偏上（用户「效果不对，好像阴影偏上了」）
+- **根因**：`.panel-shell` 的 `box-shadow: 0 -10px 30px` 是**朝上投影**（offset-y 负值 → 阴影落在面板上方），桌面居中弹窗显得"阴影偏上"。
+- **改动（app.css）**：基础 `.panel-shell` 阴影 `0 -10px 30px` → **`0 0 30px`（四周对称）**，不偏上也不偏下；**移动端 media 里 `.panel-shell` 覆盖回 `0 -10px 30px`**（移动端 sheet 贴底，投影朝上投在磨砂背景上，保持不回归）。阴影仍在 shell（transform 动画之外），内容 scale 不受影响。
+- 验证（Playwright）：设置面板 `.panel-shell` `box-shadow=rgba(0,0,0,0.25) 0px 0px 30px 0px`（四周对称）、`transform:none` ✓；页面保持打开可查看效果。
+- 本次未打包 exe（按用户要求只增量构建 web）。

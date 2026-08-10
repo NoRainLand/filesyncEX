@@ -183,9 +183,32 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
 .composer .code-editor { margin-top: 8px; }
 /* ---------- 弹层 ---------- */
 .mask { position: fixed; inset: 0; background: var(--frost-bg); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); display: flex; align-items: flex-end; justify-content: center; z-index: 100; }
-.panel { background: var(--surface); border-radius: 16px 16px 0 0; width: 100%; max-width: 520px; padding-bottom: 14px; color: var(--ink); max-height: 88vh; overflow-y: auto; box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.25); }
+/* 弹层面板外壳：静态背景+圆角+阴影+淡入（阴影在内容放大动画的 transform 之外，不再被 scale 缩放）。磨砂背景 .mask 不动 */
+.panel-shell {
+  background: var(--surface);
+  border-radius: 16px 16px 0 0;
+  width: 100%;
+  max-width: 520px;
+  box-shadow: 0 0 30px rgba(0, 0, 0, 0.25);
+  animation: panelFade .25s ease;
+}
+@keyframes panelFade { from { opacity: 0; } to { opacity: 1; } }
+/* 面板内容：淡入 + 轻微放大（scale 只作用内容，不缩放外壳阴影） */
+.panel {
+  border-radius: 16px 16px 0 0;
+  padding-bottom: 14px;
+  color: var(--ink);
+  max-height: 88vh;
+  overflow-y: auto;
+  animation: panelIn .28s ease;
+  transform-origin: bottom center;
+}
+@keyframes panelIn {
+  from { opacity: 0; transform: scale(.94); }
+  to { opacity: 1; transform: scale(1); }
+}
 /* 设置面板：内容自然排布，不出现上下滚动条 */
-.panel.settings-panel { max-height: none; overflow: visible; }
+.settings-panel .panel { max-height: none; overflow: visible; }
 .panel .handle { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 8px auto 4px; }
 .panel .ptitle { font-size: 24px; font-weight: 700; color: var(--primary); text-align: center; padding: 8px 0 12px; cursor: pointer; }
 .attach-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 8px 16px 12px; }
@@ -217,7 +240,7 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
 .qrbox { width: 200px; height: 200px; margin: 0 auto 12px; background: #fff; border-radius: 8px; padding: 10px; display: flex; align-items: center; justify-content: center; }
 .qrbox img { width: 100%; height: 100%; display: block; }
 .qrbox .qr-loading { color: var(--muted); font-size: 13px; }
-.panel.qr p { text-align: center; font-size: 13px; color: var(--muted); margin: 0 0 12px; word-break: break-all; }
+.qr .panel p { text-align: center; font-size: 13px; color: var(--muted); margin: 0 0 12px; word-break: break-all; }
 /* ---------- 全屏预览 ---------- */
 .viewer { position: fixed; inset: 0; z-index: 400; background: var(--frost-bg); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); color: var(--ink); display: none; flex-direction: column; }
 .viewer.open { display: flex; }
@@ -235,9 +258,9 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
 .viewer .vbody .codeview::-webkit-scrollbar-corner { background: transparent; }
 .viewer .vfoot { display: flex; gap: 10px; justify-content: center; padding: 12px 16px; flex: none; }
 .toasts { position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 10px; z-index: 500; pointer-events: none; }
-.toast { background: var(--bg); color: var(--ink); padding: 14px 28px; border-radius: 8px; font-size: 17px; font-weight: 600; opacity: 0; pointer-events: none; transition: opacity .6s ease, transform .6s ease; white-space: nowrap; box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+.toast { background: var(--bg); color: var(--ink); padding: 12px 24px; border-radius: 10px; font-size: 17px; font-weight: 600; opacity: 0; pointer-events: none; white-space: nowrap; box-shadow: 0 6px 24px rgba(0,0,0,.18); transition: opacity .3s ease; }
 .toast.show { opacity: 1; }
-.toast.leaving { opacity: 0; transform: translateY(-24px); }
+.toast.leaving { opacity: 0; transform: translateY(-60px); transition: opacity .4s ease, transform .4s ease; }
 /* 长按删除确认气泡（移动端） */
 .del-bubble { position: fixed; z-index: 700; width: 200px; box-sizing: border-box; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 12px; animation: dbIn .16s ease; }
 @keyframes dbIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -270,8 +293,8 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
 @media (min-width: 641px) {
   footer.composer { display: none; }
   .mask { align-items: center; }
-  .panel { border-radius: 14px; width: min(92vw, 380px); }
-  .panel.settings-panel { width: min(92vw, 640px); max-width: min(92vw, 640px); } /* 对齐原型 dlgSettings 640px */
+  .panel-shell { border-radius: 14px; width: min(92vw, 380px); }
+  .panel-shell.settings-panel { width: min(92vw, 640px); max-width: min(92vw, 640px); } /* 对齐原型 dlgSettings 640px */
   .panel .handle { display: none; }
 }
 @media (max-width: 640px) {
@@ -317,7 +340,8 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
   .settings .tool-sec { display: none; }
   /* 刘海屏安全区 */
   footer.composer { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); }
-  .panel { padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); animation: sheetUp .28s ease; }
+  .panel-shell { padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); animation: sheetUp .28s ease; box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.25); } /* 移动端贴底：投影朝上（投在磨砂背景上） */
+  .panel { animation: none; } /* 移动端禁用内容 scale，只外壳滑上 */
   @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
   .viewer .vtop { padding: calc(14px + env(safe-area-inset-top, 0px)) 14px 8px; }
   .viewer .vfoot { padding: 12px 16px calc(14px + env(safe-area-inset-bottom, 0px)); }

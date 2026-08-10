@@ -190,8 +190,8 @@ export class FilesyncApp extends LitElement {
   httpUrl = "";
   qrDataUrl = "";
   theme: "light" | "dark" = "light";
-  /** 提示弹窗池：可同时存在多个 toast，各自独立淡入/淡出/移除 */
-  toasts: { id: number; text: string; leaving: boolean }[] = [];
+  /** 提示弹窗池：可同时存在多个 toast，各自独立淡入/停留/上移淡出/移除（垂直堆叠） */
+  toasts: { id: number; text: string; leaving: boolean; show: boolean }[] = [];
   private toastSeq = 0;
   /** 移动端长按删除确认气泡：非空时在 (x,y) 显示（above 时箭头朝下） */
   delBubble: { id: string; x: number; y: number; above: boolean } | null = null;
@@ -790,16 +790,22 @@ export class FilesyncApp extends LitElement {
   }
   /** 点击文档其它区域时关闭语言下拉 */
   private onDocClick = (): void => { if (this.langOpen) this.langOpen = false; };
-  /** 提示弹窗池：每次追加一个独立 toast，2200ms 后淡出上移，再 700ms 移除 */
+  /** 提示弹窗池：每次追加一个独立 toast；淡入 → 停留 → 上移固定距离同时淡出 → 移除；多个垂直堆叠 */
   private flash(t: string): void {
     const id = ++this.toastSeq;
-    this.toasts = [...this.toasts, { id, text: t, leaving: false }];
+    this.toasts = [...this.toasts, { id, text: t, leaving: false, show: false }];
+    // 下一帧加 show → CSS transition 淡入（若首次渲染即 show 会没有淡入效果）
+    requestAnimationFrame(() => {
+      this.toasts = this.toasts.map((x) => (x.id === id ? { ...x, show: true } : x));
+    });
+    // 停留 2000ms 后开始上移淡出
     window.setTimeout(() => {
       this.toasts = this.toasts.map((x) => (x.id === id ? { ...x, leaving: true } : x));
-    }, 2200);
+    }, 2000);
+    // 上移淡出动画（0.4s）完成后移除
     window.setTimeout(() => {
       this.toasts = this.toasts.filter((x) => x.id !== id);
-    }, 2900);
+    }, 2500);
   }
 
   /* ---------- 服务器通知（异常/维护/关闭） ---------- */
@@ -1106,7 +1112,7 @@ export class FilesyncApp extends LitElement {
             <button class="btn del" @click=${() => { if (this.debounceKey("del-ok", 600)) this.confirmDelBubble(); }}>删除</button>
           </div>
         </div>` : nothing}
-      ${this.toasts.length ? html`<div class="toasts">${this.toasts.map((to) => html`<div class="toast ${to.leaving ? "leaving" : "show"}">${to.text}</div>`)}</div>` : nothing}
+      ${this.toasts.length ? html`<div class="toasts">${this.toasts.map((to) => html`<div class="toast ${to.leaving ? "leaving" : to.show ? "show" : ""}">${to.text}</div>`)}</div>` : nothing}
     `;
   }
 
@@ -1154,7 +1160,7 @@ export class FilesyncApp extends LitElement {
     } else if (s === "qr") {
       content = html`<div class="qrbox">${this.qrDataUrl ? html`<img src="${this.qrDataUrl}" alt="二维码" />` : html`<div class="qr-loading">生成中…</div>`}</div><p>${this.httpUrl} · 用手机扫码即可加入同步</p>`;
     }
-    return html`<div class="mask" @click=${close}><div class="panel ${s === "qr" ? "qr" : ""} ${s === "settings" ? "settings-panel" : ""}" @click=${(e: Event) => e.stopPropagation()}><div class="handle"></div><div class="ptitle" @click=${close}>${s === "attach" ? "发送内容" : s === "progress" ? "上传进度" : s === "settings" ? "设置" : "扫码连接"}</div>${content}</div></div>`;
+    return html`<div class="mask" @click=${close}><div class="panel-shell ${s === "qr" ? "qr" : ""} ${s === "settings" ? "settings-panel" : ""}"><div class="panel" @click=${(e: Event) => e.stopPropagation()}><div class="handle"></div><div class="ptitle" @click=${close}>${s === "attach" ? "发送内容" : s === "progress" ? "上传进度" : s === "settings" ? "设置" : "扫码连接"}</div>${content}</div></div></div>`;
   }
 
   private renderPreview(pv: { kind: string; msg: MsgDataT }) {
