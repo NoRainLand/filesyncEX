@@ -5,7 +5,7 @@ import ClipboardJS from "clipboard";
 import type { DeviceInfoT, MsgDataT } from "@filesyncex/protocol";
 import { getDevice, saveDevice } from "./device.js";
 import { WsClient } from "./ws.js";
-import { uploadFile } from "./api.js";
+import { uploadFile, DIRECT_UPLOAD_LIMIT } from "./api.js";
 import appCss from "./app.css?inline";
 
 /* ================= helpers ================= */
@@ -144,6 +144,17 @@ const I_TRASH = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" v
 
 /* ================= 主组件 ================= */
 
+/** 上传任务（占位卡）记录；file 保留 File 引用，用于断点续传（点击失败的大文件占位卡） */
+interface UploadRec {
+  key: string;
+  name: string;
+  pct: number;
+  size: number;
+  kind: string;
+  fail?: boolean;
+  file?: File;
+}
+
 export class FilesyncApp extends LitElement {
   static styles = unsafeCSS(appCss);
 
@@ -167,7 +178,7 @@ export class FilesyncApp extends LitElement {
   codeMode = false;
   codeLang = "ts";
   codeText = "";
-  uploads: { key: string; name: string; pct: number; size: number; kind: string; fail?: boolean }[] = [];
+  uploads: UploadRec[] = [];
   playingId: string | null = null;
   sheet: "attach" | "progress" | "settings" | "qr" | null = null;
   preview: { kind: string; msg: MsgDataT } | null = null;
@@ -435,7 +446,7 @@ export class FilesyncApp extends LitElement {
     for (const file of Array.from(files as File[])) {
       const key = `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const kind = fileKind(file.name, file.type);
-      const rec: { key: string; name: string; pct: number; size: number; kind: string; fail?: boolean } = { key, name: file.name, pct: 0, size: file.size, kind };
+      const rec: UploadRec = { key, name: file.name, pct: 0, size: file.size, kind, file };
       this.uploads = [...this.uploads, rec];
       // 在消息列表插入「按类型尺寸的占位卡」（16:9 图片视频 / 播放条音频 / 图标行文件）；真实消息经 WS 广播后替换
       const placeholder: MsgDataT = {
@@ -450,14 +461,46 @@ export class FilesyncApp extends LitElement {
         this.msgs = this.msgs.filter((m) => m.id !== key);
         this.uploads = this.uploads.filter((x) => x !== rec);
       } catch (e) {
-        rec.fail = true; rec.pct = -1; console.error("上传失败:", e); this.uploads = [...this.uploads];
-        // 失败：占位卡保持显示（renderMsg 用 rec.fail 显示「上传失败」+ 红色圆环）
-        this.msgs = [...this.msgs];
+        console.error("上传失败:", e);
+        if (file.size <= DIRECT_UPLOAD_LIMIT) {
+          // 小文件（≤8MB 直接上传）：失败直接移除占位卡并提示（无断点续传价值）
+          this.msgs = this.msgs.filter((x) => x.id !== key);
+          this.uploads = this.uploads.filter((x) => x !== rec);
+          this.flash(`「${file.name}」上传失败`);
+        } else {
+          // 大文件（分片上传）：保留占位卡，标记失败 → 点击可断点续传（File 引用仍在内存）
+          rec.fail = true; rec.pct = -1;
+          this.uploads = [...this.uploads];
+          this.msgs = [...this.msgs];
+          this.flash(`「${file.name}」上传中断，点击消息可断点续传`);
+        }
       }
     }
     this.scrollToLatest();
   }
   private onDrop(e: DragEvent): void { e.preventDefault(); void this.handleFiles(e.dataTransfer?.files ?? null); }
+
+  /** 断点续传：点击失败的大文件占位卡，用内存里的 File 重新上传（同 sha → 服务端自动续传） */
+  private async retryUpload(rec: UploadRec): Promise<void> {
+    if (!rec.file) return;
+    if (!this.debounceKey("retry-" + rec.key, 800)) return;
+    rec.fail = false; rec.pct = 0;
+    this.uploads = [...this.uploads];
+    this.msgs = [...this.msgs];
+    try {
+      await uploadFile(rec.file, (sent, total) => { rec.pct = Math.round((sent / total) * 100); this.uploads = [...this.uploads]; });
+      // 续传成功：移除占位卡（真实消息由 WS onAdd 广播，同 id 去重）
+      this.msgs = this.msgs.filter((m) => m.id !== rec.key);
+      this.uploads = this.uploads.filter((x) => x !== rec);
+      this.flash(`「${rec.name}」续传成功`);
+    } catch (e) {
+      console.error("续传失败:", e);
+      // 彻底失败且无法续传：删除占位卡 + 提示
+      this.msgs = this.msgs.filter((m) => m.id !== rec.key);
+      this.uploads = this.uploads.filter((x) => x !== rec);
+      this.flash(`「${rec.name}」续传失败，已取消`);
+    }
+  }
 
   /* ---------- 预览 ---------- */
   private pvZoom = { s: 1, tx: 0, ty: 0, bx: 0, by: 0, init: false };
@@ -745,6 +788,8 @@ export class FilesyncApp extends LitElement {
       const rec = this.uploads.find((u) => u.key === m.id);
       const pct = rec ? Math.max(0, Math.min(100, rec.pct)) : 0;
       const failed = !!rec?.fail;
+      // 大文件（分片）上传失败 → 可点击断点续传（File 引用仍在内存）
+      const retryable = failed && !!rec?.file && rec.file.size > DIRECT_UPLOAD_LIMIT;
       // 按文件类型决定占位卡结构与尺寸（匹配真实消息）：image/video=16:9，audio=播放条，file=图标行
       const uk = (rec?.kind ?? m.kind) as string;
       const media = uk === "image" || uk === "video";
@@ -770,15 +815,15 @@ export class FilesyncApp extends LitElement {
       } else {
         phBody = html`<div class="ph-body file">${blur}<span class="ph-ic">${I_FILE}</span>${ring}</div>`;
       }
-      // 信息行（同真实消息 .mm：文件名 + 大小）
-      const mm = html`<div class="ph-mm"><span class="name">${failed ? "上传失败" : f?.name ?? "上传中…"}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>`;
+      // 信息行（同真实消息 .mm：文件名 + 大小；失败的大文件提示可点击续传）
+      const mm = html`<div class="ph-mm"><span class="name ${retryable ? "retry" : ""}">${failed ? (retryable ? "上传中断 · 点击续传" : "上传失败") : f?.name ?? "上传中…"}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>`;
       // 操作行（同真实消息 .ops：下载占位按钮）
       const ops = html`<div class="ph-ops"><span class="btn secondary ph-down">${I_DOWN}下载</span></div>`;
       return html`<div class="msg">
         <div class="avatar">${(m.sender.deviceName[0] ?? "?").toUpperCase()}</div>
         <div class="body">
           <div class="head"><span class="who">${m.sender.deviceName}</span><time>${fmtTime(m.ts)}</time></div>
-          <div class="card upload-ph ${uk}">
+          <div class="card upload-ph ${uk} ${retryable ? "retry" : ""}" @click=${retryable ? () => { void this.retryUpload(rec!); } : undefined}>
             ${phBody}
             ${mm}
             ${ops}

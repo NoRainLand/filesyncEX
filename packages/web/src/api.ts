@@ -176,7 +176,7 @@ function rotr32(x: number, n: number): number {
 const SHA_CHUNK = 4 * 1024 * 1024; // 4MB，避免大文件整块读入内存
 const CHUNK_TIMEOUT_MS = 30_000; // 单个分片请求超时（WiFi 抖动时避免永久挂起）
 const CHUNK_MAX_RETRIES = 4; // 单个分片最大重试次数（网络瞬时断连自动恢复）
-const DIRECT_UPLOAD_LIMIT = 8 * 1024 * 1024; // ≤ 该大小直接上传（跳过哈希/分片，消除上传前等待）
+export const DIRECT_UPLOAD_LIMIT = 8 * 1024 * 1024; // ≤ 该大小直接上传（跳过哈希/分片，消除上传前等待）
 
 /** 计算文件 SHA-256（分块增量，用于秒传/断点续传；兼容局域网 HTTP 非安全上下文） */
 export async function fileSha256(file: Blob): Promise<string> {

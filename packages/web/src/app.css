@@ -114,6 +114,9 @@ header.app { display: flex; align-items: center; gap: 14px; margin-top: 8px; pad
 /* 操作行（同真实消息 .ops） */
 .card.upload-ph .ph-ops { display: flex; gap: 8px; padding: 10px 14px 12px; }
 .card.upload-ph .ph-ops .btn { padding: 6px 12px; font-size: 12px; opacity: .7; pointer-events: none; }
+/* 失败的大文件占位卡：可点击断点续传 */
+.card.upload-ph.retry { cursor: pointer; }
+.card.upload-ph .ph-mm .name.retry { color: var(--pink); }
 /* 卡片右上角删除角标 */
 .del-corner { position: absolute; top: 8px; right: 8px; z-index: 3; width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; background: var(--surface); border: 1px solid var(--line); color: var(--muted); opacity: .8; transition: .15s; }
 .del-corner:hover { opacity: 1; color: var(--pink); border-color: var(--pink); background: var(--surface-2); }

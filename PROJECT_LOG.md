@@ -1219,3 +1219,14 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
 - **冒烟验证**：health、上传 init(zod v4)、2 片分片 complete(流式)、下载内容一致、direct 上传 全 ✅。
 - **README 同步**：删 /api/wave 接口描述（路由已删）、zod 标 v4、优化表新增（LRU/异步 IO/zod v4/死代码清理）、限制更新（音频转码已 LRU 限制）。**字体子集化按用户要求不做**（README 保留为已知限制）。
 - 已重新打包 exe（75.1MB，略增因 zod v4 + 完整重建）运行验证通过（无 err、版本 beta1）。
+
+## [6.0.0-beta1] 断点续传交互（用户三规则：小文件失败即删、大文件可点击续传、彻底失败删除）
+- api.ts：`DIRECT_UPLOAD_LIMIT` 改为导出（app.ts 判断是否分片，单一来源）。
+- app.ts：
+  - 新增 `UploadRec` 接口（rec 加 `file?: File`，保存 File 引用供续传）。
+  - `handleFiles` 失败分流：≤8MB（direct 直接上传）失败 → **移除占位卡** + toast「xx 上传失败」；>8MB（分片）失败 → **保留占位卡**标 fail（红色感叹号）+ toast「xx 上传中断，点击消息可断点续传」。
+  - 新增 `retryUpload(rec)`：点击失败的大文件占位卡 → 用内存里的 File 重新 `uploadFile`（同 sha → 服务端自动断点续传）→ 成功移除占位（真实消息 WS 广播）；**再次失败**（彻底失败且无法续传）→ 删除占位 + toast「xx 续传失败，已取消」。
+  - renderMsg 占位卡：`retryable = fail && file.size > DIRECT_UPLOAD_LIMIT` → 文案「上传中断 · 点击续传」（.ph-mm .name.retry 粉色）+ 卡片加 .retry class + @click 触发续传。
+- app.css：`.card.upload-ph.retry { cursor: pointer; }` + `.ph-mm .name.retry { color: var(--pink); }`。
+- Playwright 验证（真实 server 4190 + web/dist）：①小文件 direct 拦截 500 → 占位删除 + toast「上传失败」✓；②10MB 分片 chunk 全拦截 500（重试 4 次后失败）→ 占位保留、红色 !、文案「上传中断·点击续传」、retry 可点 ✓；点击续传（放行）→ 占位移除 + 真实消息（_t_big.bin 10MB · 文件 · 下载链接）✓。
+- 已重打包 exe（75.1MB）运行验证通过（无 err、版本 beta1）。
