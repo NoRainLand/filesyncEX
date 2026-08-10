@@ -1306,3 +1306,11 @@ equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器�
 - **修复（app.css）**：`.code-editor` 基础加 `overflow:hidden; visibility:hidden; pointer-events:none`（收起态裁剪溢出 + 不可交互 + 不拦截点击），transition 加 `visibility 0s .25s`（收起动画结束后再隐藏，动画期间仍可见）；展开规则加 `visibility:visible; pointer-events:auto` + `transition visibility 0s`（展开立即显示可输入）。移动端编辑器是条件渲染（非 code-mode 不在 DOM），无此问题；`.code-editor.open` 也匹配移动端 `.open`，可见性不受影响。
 - 验证（Playwright 真实上传 9MB 分片文件）：修复前 del-corner 命中 TEXTAREA 不可点；修复后命中 del-corner 内 svg，**点击删除成功**（toast「消息已删除」、文件消息移除）✓；展开态编辑器 visible/auto 可输入、收起态 hidden/none/overflow 裁剪（消息区 elementFromPoint 命中正常 bubble）✓。
 - 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 修复服务器 ctrl+c 关闭后界面连接状态不更新（用户「服务器命令行 ctrl+c 关闭后，logo 没变色、设置里链接状态没变」）
+- **根因（server 优雅关闭挂起）**：ctrl+c → SIGINT → shell `srv.close()`。`close()` 里 `wss.close()` 只停止监听、**不主动断开已连接客户端**，随后 `httpServer.close(cb)` 等待所有连接结束——但**页面 keep-alive HTTP 连接因 keepAliveTimeout=30s（大文件上传优化）一直挂着**，导致 `httpServer.close()` 挂起 ~20s（实测 CLOSE-DONE 20140ms / 不修则永不 resolve），服务器进程不退出 → WS 保持连接 → 前端 `connState` 保持 `connected` → logo 不变色、设置连接状态不更新。（强杀进程时 TCP 断开，前端 onclose 正常变色，故此前测试"前端逻辑正常"，问题在优雅关闭路径。）
+- **修复（server 两处）**：
+  ① `SocketServer.close()`：遍历 `conns` **主动 `c.ws.terminate()`** 断开所有客户端（立即释放 WS socket，前端 onclose 触发；`close(1001)` 优雅帧实测仍慢 ~19s，故用 terminate）。
+  ② `index.ts` close()：`httpServer.close(() => r())` 后调用 **`httpServer.closeAllConnections()`** 强制关闭 keep-alive 连接（否则 httpServer.close() 等 30s 超时）。
+- 验证（Playwright + 20s 自动关闭脚本）：修复前 CLOSE-DONE 永不/20140ms；修复后 **CLOSE-DONE 509ms**（服务器秒退）；前端 logo `connected`(黛绿)→`disconnected`(红 rgb(229,72,77))✓；设置面板 `已断开（局域网）` + `dot disconnected`✓；shutdown 通知弹窗正常。
+- 本次未打包 exe（按用户要求只增量构建 server）。

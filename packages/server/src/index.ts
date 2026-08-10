@@ -194,7 +194,12 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
     wsServer.broadcastNotice("shutdown", "服务器即将关闭，请稍后重新连接");
     await new Promise((r) => setTimeout(r, 500)); // 留时间让通知送达客户端
     wsServer.close();
-    await new Promise<void>((r) => httpServer.close(() => r()));
+    // httpServer.close() 会等待所有连接结束（含空闲 keep-alive，其 keepAliveTimeout 为 30s），
+    // 若不强制关闭，关闭流程会挂起 ~20s 才退出，前端 WS 也迟迟不断开 → 连接状态不更新。closeAllConnections 立即释放。
+    await new Promise<void>((r) => {
+      httpServer.close(() => r());
+      httpServer.closeAllConnections();
+    });
     await engine.close();
     if (lockFile) {
       try {

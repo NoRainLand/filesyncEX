@@ -157,6 +157,16 @@ export class SocketServer {
   close(): void {
     if (this.hbTimer) clearInterval(this.hbTimer);
     this.offs.forEach((off) => off());
+    // 强制断开所有客户端，立即释放底层 socket（否则 httpServer.close() 会等待连接结束而挂起，服务器无法退出，
+    // 前端 WS 保持连接 → connState 不变 → logo/设置连接状态不更新）。terminate() 立即销毁连接（前端 onclose 同样触发）。
+    for (const c of this.conns.values()) {
+      try {
+        c.ws.terminate();
+      } catch {
+        /* noop */
+      }
+    }
+    this.conns.clear();
     this.wss.close();
   }
 }
