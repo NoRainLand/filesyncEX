@@ -1443,3 +1443,29 @@ equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器�
 - **修复（protocol/src/schema.ts）**：`ClientFrame`/`ServerFrame` 类型由 `z.infer<typeof ...>` 改为**手写联合类型**（普通 TS 类型，语言服务必定能解析），加注释「勿改回 z.infer，改 schema 需同步」；ws.ts 赋值处补 `as ServerFrameT` 断言。
 - 验证：protocol/server/web 全量 tsc 构建通过；`get_errors` 全 workspace 无错误 ✓。
 - 本次未打包 exe（按用户要求只增量构建）。
+
+## [6.0.0-beta2] 前端中英文切换（i18n）+ 设置语言按钮 + 版本 beta2
+- **新建 `packages/web/src/i18n.ts`**：zh/en 双语词典（星期/日期、文件类型、全部提示 toast/按钮/placeholder/弹窗标题/预览/删除气泡/设置面板等 ~90 key）+ `loadLang/saveLang`（localStorage `fsex_lang`）+ `dayLabel`/`fmtType` 按语言返回。
+- **app.ts 接入**：`lang` 状态（`loadLang()`）、`t(key, vars)` 翻译方法（缺 key 回退中文）、`setLang`（持久化 + 触发重渲染）；替换全部用户可见硬编码中文（`console.error` 开发者日志保留）。
+- **设置面板新增「语言」区块**：中文 / English 两个切换按钮（`.st-lang .langbtn`，on 态主色），点击即切换 + 持久化。
+- **版本 beta1 → beta2**：6 个 package.json + server health/banner + web main.ts 默认版本 + README + LICENSE 示例同步。
+- **坑**：`noUncheckedIndexedAccess` 下 i18n.ts 数组/Record 索引返回 undefined → week 数组 `?? ""`、dict 访问改用 `tr()` 辅助（`?.` 链 + `??` 回退）；**get_errors 对未打开文件报陈旧诊断**（probe 实验确认：加了明显错误它不报），以 `tsc build` 为准。
+- 验证（Playwright）：设置面板语言按钮存在；切 English 后 Settings/Language/Connection/Connected/(LAN)/My nickname/QR Code/Toggle theme/File/Send/Copy/Delete/Today 全英文 ✓；localStorage `fsex_lang=en` 持久化 ✓；`/api/health` `version=6.0.0-beta2` ✓。
+- 本次未打包 exe（按用户要求只增量构建）。
+
+## [6.0.0-beta2] 语言切换改单选框（用户「切换有点难看，改为单选框不要按钮」）
+- 设置面板语言切换由两个按钮（`.langbtn`）改为**原生 radio 单选框**：`<label class="lang-opt"><input type="radio" name="fsex-lang" .checked ... @change=setLang>文本</label>`（中文 / English）。
+- CSS：`.st-lang .langbtn` 三行替换为 `.st-lang .lang-opt`（inline-flex + gap 6px + cursor）+ `input[type="radio"]`（15px、`accent-color: var(--primary)` 主色圆点）。
+- 验证（Playwright）：无障碍快照显示 `radio "中文"` / `radio "English" [checked]`；点「中文」→ checked 切换、全界面切回中文（设置/语言/连接/已连接/我的昵称…）、localStorage `fsex_lang=zh` ✓。
+- 本次未打包 exe。
+
+## [6.0.0-beta2] 语言区块移到连接下 + 首次按浏览器语言判断（用户「语言选项放连接选项下面」「首次打开判断浏览器语言，中文则中文否则英文」）
+- **位置调整**：设置面板语言区块从顶部移到「连接」区块下方（顺序：连接 → 语言 → 设备身份/昵称 → 关于）。
+- **首次默认语言**：`i18n.ts loadLang()` 改为——localStorage 有记录用记录；**无记录（首次打开）按 `navigator.language` 判断**（`/^zh/i` 匹配 zh-CN/zh-TW 等 → 中文，否则英文）。
+- 验证（Playwright）：区块顺序 `连接→语言`（seclabels：连接/语言/关于，connBeforeLang=true）✓；清 localStorage 后 zh-CN 浏览器首次加载显示中文（二维码/今天/选择文件）✓；addInitScript 模拟 en-US 后首次加载显示英文（QR Code/Today/Choose file）✓。
+- 本次未打包 exe。
+
+## [6.0.0-beta2] 语言区块移到设备指纹后面（用户「语言选项，放在设备指纹后面吧」）
+- 设置面板语言区块从「连接」下方移到**设备指纹后面**（顺序：连接 → 设备身份/昵称（默认昵称/我的昵称/设备指纹）→ 语言 → 工具 → 关于）。
+- 验证（Playwright）：seclabels Connection→Language→Tools→About、`fpBeforeLang=true`（设备指纹 code.fp 在 st-lang 前）✓。
+- 本次未打包 exe。

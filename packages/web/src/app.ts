@@ -6,6 +6,8 @@ import type { DeviceInfoT, MsgDataT } from "@filesyncex/protocol";
 import { getDevice, saveDevice } from "./device.js";
 import { WsClient } from "./ws.js";
 import { uploadFile, DIRECT_UPLOAD_LIMIT, apiUploadCover } from "./api.js";
+import type { Lang } from "./i18n.js";
+import { loadLang, saveLang, dict, dayLabel, fmtType } from "./i18n.js";
 import appCss from "./app.css?inline";
 
 /* ================= helpers ================= */
@@ -16,40 +18,14 @@ function fmtTime(ts: number): string {
   const d = new Date(ts);
   return `${d.getFullYear()}/${p2(d.getMonth() + 1)}/${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
 }
-const WEEK = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-/** 日期分组标签（对齐原型）：
- *  今天 → 今天 · YYYY/MM/DD；昨天 → 昨天 · YYYY/MM/DD
- *  更早：桌面 → 「更早」；移动 → 7 天内「MM/DD · 周X」、更久「MM/DD」 */
-function dayLabel(ts: number, mobile: boolean): string {
-  const d = new Date(ts);
-  const now = new Date();
-  const ymd = (x: Date) => `${x.getFullYear()}/${p2(x.getMonth() + 1)}/${p2(x.getDate())}`;
-  const full = ymd(d);
-  if (full === ymd(now)) return `今天 · ${full}`;
-  const y = new Date(now.getTime() - 86400000);
-  if (full === ymd(y)) return `昨天 · ${full}`;
-  if (mobile) {
-    const md = `${p2(d.getMonth() + 1)}/${p2(d.getDate())}`;
-    if (now.getTime() - ts < 7 * 86400000) return `${md} · ${WEEK[d.getDay()]}`;
-    return md;
-  }
-  return "更早";
-}
+/* 日期分组（dayLabel）/ 文件类型（fmtType）已迁移到 i18n.ts，按当前语言返回中/英文 */
 const fmtSize = (n: number): string => {
   if (n < 1024) return n + " B";
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
   if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
   return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
 };
-/** 文件类型中文描述 */
-function fmtType(name: string, mime?: string): string {
-  const ext = name.split(".").pop()?.toLowerCase();
-  const map: Record<string, string> = { sh: "脚本", py: "脚本", js: "脚本", ts: "脚本", txt: "文本", md: "文档", pdf: "PDF", doc: "文档", docx: "文档", xlsx: "表格", xls: "表格", zip: "压缩包", rar: "压缩包", "7z": "压缩包", exe: "程序", ico: "图标", mp3: "音频", wav: "音频", m4a: "音频", mp4: "视频", avi: "视频", mov: "视频", mkv: "视频", webm: "视频", png: "图片", jpg: "图片", jpeg: "图片", gif: "图片", webp: "图片", svg: "图片", bmp: "图片" };
-  if (mime?.startsWith("image/")) return "图片";
-  if (mime?.startsWith("audio/")) return "音频";
-  if (mime?.startsWith("video/")) return "视频";
-  return map[ext ?? ""] ?? "文件";
-}
+/* fmtType 已迁移到 i18n.ts */
 /** 文件类型 → 消息 kind（与服务器 kindOf 一致）：用于上传占位卡匹配真实消息尺寸 */
 function fileKind(name: string, mime?: string): "image" | "audio" | "video" | "file" {
   if (mime) {
@@ -165,7 +141,7 @@ export class FilesyncApp extends LitElement {
     connState: { state: true }, notices: { state: true },
     text: { state: true }, codeMode: { state: true }, codeLang: { state: true }, codeText: { state: true },
     uploads: { state: true }, sheet: { state: true }, preview: { state: true }, nick: { state: true },
-    httpUrl: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, langOpen: { state: true }, playingId: { state: true }, qrDataUrl: { state: true },
+    httpUrl: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, langOpen: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, lang: { state: true },
   };
 
   msgs: MsgDataT[] = [];
@@ -206,10 +182,24 @@ export class FilesyncApp extends LitElement {
   };
   /** 自定义语言下拉是否展开 */
   langOpen = false;
+  /** 界面语言：zh 中文 / en 英文（localStorage 持久化） */
+  lang: Lang = loadLang();
 
   private ws: WsClient | null = null;
   private audioEl: HTMLAudioElement | null = null;
   private audioMsgId: string | null = null;
+
+  /** 翻译：按当前语言取词典（缺 key 回退中文） */
+  private t(key: string, vars?: Record<string, string>): string {
+    return dict[this.lang][key]?.(vars) ?? dict.zh[key]?.(vars) ?? key;
+  }
+
+  /** 切换界面语言（持久化 + 触发重渲染） */
+  private setLang(l: Lang): void {
+    if (this.lang === l) return;
+    this.lang = l;
+    saveLang(l);
+  }
 
   constructor() {
     super();
@@ -299,7 +289,7 @@ export class FilesyncApp extends LitElement {
     const ta = r?.querySelector<HTMLTextAreaElement>(".code-editor textarea");
     if (ta && ta.value) ta.value = "";
   }
-  private deleteMsg(id: string): void { this.ws?.send({ type: "del", id }); this.flash("消息已删除"); }
+  private deleteMsg(id: string): void { this.ws?.send({ type: "del", id }); this.flash(this.t("msg_deleted")); }
 
   /* ---------- 移动端：长按删除确认气泡 ---------- */
   /** 移动端：点击文本气泡直接复制（链接点击交给 openTextLink；气泡打开/长按屏蔽窗口内不复制） */
@@ -448,7 +438,7 @@ export class FilesyncApp extends LitElement {
     const n = this.nick.trim();
     if (!n) return;
     if (!FilesyncApp.NICK_RE.test(n)) {
-      this.flash("昵称仅允许大小写字母、下划线和数字，最长 10 位");
+      this.flash(this.t("nick_invalid"));
       return;
     }
     this.ws?.send({ type: "rename", name: n });
@@ -462,7 +452,7 @@ export class FilesyncApp extends LitElement {
     if (!this.qrDataUrl) {
       QRCode.toDataURL(this.httpUrl, { width: 180, margin: 1, color: { dark: "#1a1a1a", light: "#ffffff" } })
         .then((url) => { this.qrDataUrl = url; })
-        .catch(() => { this.flash("二维码生成失败"); });
+        .catch(() => { this.flash(this.t("qr_failed")); });
     }
   }
 
@@ -476,7 +466,7 @@ export class FilesyncApp extends LitElement {
       this.uploads = [...this.uploads, rec];
       // 在消息列表插入「按类型尺寸的占位卡」（16:9 图片视频 / 播放条音频 / 图标行文件）；真实消息经 WS 广播后替换
       const placeholder: MsgDataT = {
-        id: key, kind, sender: this.self ?? { deviceId: "", deviceName: "上传中", color: "#047878", platform: "other" },
+        id: key, kind, sender: this.self ?? { deviceId: "", deviceName: this.t("upload_ph"), color: "#047878", platform: "other" },
         ts: Date.now(), file: { name: file.name, size: file.size },
       };
       this.msgs = [...this.msgs, placeholder];
@@ -496,13 +486,13 @@ export class FilesyncApp extends LitElement {
           // 小文件（≤8MB 直接上传）：失败直接移除占位卡并提示（无断点续传价值）
           this.msgs = this.msgs.filter((x) => x.id !== key);
           this.uploads = this.uploads.filter((x) => x !== rec);
-          this.flash(`「${file.name}」上传失败`);
+          this.flash(this.t("upload_fail", { name: file.name }));
         } else {
           // 大文件（分片上传）：保留占位卡，标记失败 → 点击可断点续传（File 引用仍在内存）
           rec.fail = true; rec.pct = -1;
           this.uploads = [...this.uploads];
           this.msgs = [...this.msgs];
-          this.flash(`「${file.name}」上传中断，点击消息可断点续传`);
+          this.flash(this.t("upload_interrupted", { name: file.name }));
         }
       }
     }
@@ -594,13 +584,13 @@ export class FilesyncApp extends LitElement {
       // 续传成功：移除占位卡（真实消息由 WS onAdd 广播，同 id 去重）
       this.msgs = this.msgs.filter((m) => m.id !== rec.key);
       this.uploads = this.uploads.filter((x) => x !== rec);
-      this.flash(`「${rec.name}」续传成功`);
+      this.flash(this.t("resume_ok", { name: rec.name }));
     } catch (e) {
       console.error("续传失败:", e);
       // 彻底失败且无法续传：删除占位卡 + 提示
       this.msgs = this.msgs.filter((m) => m.id !== rec.key);
       this.uploads = this.uploads.filter((x) => x !== rec);
-      this.flash(`「${rec.name}」续传失败，已取消`);
+      this.flash(this.t("resume_fail", { name: rec.name }));
     }
   }
 
@@ -759,7 +749,7 @@ export class FilesyncApp extends LitElement {
     if (!p) return;
     if (p.kind === "code") {
       const t = p.msg.code?.content ?? "";
-      void this.copyToClipboard(t).then((ok) => this.flash(ok ? "代码已复制" : "复制失败，请手动复制"));
+      void this.copyToClipboard(t).then((ok) => this.flash(ok ? this.t("code_copied") : this.t("copy_failed")));
     } else {
       // 真正下载：临时 <a download> 触发浏览器下载（与消息列表下载按钮一致）
       const f = p.msg.file;
@@ -770,9 +760,9 @@ export class FilesyncApp extends LitElement {
         document.body.appendChild(a);
         a.click();
         a.remove();
-        this.flash("已开始下载");
+        this.flash(this.t("download_started"));
       } else {
-        this.flash("暂无可下载内容");
+        this.flash(this.t("no_download"));
       }
     }
   }
@@ -811,11 +801,11 @@ export class FilesyncApp extends LitElement {
   /* ---------- 服务器通知（异常/维护/关闭） ---------- */
   private noticeLevelLabel(level: string): string {
     switch (level) {
-      case "shutdown": return "服务器关闭";
-      case "maintenance": return "服务器维护中";
-      case "error": return "服务器异常";
-      case "warn": return "服务器警告";
-      default: return "服务器通知";
+      case "shutdown": return this.t("notice_shutdown");
+      case "maintenance": return this.t("notice_maintenance");
+      case "error": return this.t("notice_error");
+      case "warn": return this.t("notice_warn");
+      default: return this.t("notice_info");
     }
   }
   private showNotice(level: string, message: string): void {
@@ -835,23 +825,23 @@ export class FilesyncApp extends LitElement {
     this.dismissNotice(id);
     this.connState = "connecting";
     this.ws?.forceReconnect();
-    this.flash(n?.level === "shutdown" ? "正在尝试重新连接…" : "正在重新连接…");
+    this.flash(n?.level === "shutdown" ? this.t("reconnecting_shutdown") : this.t("reconnecting"));
   }
 
   private renderNotice() {
     if (this.notices.length === 0) return nothing;
     return html`<div class="notice-mask">${this.notices.map((n) => html`<div class="notice-panel ${n.level}">
-      <button class="nclose" title="关闭" @click=${() => { if (this.debounceKey("notice-close-" + n.id, 300)) this.dismissNotice(n.id); }}>✕</button>
+      <button class="nclose" title=${this.t("close")} @click=${() => { if (this.debounceKey("notice-close-" + n.id, 300)) this.dismissNotice(n.id); }}>✕</button>
       <div class="ntitle">${this.noticeLevelLabel(n.level)}</div>
       <div class="nbody">${n.message}</div>
-      <button class="btn" @click=${() => this.confirmNotice(n.id)}>确认并重连</button>
+      <button class="btn" @click=${() => this.confirmNotice(n.id)}>${this.t("reconnect_confirm")}</button>
     </div>`)}</div>`;
   }
   private copyText(t: string): void {
-    void this.copyToClipboard(t).then((ok) => this.flash(ok ? "已复制" : "复制失败，请手动复制"));
+    void this.copyToClipboard(t).then((ok) => this.flash(ok ? this.t("copied") : this.t("copy_failed")));
   }
   private copyCode(m: MsgDataT): void {
-    void this.copyToClipboard(m.code?.content ?? "").then((ok) => this.flash(ok ? "代码已复制" : "复制失败，请手动复制"));
+    void this.copyToClipboard(m.code?.content ?? "").then((ok) => this.flash(ok ? this.t("code_copied") : this.t("copy_failed")));
   }
   /** 复制到剪贴板：使用经典 clipboard.js 库（内部 execCommand+选区回退，兼容局域网 HTTP 非安全上下文） */
   private copyToClipboard(text: string): Promise<boolean> {
@@ -878,13 +868,13 @@ export class FilesyncApp extends LitElement {
 
   /* ---------- 消息渲染（按天分组；桌面端从新到旧，最新在上） ---------- */
   private renderMessages() {
-    if (this.msgs.length === 0) return html`<div class="empty">暂无消息 · 拖拽文件或输入文字开始同步</div>`;
+    if (this.msgs.length === 0) return html`<div class="empty">${this.t("empty_list")}</div>`;
     const mobile = window.innerWidth <= 640;
     const ordered = mobile ? this.msgs : [...this.msgs].reverse();
     const out: unknown[] = [];
     let lastDay = "";
     for (const m of ordered) {
-      const day = dayLabel(m.ts, mobile);
+      const day = dayLabel(this.lang, m.ts, mobile);
       if (day !== lastDay) { out.push(html`<div class="day">${day}</div>`); lastDay = day; }
       out.push(this.renderMsg(m));
     }
@@ -953,9 +943,9 @@ export class FilesyncApp extends LitElement {
         phBody = html`<div class="ph-body file">${blur}<span class="ph-ic">${I_FILE}</span>${ring}</div>`;
       }
       // 信息行（同真实消息 .mm：文件名 + 大小；失败的大文件提示可点击续传）
-      const mm = html`<div class="ph-mm"><span class="name ${retryable ? "retry" : ""}">${failed ? (retryable ? "上传中断 · 点击续传" : "上传失败") : f?.name ?? "上传中…"}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>`;
+      const mm = html`<div class="ph-mm"><span class="name ${retryable ? "retry" : ""}">${failed ? (retryable ? this.t("resume_click") : this.t("upload_failed_ph")) : f?.name ?? this.t("upload_ph")}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>`;
       // 操作行（同真实消息 .ops：下载占位按钮）
-      const ops = html`<div class="ph-ops"><span class="btn secondary ph-down">${I_DOWN}下载</span></div>`;
+      const ops = html`<div class="ph-ops"><span class="btn secondary ph-down">${I_DOWN}${this.t("download")}</span></div>`;
       return html`<div class="msg">
         <div class="avatar">${(m.sender.deviceName[0] ?? "?").toUpperCase()}</div>
         <div class="body">
@@ -968,11 +958,11 @@ export class FilesyncApp extends LitElement {
         </div>
       </div>`;
     }
-    const delBtn = html`<button class="del-corner" title="删除" @click=${() => { if (this.debounceKey("del-" + m.id, 500)) this.deleteMsg(m.id); }}>${I_TRASH}</button>`;
-    const copyBtn = html`<button class="btn" @click=${() => { if (this.debounceKey("copy-" + m.id, 800)) this.copyText(m.text ?? ""); }}>${I_COPY}复制</button>`;
-    const copyCodeBtn = html`<button class="btn" @click=${() => { if (this.debounceKey("copy-" + m.id, 800)) this.copyCode(m); }}>${I_COPY}复制</button>`;
-    const downBtn = html`<a class="btn" href="${f?.url ?? "#"}" download @click=${(e: Event) => { if (!this.debounceKey("down-" + m.id, 800)) e.preventDefault(); }}>${I_DOWN}下载</a>`;
-    const head = html`<span class="who">${m.sender.deviceName}</span>${this.self && m.sender.deviceId === this.self.deviceId ? html`<span class="me">本机</span>` : ""}<time>${fmtTime(m.ts)}</time>`;
+    const delBtn = html`<button class="del-corner" title=${this.t("delete")} @click=${() => { if (this.debounceKey("del-" + m.id, 500)) this.deleteMsg(m.id); }}>${I_TRASH}</button>`;
+    const copyBtn = html`<button class="btn" @click=${() => { if (this.debounceKey("copy-" + m.id, 800)) this.copyText(m.text ?? ""); }}>${I_COPY}${this.t("copy")}</button>`;
+    const copyCodeBtn = html`<button class="btn" @click=${() => { if (this.debounceKey("copy-" + m.id, 800)) this.copyCode(m); }}>${I_COPY}${this.t("copy")}</button>`;
+    const downBtn = html`<a class="btn" href="${f?.url ?? "#"}" download @click=${(e: Event) => { if (!this.debounceKey("down-" + m.id, 800)) e.preventDefault(); }}>${I_DOWN}${this.t("download")}</a>`;
+    const head = html`<span class="who">${m.sender.deviceName}</span>${this.self && m.sender.deviceId === this.self.deviceId ? html`<span class="me">${this.t("me")}</span>` : ""}<time>${fmtTime(m.ts)}</time>`;
 
     let content: unknown;
     switch (m.kind) {
@@ -1009,7 +999,7 @@ export class FilesyncApp extends LitElement {
               <div class="wave" @click=${(e: MouseEvent) => this.seekAudio(m, e)}>${waveBars()}<i class="fill"></i><i class="ind"></i></div>
               <audio src="${this.audioSrc(m) ?? ""}" preload="none"></audio>
             </div>
-            <div class="mm"><span class="name">${f?.name ?? "音频"}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>
+            <div class="mm"><span class="name">${f?.name ?? this.t("audio_name")}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>
             <div class="ops">${downBtn}</div>${delBtn}
           </div>`;
         break;
@@ -1018,7 +1008,7 @@ export class FilesyncApp extends LitElement {
         content = html`<div class="card file">
             <div class="file">
               <span class="ic">${I_FILE}</span>
-              <div class="meta"><span class="name">${f?.name ?? "文件"}</span><span class="sub">${f ? `${fmtSize(f.size)} · ${fmtType(f.name, f.mime)}` : ""}</span></div>
+              <div class="meta"><span class="name">${f?.name ?? this.t("file_name")}</span><span class="sub">${f ? `${fmtSize(f.size)} · ${fmtType(this.lang, f.name, f.mime)}` : ""}</span></div>
             </div>
             <div class="ops">${downBtn}</div>${delBtn}
           </div>`;
@@ -1037,7 +1027,7 @@ export class FilesyncApp extends LitElement {
   /** 自定义语言下拉栏：upward=true 列表向上弹出（移动端输入条），否则向下（桌面端代码框顶） */
   private renderLangBar(upward: boolean): unknown {
     return html`<div class="lang-bar ${upward ? "up" : ""}">
-      <label>语言</label>
+      <label>${this.t("lang")}</label>
       <div class="lang-pick" @click=${(e: Event) => { e.stopPropagation(); if (this.debounceKey("lang-toggle", 250)) this.langOpen = !this.langOpen; }}>
         <span class="lang-cur">${langLabel(this.codeLang)}</span><span class="lang-arr">${upward ? "▴" : "▾"}</span>
         ${this.langOpen ? html`<div class="lang-list">${LANG_LIST.map((l) => html`<div class="lang-opt ${l === this.codeLang ? "on" : ""}" @click=${() => { if (this.debounceKey("lang-" + l, 300)) { this.codeLang = l; this.langOpen = false; } }}>${langLabel(l)}</div>`)}</div>` : nothing}
@@ -1064,21 +1054,21 @@ export class FilesyncApp extends LitElement {
       <header class="app">
         <div class="logo ${this.connState}" @click=${() => { if (this.debounceKey("settings", 300)) this.sheet = "settings"; }}>filesyncEX</div>
         <div class="spacer"></div>
-        <button class="iconbtn" title="二维码" @click=${() => { if (this.debounceKey("qr", 300)) this.openQr(); }}>${I_QR}</button>
-        <button class="iconbtn" title="切换主题" @click=${() => { if (this.debounceKey("theme", 300)) this.toggleTheme(); }}>${this.theme === "dark" ? I_MOON : I_SUN}</button>
+        <button class="iconbtn" title=${this.t("qr")} @click=${() => { if (this.debounceKey("qr", 300)) this.openQr(); }}>${I_QR}</button>
+        <button class="iconbtn" title=${this.t("theme")} @click=${() => { if (this.debounceKey("theme", 300)) this.toggleTheme(); }}>${this.theme === "dark" ? I_MOON : I_SUN}</button>
       </header>
 
       <!-- 桌面端：顶部上传区 -->
       <section class="upload" @drop=${this.onDrop} @dragover=${(e: DragEvent) => e.preventDefault()}>
         <div class="upload-row ${this.codeMode ? "code-mode" : ""}">
-          <button class="btn btn-file" @click=${() => { if (this.debounceKey("file", 400)) this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); }}>${I_UP}文件</button>
-          <input class="input" .value=${this.text} placeholder="输入文本，或拖拽 / 粘贴文件到此处…" @input=${(e: Event) => (this.text = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("send", 600)) this.sendText(); }} />
+          <button class="btn btn-file" @click=${() => { if (this.debounceKey("file", 400)) this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); }}>${I_UP}${this.t("file")}</button>
+          <input class="input" .value=${this.text} placeholder=${this.t("input_placeholder")} @input=${(e: Event) => (this.text = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("send", 600)) this.sendText(); }} />
           <div class="code-editor ${this.codeMode ? "open" : ""}">
             <div class="ce-top">${this.renderLangBar(false)}</div>
-            <textarea .value=${this.codeText} placeholder="在这里输入代码…（保持格式）" @input=${(e: Event) => (this.codeText = (e.target as HTMLTextAreaElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.ctrlKey && e.key === "Enter" && this.debounceKey("send", 600)) this.sendCode(); }}></textarea>
+            <textarea .value=${this.codeText} placeholder=${this.t("code_placeholder")} @input=${(e: Event) => (this.codeText = (e.target as HTMLTextAreaElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.ctrlKey && e.key === "Enter" && this.debounceKey("send", 600)) this.sendCode(); }}></textarea>
           </div>
-          <button class="bracebtn ${this.codeMode ? "on" : ""}" title="代码模式" @click=${() => { if (this.debounceKey("codemode", 300)) { this.codeMode = !this.codeMode; this.focusCodeEditor(); } }}>&#123;&#125;</button>
-          <button class="btn send" @click=${() => { if (this.debounceKey("send", 600)) this.codeMode ? this.sendCode() : this.sendText(); }}>发送</button>
+          <button class="bracebtn ${this.codeMode ? "on" : ""}" title=${this.t("code_mode")} @click=${() => { if (this.debounceKey("codemode", 300)) { this.codeMode = !this.codeMode; this.focusCodeEditor(); } }}>&#123;&#125;</button>
+          <button class="btn send" @click=${() => { if (this.debounceKey("send", 600)) this.codeMode ? this.sendCode() : this.sendText(); }}>${this.t("send")}</button>
         </div>
         <input type="file" class="file-input" multiple hidden @change=${(e: Event) => void this.handleFiles((e.target as HTMLInputElement).files)} />
       </section>
@@ -1088,14 +1078,14 @@ export class FilesyncApp extends LitElement {
       <!-- 移动端：底部输入条 -->
       <footer class="composer ${this.codeMode ? "code-mode" : ""}">
         <div class="composer-inner">
-          <button class="addbtn" title="选择文件" @click=${() => { if (this.debounceKey("file", 400)) this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); }}>${I_PLUS}</button>
+          <button class="addbtn" title=${this.t("choose_file")} @click=${() => { if (this.debounceKey("file", 400)) this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); }}>${I_PLUS}</button>
           <button class="bracebtn ${this.codeMode ? "on" : ""}" @click=${() => { if (this.debounceKey("codemode", 300)) { this.codeMode = !this.codeMode; this.focusCodeEditor(); } }}>&#123;&#125;</button>
           ${this.codeMode
             ? this.renderLangBar(true)
-            : html`<input class="input" .value=${this.text} placeholder="输入消息" @input=${(e: Event) => (this.text = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("send", 600)) this.sendText(); }} />`}
+            : html`<input class="input" .value=${this.text} placeholder=${this.t("input_placeholder_mobile")} @input=${(e: Event) => (this.text = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("send", 600)) this.sendText(); }} />`}
           <button class="sendbtn" @click=${() => { if (this.debounceKey("send", 600)) this.codeMode ? this.sendCode() : this.sendText(); }}>${I_SEND}</button>
         </div>
-        ${this.codeMode ? html`<div class="code-editor open"><textarea .value=${this.codeText} placeholder="在这里输入代码…（保持格式）" @input=${(e: Event) => (this.codeText = (e.target as HTMLTextAreaElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.ctrlKey && e.key === "Enter" && this.debounceKey("send", 600)) this.sendCode(); }}></textarea></div>` : nothing}
+        ${this.codeMode ? html`<div class="code-editor open"><textarea .value=${this.codeText} placeholder=${this.t("code_placeholder")} @input=${(e: Event) => (this.codeText = (e.target as HTMLTextAreaElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.ctrlKey && e.key === "Enter" && this.debounceKey("send", 600)) this.sendCode(); }}></textarea></div>` : nothing}
       </footer>
       </div>
 
@@ -1106,10 +1096,10 @@ export class FilesyncApp extends LitElement {
       ${this.delBubble ? html`
         <div class="del-mask" @click=${() => { if (this.debounceKey("del-mask", 300)) this.closeDelBubble(); }}></div>
         <div class="del-bubble ${this.delBubble.above ? "above" : ""}" style="left:${this.delBubble.x}px;top:${this.delBubble.y}px">
-          <div class="db-text">删除这条消息？</div>
+          <div class="db-text">${this.t("del_text")}</div>
           <div class="db-ops">
-            <button class="btn cancel" @click=${() => { if (this.debounceKey("del-cancel", 300)) this.closeDelBubble(); }}>取消</button>
-            <button class="btn del" @click=${() => { if (this.debounceKey("del-ok", 600)) this.confirmDelBubble(); }}>删除</button>
+            <button class="btn cancel" @click=${() => { if (this.debounceKey("del-cancel", 300)) this.closeDelBubble(); }}>${this.t("cancel")}</button>
+            <button class="btn del" @click=${() => { if (this.debounceKey("del-ok", 600)) this.confirmDelBubble(); }}>${this.t("delete")}</button>
           </div>
         </div>` : nothing}
       ${this.toasts.length ? html`<div class="toasts">${this.toasts.map((to) => html`<div class="toast ${to.leaving ? "leaving" : to.show ? "show" : ""}">${to.text}</div>`)}</div>` : nothing}
@@ -1122,45 +1112,52 @@ export class FilesyncApp extends LitElement {
     let content: unknown;
     if (s === "attach") {
       content = html`<div class="attach-grid">
-        <button class="att" @click=${() => { if (this.debounceKey("attach-album", 300)) this.flash("（原型）打开相册"); }}><span class="ai">${I_IMG}</span>相册</button>
-        <button class="att" @click=${() => { if (this.debounceKey("attach-camera", 300)) this.flash("（原型）打开相机"); }}><span class="ai pink">📷</span>拍照</button>
-        <button class="att" @click=${() => { if (this.debounceKey("attach-file", 400)) { this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); close(); } }}><span class="ai">${I_FILE}</span>文件</button>
+        <button class="att" @click=${() => { if (this.debounceKey("attach-album", 300)) this.flash(this.t("proto_album")); }}><span class="ai">${I_IMG}</span>${this.t("attach_album")}</button>
+        <button class="att" @click=${() => { if (this.debounceKey("attach-camera", 300)) this.flash(this.t("proto_camera")); }}><span class="ai pink">📷</span>${this.t("attach_camera")}</button>
+        <button class="att" @click=${() => { if (this.debounceKey("attach-file", 400)) { this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); close(); } }}><span class="ai">${I_FILE}</span>${this.t("attach_file")}</button>
       </div>`;
     } else if (s === "progress") {
-      content = html`<div class="qlist">${this.uploads.length === 0 ? html`<div class="qitem-row"><div class="qname" style="color:var(--muted)">暂无上传任务</div></div>` : this.uploads.map((u) => html`<div class="qitem-row"><div class="qname">${u.name} <small>${u.pct < 0 ? "失败" : fmtSize(u.size)}</small></div><div class="qbar"><i style="width:${u.pct < 0 ? 100 : u.pct}%"></i></div><div class="qmeta"><span>${u.pct < 0 ? "上传失败" : u.pct + "%"}</span></div></div>`)}</div>`;
+      content = html`<div class="qlist">${this.uploads.length === 0 ? html`<div class="qitem-row"><div class="qname" style="color:var(--muted)">${this.t("no_upload_task")}</div></div>` : this.uploads.map((u) => html`<div class="qitem-row"><div class="qname">${u.name} <small>${u.pct < 0 ? this.t("failed") : fmtSize(u.size)}</small></div><div class="qbar"><i style="width:${u.pct < 0 ? 100 : u.pct}%"></i></div><div class="qmeta"><span>${u.pct < 0 ? this.t("upload_failed") : u.pct + "%"}</span></div></div>`)}</div>`;
     } else if (s === "settings") {
       // WS 地址与 httpUrl 同源（真实局域网 IP + 端口），仅协议不同
       const wsUrl = this.httpUrl.replace(/^https?:/, location.protocol === "https:" ? "wss:" : "ws:") + "/ws";
       content = html`<div class="settings">
         <!-- 连接 -->
-        <p class="st-sec">连接</p>
-        <div class="st-conn"><span class="dot ${this.connState}"></span><b style="color:var(${this.connState === "connected" ? "--primary" : this.connState === "connecting" ? "--warn" : "--danger"})">${this.connState === "connected" ? "已连接" : this.connState === "connecting" ? "连接中…" : "已断开"}</b><span class="muted">（局域网）</span></div>
-        <p class="muted">HTTP：<code>${this.httpUrl}</code></p>
-        <p class="muted">WebSocket：<code>${wsUrl}</code></p>
+        <p class="st-sec">${this.t("st_conn")}</p>
+        <div class="st-conn"><span class="dot ${this.connState}"></span><b style="color:var(${this.connState === "connected" ? "--primary" : this.connState === "connecting" ? "--warn" : "--danger"})">${this.connState === "connected" ? this.t("connected") : this.connState === "connecting" ? this.t("connecting") : this.t("disconnected")}</b><span class="muted">${this.t("lan")}</span></div>
+        <p class="muted">${this.t("http_label")}<code>${this.httpUrl}</code></p>
+        <p class="muted">${this.t("ws_label")}<code>${wsUrl}</code></p>
         <hr />
         <!-- 设备身份 / 昵称 -->
-        <p class="st-note">默认昵称 <strong>user_XXXX</strong>（四位数字），按<strong>设备指纹</strong>自动生成，可在此修改（仅本机保存）。</p>
-        <label>我的昵称
-          <input class="field" .value=${this.nick} maxlength="10" placeholder="仅字母/数字/下划线，最长 10 位" @input=${(e: Event) => (this.nick = (e.target as HTMLInputElement).value.replace(/[^A-Za-z0-9_]/g, ""))} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("rename", 600)) this.rename(); }} />
+        <p class="st-note">${this.t("st_nicknote")}</p>
+        <label>${this.t("my_nick")}
+          <input class="field" .value=${this.nick} maxlength="10" placeholder=${this.t("nick_placeholder")} @input=${(e: Event) => (this.nick = (e.target as HTMLInputElement).value.replace(/[^A-Za-z0-9_]/g, ""))} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("rename", 600)) this.rename(); }} />
         </label>
-        <p class="muted">设备指纹（仅用于本地生成稳定 ID，不上传原始信息）：</p>
+        <p class="muted">${this.t("device_fp")}</p>
         <code class="fp">${this.self?.deviceId ?? ""}</code>
+        <hr />
+        <!-- 语言切换 -->
+        <p class="st-sec">${this.t("st_lang")}</p>
+        <div class="st-lang">
+          <label class="lang-opt"><input type="radio" name="fsex-lang" .checked=${this.lang === "zh"} @change=${() => this.setLang("zh")} />${this.t("lang_zh")}</label>
+          <label class="lang-opt"><input type="radio" name="fsex-lang" .checked=${this.lang === "en"} @change=${() => this.setLang("en")} />${this.t("lang_en")}</label>
+        </div>
         <!-- 工具（移动端隐藏） -->
         <div class="tool-sec">
           <hr />
-          <p class="st-sec">工具</p>
-          <a class="btn tool" href="/tool/QuickSendTool.exe" download>${I_DOWN}下载 QuickSendTool（Windows 右键发送）</a>
-          <p class="muted">安装后在文件管理器右键选中文件，即可一键发送到本服务器。</p>
+          <p class="st-sec">${this.t("st_tool")}</p>
+          <a class="btn tool" href="/tool/QuickSendTool.exe" download>${I_DOWN}${this.t("download_qst")}</a>
+          <p class="muted">${this.t("tool_note")}</p>
         </div>
         <!-- 关于 -->
         <hr />
-        <p class="st-sec">关于</p>
-        <a class="btn secondary tool" href="https://github.com/NoRainLand/filesyncEX" target="_blank" rel="noopener">${I_LINK}前往项目主页 GitHub</a>
+        <p class="st-sec">${this.t("st_about")}</p>
+        <a class="btn secondary tool" href="https://github.com/NoRainLand/filesyncEX" target="_blank" rel="noopener">${I_LINK}${this.t("goto_github")}</a>
       </div>`;
     } else if (s === "qr") {
-      content = html`<div class="qrbox">${this.qrDataUrl ? html`<img src="${this.qrDataUrl}" alt="二维码" />` : html`<div class="qr-loading">生成中…</div>`}</div><p>${this.httpUrl} · 用手机扫码即可加入同步</p>`;
+      content = html`<div class="qrbox">${this.qrDataUrl ? html`<img src="${this.qrDataUrl}" alt=${this.t("qr")} />` : html`<div class="qr-loading">${this.t("qr_loading")}</div>`}</div><p>${this.t("qr_hint", { url: this.httpUrl })}</p>`;
     }
-    return html`<div class="mask" @click=${close}><div class="panel-shell ${s === "qr" ? "qr" : ""} ${s === "settings" ? "settings-panel" : ""}"><div class="panel" @click=${(e: Event) => e.stopPropagation()}><div class="handle"></div><div class="ptitle" @click=${close}>${s === "attach" ? "发送内容" : s === "progress" ? "上传进度" : s === "settings" ? "设置" : "扫码连接"}</div>${content}</div></div></div>`;
+    return html`<div class="mask" @click=${close}><div class="panel-shell ${s === "qr" ? "qr" : ""} ${s === "settings" ? "settings-panel" : ""}"><div class="panel" @click=${(e: Event) => e.stopPropagation()}><div class="handle"></div><div class="ptitle" @click=${close}>${s === "attach" ? this.t("sheet_attach") : s === "progress" ? this.t("sheet_progress") : s === "settings" ? this.t("sheet_settings") : this.t("sheet_qr")}</div>${content}</div></div></div>`;
   }
 
   private renderPreview(pv: { kind: string; msg: MsgDataT }) {
@@ -1170,9 +1167,9 @@ export class FilesyncApp extends LitElement {
     else if (pv.kind === "video") body = html`<video class="ph" src="${f?.url ?? ""}" controls playsinline webkit-playsinline></video>`;
     else if (pv.kind === "audio") body = html`<audio class="ph" src="${f?.url ?? ""}" controls style="width:80%"></audio>`;
     else if (pv.kind === "code") body = html`<div class="codeview">${unsafeHTML(highlightCode(pv.msg.code?.content ?? "", pv.msg.code?.lang ?? "ts"))}</div>`;
-    const title = pv.kind === "image" ? "图片预览" : pv.kind === "video" ? "视频预览" : pv.kind === "audio" ? "音频播放" : "代码预览";
-    const footBtn = pv.kind === "code" ? html`<button class="btn" @click=${() => { if (this.debounceKey("pv-action", 600)) this.previewAction(); }}>复制</button>` : html`<button class="btn" @click=${() => { if (this.debounceKey("pv-action", 600)) this.previewAction(); }}>下载</button>`;
-    return html`<div class="viewer open"><div class="vtop"><span class="vt">${title}</span><button class="close" @click=${() => { if (this.debounceKey("pv-close", 300)) this.closePreview(); }}>✕</button></div><div class="vbody ${pv.kind === "image" ? "pv-img" : ""}" @click=${(e: Event) => { if (e.target === e.currentTarget && this.debounceKey("pv-close", 300)) this.closePreview(); }}>${body}</div><div class="vfoot">${footBtn}<button class="btn pink" @click=${() => { if (this.debounceKey("pv-del", 600)) { this.deleteMsg(pv.msg.id); this.closePreview(); } }}>删除</button></div></div>`;
+    const title = pv.kind === "image" ? this.t("pv_image") : pv.kind === "video" ? this.t("pv_video") : pv.kind === "audio" ? this.t("pv_audio") : this.t("pv_code");
+    const footBtn = pv.kind === "code" ? html`<button class="btn" @click=${() => { if (this.debounceKey("pv-action", 600)) this.previewAction(); }}>${this.t("copy")}</button>` : html`<button class="btn" @click=${() => { if (this.debounceKey("pv-action", 600)) this.previewAction(); }}>${this.t("download")}</button>`;
+    return html`<div class="viewer open"><div class="vtop"><span class="vt">${title}</span><button class="close" @click=${() => { if (this.debounceKey("pv-close", 300)) this.closePreview(); }}>✕</button></div><div class="vbody ${pv.kind === "image" ? "pv-img" : ""}" @click=${(e: Event) => { if (e.target === e.currentTarget && this.debounceKey("pv-close", 300)) this.closePreview(); }}>${body}</div><div class="vfoot">${footBtn}<button class="btn pink" @click=${() => { if (this.debounceKey("pv-del", 600)) { this.deleteMsg(pv.msg.id); this.closePreview(); } }}>${this.t("delete")}</button></div></div>`;
   }
 }
 
