@@ -1237,3 +1237,44 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
 - 验证：首次启动（空 sqlite 库）消息数 1「系统 | text | 是信息，好耶！<copyright by NoRain>」；二次启动（库保留）仍 1 条不重复 ✓。
 - 注意：本轮回测时清空了 release/data（原为测试产生的数据），exe 首次启动会重新生成 + 插入欢迎消息。
 - 已重打包 exe（75.1MB）运行验证通过（无 err、版本 beta1）。
+
+## [6.0.0-beta1] 磨砂半透明调「硬」（用户「所有磨砂半透明硬一点，底部清晰一点」）
+- index.html :root：`--frost-bg` 更实——浅色 rgba(255,255,255,0.42)→**0.8**；深色 rgba(42,48,58,0.5)→**0.85**（背景更实、更不透）。
+- app.css 5 处 `backdrop-filter` blur 减小（模糊降低 → 底部更清晰）：`.mask` 22→**10**px、`.viewer` 36→**16**px、`.del-mask` 14→**6**px、`.code-mask` 14→**6**px、`.notice-mask` 22→**10**px。
+- 验证：web 构建通过；Playwright 读 shadow root 编译后 adoptedStyleSheets 确认 blur(16/10/6px) + frost-bg 0.8 生效、blur(36px) 消失（.mask/.viewer 为条件渲染，未开弹层时不在 DOM，故以 CSS 定义值验证）。
+- 已重打包 exe（75.1MB）。
+
+## [6.0.0-beta1] 设置界面白天模式阴影不明显修复（用户「白天模式阴影和黑夜不一样，不够明显」）
+- 根因：①设置面板弹层 .panel 本身**没有 box-shadow**（靠 frost-bg 遮罩 + surface 背景区分，白天浅白遮罩(0.8) + 浅灰面板(#f6f8fa)几乎融为一体）；②白天 `--shadow` 极淡 `rgba(4,120,120,0.08)` vs 黑夜 `rgba(0,0,0,0.4)`。
+- 修复：①.app.css `.panel` 加 `box-shadow: 0 -10px 30px rgba(0,0,0,0.25)`（向上浮起阴影，白天明显）；②index.html 白天 `--shadow` 从 `rgba(4,120,120,0.08)` → `rgba(4,120,120,0.18)`（消息卡/上传条等白天阴影也明显些）。
+- 验证：Playwright 打开设置面板（点 logo）→ `.panel` boxShadow = rgba(0,0,0,0.25) 0 -10px 30px ✓，截图确认白天面板浮起阴影清晰可见。
+- 已重打包 exe（75.1MB）。
+
+## [6.0.0-beta1] 设置界面去上下滑条 + 工作方式变更（用户「每次修改完不用打包 exe，只增量构建对应文件」「设置界面不要有上下滑条」）
+- **工作方式变更**：用户要求以后每次修改完**不再打 exe**，只需增量构建对应包即可（web 用 `pnpm --filter @filesyncex/web build`，server 用 `--filter @filesyncex/server build`，开发用 dev server）。release exe 保持最后一次打包版本，不再随每次改动更新。
+- **设置界面去滑条**：`.panel` 通用有 `max-height:88vh; overflow-y:auto`（弹层滚动条）。给 `.panel.settings-panel` 加 `max-height:none; overflow:visible`（设置面板自然高度、无上下滑条）。移动端 `.settings .tool-sec` 已隐藏（media query），小屏内容更少。
+- 验证（Playwright 桌面 1280x800）：设置面板 overflowY=visible、maxHeight=none、scrollH==clientH（无滚动）、截图内容完整显示（连接/昵称/指纹/工具/关于）无滑条 ✓。
+- 本次未打包 exe（按用户要求）。
+
+## [6.0.0-beta1] body 最小宽高 + 小窗口滚动（用户「整个页面设置最小高度宽度，窗口小于时允许上下左右 body 滑条」）
+- index.html <style>：桌面端（@media min-width:641px）给 html/body 设 `min-width:960px; min-height:640px`。窗口小于该尺寸时 body 被最小尺寸撑开 → 浏览器出现上下/左右滚动条；正常大窗口无滚动条；移动端（≤640）不受影响。
+- 验证（Playwright）：大窗口 1280x800 → scrollW/H=视口、无滚动 ✓；小窗口 800x500 → body 撑到 960x640、hScroll+vScroll 均 true ✓。
+- 本次未打包 exe（按用户要求只增量构建）。
+
+## [6.0.0-beta1] 页面滚动条轨道透明（用户「滑条的背景最好也是隐藏的」）
+- index.html <style>：给 html 设 `scrollbar-width: thin; scrollbar-color: rgba(120,130,140,0.35) transparent`（Firefox 轨道透明）+ WebKit `::-webkit-scrollbar-track { background: transparent }`、`::-webkit-scrollbar-thumb`（35% 灰圆角滑块，border 2px 透明 + background-clip:content-box 让滑块有内缩间隙）。仅作用于页面 body/html 滚动条（light DOM）；shadow 内消息列表滚动条本已隐藏（scrollbar-width:none）、代码预览轨道已透明。
+- 验证（Playwright 800x500）：hScroll/vScroll true，`scrollbarColor = rgba(120,130,140,.35) rgba(0,0,0,0)`（轨道全透明），截图确认只滑块可见、轨道为页面背景色。
+- 本次未打包 exe（按用户要求只增量构建）。
+
+## [6.0.0-beta1] 拷贝旧版 favicon.ico（用户「把 filesync 旧的 favicon.ico 拷贝到当前项目」）
+- 旧版位于 filesync/source/favicon.ico（5430 字节），拷贝到 packages/web/public/favicon.ico（Vite public，构建时复制到 dist 根）。
+- index.html <head> 加 `<link rel="icon" href="/favicon.ico" />`。
+- 验证：web 构建 dist/favicon.ico 存在；浏览器 link[rel=icon] 指向 /favicon.ico，fetch 返回 200、5430 字节 ✓。
+- 本次未打包 exe（按用户要求只增量构建）。
+
+## [6.0.0-beta1] 拷贝旧版 iOS 桌面图标 FS_apple152.png（用户「FS_apple152 也要拷贝，用于 iOS 手机桌面显示，需打包进 exe」）
+- 旧版 filesync/source/FS_apple152.png（3726 字节，152x152）拷贝到 packages/web/public/FS_apple152.png（Vite public → dist 根）。
+- index.html <head> 加：`<link rel="apple-touch-icon" sizes="152x152" href="/FS_apple152.png" />` + `<meta name="apple-mobile-web-app-capable" content="yes">` + `<meta name="apple-mobile-web-app-title" content="filesyncEX">`（iOS 添加到主屏幕时显示图标/标题、全屏支持）。
+- 打包进 exe：web/dist/**/* 已在 shell pkg assets，favicon.ico 与 FS_apple152.png 均在 dist 根，会随 pkg 打进 exe。
+- 验证：web 构建 dist 含 favicon.ico + FS_apple152.png；浏览器 link[rel=apple-touch-icon] 指向 /FS_apple152.png，fetch 200 + 3726B ✓。
+- 本次未打包 exe（按用户要求只增量构建）。

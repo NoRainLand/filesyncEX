@@ -179,8 +179,10 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
 .sendbtn { width: 40px; height: 40px; border-radius: 50%; background: var(--primary); color: #fff; border: 0; flex: none; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .composer .code-editor { margin-top: 8px; }
 /* ---------- 弹层 ---------- */
-.mask { position: fixed; inset: 0; background: var(--frost-bg); -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px); display: flex; align-items: flex-end; justify-content: center; z-index: 100; }
-.panel { background: var(--surface); border-radius: 16px 16px 0 0; width: 100%; max-width: 520px; padding-bottom: 14px; color: var(--ink); max-height: 88vh; overflow-y: auto; }
+.mask { position: fixed; inset: 0; background: var(--frost-bg); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); display: flex; align-items: flex-end; justify-content: center; z-index: 100; }
+.panel { background: var(--surface); border-radius: 16px 16px 0 0; width: 100%; max-width: 520px; padding-bottom: 14px; color: var(--ink); max-height: 88vh; overflow-y: auto; box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.25); }
+/* 设置面板：内容自然排布，不出现上下滚动条 */
+.panel.settings-panel { max-height: none; overflow: visible; }
 .panel .handle { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 8px auto 4px; }
 .panel .ptitle { font-size: 24px; font-weight: 700; color: var(--primary); text-align: center; padding: 8px 0 12px; cursor: pointer; }
 .attach-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 8px 16px 12px; }
@@ -214,7 +216,7 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
 .qrbox .qr-loading { color: var(--muted); font-size: 12px; }
 .panel.qr p { text-align: center; font-size: 12px; color: var(--muted); margin: 0 0 12px; word-break: break-all; }
 /* ---------- 全屏预览 ---------- */
-.viewer { position: fixed; inset: 0; z-index: 400; background: var(--frost-bg); -webkit-backdrop-filter: blur(36px); backdrop-filter: blur(36px); color: var(--ink); display: none; flex-direction: column; }
+.viewer { position: fixed; inset: 0; z-index: 400; background: var(--frost-bg); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); color: var(--ink); display: none; flex-direction: column; }
 .viewer.open { display: flex; }
 .viewer .vtop { display: flex; align-items: center; padding: 14px 18px; font-size: 14px; flex: none; }
 .viewer .vtop .vt { font-size: 24px; color: var(--primary); font-weight: 700; }
@@ -247,12 +249,12 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
 .del-bubble.above::after { top: auto; bottom: -7px; border-bottom: none; border-top: 7px solid var(--line); }
 .del-bubble.above::before { top: auto; bottom: -6px; border-bottom: none; border-top: 6px solid var(--bg); }
 /* 长按删除：磨砂遮罩（点击取消）+ 选中消息浮起 */
-.del-mask { position: fixed; inset: 0; z-index: 690; background: var(--frost-bg); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+.del-mask { position: fixed; inset: 0; z-index: 690; background: var(--frost-bg); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
 .msg.del-selected { position: relative; z-index: 695; transform: translateY(-4px) scale(1.02); transition: transform .2s ease; }
 /* 移动端代码模式磨砂遮罩：盖住主界面（输入条在上层不受影响），点击遮罩关闭代码模式 */
-.code-mask { position: fixed; inset: 0; z-index: 60; background: var(--frost-bg); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+.code-mask { position: fixed; inset: 0; z-index: 60; background: var(--frost-bg); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
 /* ---------- 服务器通知大窗（不可关闭，确认后重连） ---------- */
-.notice-mask { position: fixed; inset: 0; background: var(--frost-bg); -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px 16px; overflow-y: auto; z-index: 600; }
+.notice-mask { position: fixed; inset: 0; background: var(--frost-bg); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px 16px; overflow-y: auto; z-index: 600; }
 .notice-panel { position: relative; width: min(88vw, 420px); background: var(--surface); border-radius: 16px; padding: 28px 26px 22px; color: var(--ink); box-shadow: var(--shadow); text-align: center; flex: none; }
 .notice-panel .nclose { position: absolute; top: 10px; right: 12px; width: 28px; height: 28px; border: 0; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; border-radius: 8px; display: flex; align-items: center; justify-content: center; transition: .15s; }
 .notice-panel .nclose:hover { color: var(--danger); background: var(--surface-2); }
