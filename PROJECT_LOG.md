@@ -904,7 +904,8 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
 ### 本轮改动（2026-08-07 · 大文件上传「到一半失败」修复：chunk 请求断连无重试）
 - **用户反馈**：「现在上传到一半左右，就失败了」（261MB 文件，SHA 修复后能进入上传流程，但传至 ~68% 中断）。
 - **排查**：①服务器 data/uploads/65626eeb-... 会话目录残留 **0~176 共 177 个 1MB part**（14:45 创建，早于我 14:47 的测试）→ 确证用户 261MB 传到 177/261≈68% 中断；②server.err 有 BadRequestError: request aborted（raw-body 在请求体未读完时客户端断连）→ **客户端连接在该 chunk 被断开**；③本机测试（120MB/261MB 回环网络）全部成功 → 排除服务器逻辑问题，定位为**局域网 WiFi 传输中途断连**；④前端 piUploadChunk 单次 fetch 无超时无重试 → 一个 chunk 失败即整体判失败。
-- **修复**：①前端（packages/web/src/api.ts）piUploadChunk 加 **4 次重试 + 30s 超时**（AbortController，退避 400ms/800ms/1600ms，网络瞬时断连自动恢复继续传）；piUploadComplete 同加重试（3 次+60s 超时）；新增常量 CHUNK_TIMEOUT_MS/CHUNK_MAX_RETRIES。②服务器（packages/server/src/index.ts）httpServer 调大 keepAliveTimeout=30s/headersTimeout=35s/equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器复用已关闭连接而 request aborted/ECONNRESET）。**断点续传仍兜底**：重试耗尽仍失败 → 存 uploadId，下次按同 sha 自动续传。
+- **修复**：①前端（packages/web/src/api.ts）piUploadChunk 加 **4 次重试 + 30s 超时**（AbortController，退避 400ms/800ms/1600ms，网络瞬时断连自动恢复继续传）；piUploadComplete 同加重试（3 次+60s 超时）；新增常量 CHUNK_TIMEOUT_MS/CHUNK_MAX_RETRIES。②服务器（packages/server/src/index.ts）httpServer 调大 keepAliveTimeout=30s/headersTimeout=35s/
+equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器复用已关闭连接而 request aborted/ECONNRESET）。**断点续传仍兜底**：重试耗尽仍失败 → 存 uploadId，下次按同 sha 自动续传。
 - **验证**：①20MB 上传成功（新 bundle）；②**重试验证**：monkey-patch fetch 令首个 chunk 强制 reject（模拟 WiFi 断连），15MB 上传仍 success（failedOnce=true）✓；③服务器重启后 err 无新 abort ✓；④测试文件已清理，数据目录剩原始 4 文件 ✓。
 - **注意**：真机 WiFi 大文件传输的瞬时抖动已由重试兜住；若持续断连超 4 次，仍走断点续传逻辑。已登记 PROJECT_LOG.md。
 
@@ -1284,3 +1285,17 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
 - 需要同步：index.html 的 `<link rel="apple-touch-icon" href="/FS_apple152.png">` → `href="/apple-touch-icon.png"`。
 - 验证：web 构建 dist 含 apple-touch-icon.png；dist/index.html 引用 /apple-touch-icon.png、无 FS_apple 残留 ✓。
 - 打包进 exe 机制不变（dist 根随 web/dist/**/*）。本次未打包 exe。
+
+## [6.0.0-beta1] 修复桌面端代码编辑器收起时发送按钮闪烁（用户「代码输入框收回去的时候，发送按钮等元素会闪烁一下位置」）
+- **根因**：桌面端 `.code-editor` 原为 flex 撑行高（`flex:1 1 0`），收起时行高从 ~210px 收缩到 40px，发送按钮 `.send` 从 `absolute(top:0)` 瞬间切回 normal flow 被 `align-items:center` 居中到收缩中的行中心（y 从 90 瞬跳到 175）再随行高收缩滑回 91 → 视觉"啪"地跳下去又滑上来。
+- **修复（app.css）**：桌面端编辑器改为 absolute 悬浮覆盖卡片，不占行高——`.upload-row .code-editor { position:absolute; top:-10px; left:-12px; right:-12px; flex:none; width:auto; border:1px solid var(--line); box-shadow:var(--shadow); }`（top/left/right 定位模拟原 margin:-10px -12px 的卡片铺满效果；**不用 inset**，避免 bottom 把高度拉平导致编辑器塌陷到 20px，需靠内容撑开）。展开规则 `flex:1 1 0` 移除（absolute 下无效）。补边框+阴影使悬浮编辑器视觉等同卡片（原编辑器嵌在卡片内由卡片边框包裹）。
+- **效果**：行高始终 = 输入行 40px，收起时发送按钮从 absolute→normal 仅 1px 位移；动画全程 `(x,y)=(1140,91)` 恒定，编辑器 210px 平滑收缩，零闪烁。移动端不受影响（`footer.composer .code-editor` 独立 absolute 覆盖）。
+- 验证（Playwright 采样 rAF 每帧坐标）：进入动画 send 恒 (1140,90)、退出动画恒 (1140,91)、编辑器高度内容撑开 208/210、边框+阴影生效 ✓。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 补充修复代码编辑器收起"闪烁"第二根因（用户「没有跳变了，但是现在会闪烁一下」）
+- **新根因**：位置不再跳变后仍"闪一下"——收起瞬间 `.send` 从 `absolute(z-index:5)` 切回 `static`（z-index 失效），而悬浮编辑器是 `absolute`（DOM 靠后、绘制在 static 之上）**正好盖住发送按钮**；发送按钮先被盖住消失，随编辑器淡出再从输入行右侧"冒出来"→ 视觉"消失又出现"= 闪烁。
+- **诊断**：Playwright `shadowRoot.elementFromPoint(send 中心)` 在收起动画**全程**命中 `lang-bar`（编辑器内）而非 send，证明 send 整段被盖住不可见。
+- **修复（app.css）**：给 `.upload-row .send` 设 `position:relative; z-index:6`（默认态），高于编辑器（absolute z-index:auto）——收起瞬间 send 从 absolute 切 relative 后仍在编辑器之上，全程可见；code-mode 仍由 `.upload-row.code-mode .send` 切 absolute 压编辑器右上角。
+- 验证（Playwright 连续 3 次收起动画）：send 中心点 elementFromPoint 全程命中 btn send（visible=true）、y=91 恒定；非 code-mode send 位于输入框右侧（x=1145，与 input 右缘 1135 无重叠）✓。移动端不受影响。
+- 本次未打包 exe（按用户要求只增量构建 web）。
