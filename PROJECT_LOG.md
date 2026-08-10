@@ -1314,3 +1314,71 @@ equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器�
   ② `index.ts` close()：`httpServer.close(() => r())` 后调用 **`httpServer.closeAllConnections()`** 强制关闭 keep-alive 连接（否则 httpServer.close() 等 30s 超时）。
 - 验证（Playwright + 20s 自动关闭脚本）：修复前 CLOSE-DONE 永不/20140ms；修复后 **CLOSE-DONE 509ms**（服务器秒退）；前端 logo `connected`(黛绿)→`disconnected`(红 rgb(229,72,77))✓；设置面板 `已断开（局域网）` + `dot disconnected`✓；shutdown 通知弹窗正常。
 - 本次未打包 exe（按用户要求只增量构建 server）。
+
+## [6.0.0-beta1] 思源宋体未应用修复（用户「我怎么感觉宋体没有应用上啊？」→「所有文字优先 Jet，其余字符用宋体」）
+- **根因**：`index.html` 里 `--serif: "Source Han Serif CN Medium"...`（宋体）和 `@font-face` 都已定义、`public/fonts/SourceHanSerifCN-Medium.woff2` 也在，但 **app.css 所有元素 font-family 全用 `var(--mono)`**（JetBrains Mono 等宽），`--serif` 从未被引用 → 宋体完全不加载（document.fonts check false）、中文 fallback 到系统默认字体（JetBrains Mono 无中文字形）。
+- **修复（index.html）**：按用户要求"所有文字优先 Jet、其余字符用宋体"，把宋体插进 `--mono` 字体栈第二候选：`--mono: "JetBrains Mono NL Medium", "Source Han Serif CN Medium", Consolas, "Courier New", monospace;`。所有用 `var(--mono)` 的元素自动获得"英文/数字/符号用 Jet、中文字符 fallback 到思源宋体"。
+- 验证（Playwright）：①`document.fonts.check` 宋体 loaded=true；②canvas 像素对比——混合栈渲染中文像素与**纯宋体完全一致**（diff=0）、与纯 Jet diff=538（字形不同）→ 证明中文确用宋体渲染，英文用 Jet ✓。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 消息宽度拉长 + 消息内字体放大（用户「消息宽度拉长一点点，消息里字体放大一点点」）
+- **改动（app.css，桌面+移动统一）**：
+  - 宽度：`.card` max-width 560→**620**px；`.card.code` 640→**700**px。
+  - 字体（+1px）：`.msg .head`（谁/时间）12→13；文本 `.bubble` 14→15；`.card .file .name` 14→15、`.sub` 12→13；`.card.code .code-head` 12→13、`pre` 13→14；`.ovl .mm`（图/视频信息行）12→13；`.card.audio .mm` 12→13；`.ops .btn` 12→13；上传占位 `.ph-mm`/`.ph-ops .btn`/`.ph-ring .ph-pct` 12→13。
+- 验证（Playwright）：文本卡 622px+bubble15px+head13px ✓；文件卡 622px+name15px+sub13px ✓；代码卡 702px+pre14px+head13px（maxW 700）✓。移动端 .msg .body 82% 限制不因 max-width 增大受影响。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 设置界面 + 二维码弹窗字体放大（用户「设置界面、二维码界面的字体也放大一点点」）
+- **改动（app.css）**：
+  - 设置面板：`.panel label` 12→13；`.panel .fp` 11→12；`.panel .field`（昵称输入框）无显式(13.33 继承)→显式 **14**；`.settings .st-sec`（连接/工具/关于小标题）13→14；`.settings .muted`（HTTP/WS 行）12→13；`.settings .st-note`（说明）12→13；`.settings code.fp`（指纹）11→12；`.settings .btn.tool`（下载工具按钮）14→15。`.ptitle`（24px 标题）保持。
+  - 二维码：`.panel.qr p`（扫码 URL 文字）12→13；`.qrbox .qr-loading` 12→13。
+- 验证（Playwright）：设置面板 st-sec 14px / label 13px / field 14px / fp 12px / muted 13px / st-note 13px / btn.tool 15px ✓；二维码面板 URL 文字 13px、标题 24px ✓。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 旧版 NiarApp 类移植到新版项目（用户「把这个类，搬到项目里边去」）
+- **来源**：`filesync/src/common/NiarApp.ts`（旧版控制台彩蛋：`window.joke()` 冷笑话 + `execute("me")` 作者信息）。
+- **移植**：新建 `packages/web/src/NiarApp.ts`——去掉对旧版 `ProjectConfig` 的依赖，`jokeAPI`（https://v2.jokeapi.dev/joke/Any）内联为类内 `JOKE_API` 常量；`var/let` 改 `const`、`==` 改 `===`、fetch 加 `.catch` 静默；逻辑与作者信息字段（病雨/common_langs/interest/learning/email base64）完全保留。
+- **接入**：`packages/web/src/main.ts` 加 `NiarApp.init()` + `window.NiarApp = NiarApp`（与旧版 `window.NiarApp = NiarApp; NiarApp.init(this)` 行为一致）。
+- 验证（Playwright）：`window.NiarApp` 存在 ✓；`NiarApp.execute("me")` 返回完整作者信息 ✓；`window.joke()` 存在且调用返回 "Joke is coming..." ✓；web 构建通过。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 消除 touchmove scroll-blocking 警告（用户「Chrome 提示 Added non-passive event listener to a scroll-blocking 'touchmove'」）
+- **来源**：新版 web 两个 lit 模板 `@touchmove` 绑定默认 non-passive → Chrome 性能警告：①消息列表 `.msg` 的 `@touchmove=${this.msgPressEnd}`（仅 clearTimeout 取消长按，无需 preventDefault）；②图片预览 `@touchmove=${this.touchMove}`（缩放/拖动需 preventDefault）。
+- **修复（lit 3 已移除 eventOptions，改手动）**：
+  - 消息列表：模板去掉 `@touchmove`；`msgPressStart` 改为 `window.addEventListener("touchmove", this.cancelLongPress, { passive: true })`（滑动取消长按走 passive，不阻塞滚动、无警告）；长按成功（500ms timer）或 `cancelLongPress` 时移除监听；`msgPressEnd` 保持原样（touchend 仍取消长按）。
+  - 图片预览：`.vbody.pv-img .ph` 加 `touch-action: none`（声明该区域不响应系统触摸滚动 → touchmove 不再被视作 scroll-blocking，preventDefault 仍生效用于缩放/拖动）。
+  - `window delMoveHandler`（336）本已显式 `passive:false`，不触发该警告。
+- 验证（Playwright 移动视口 390 手动 TouchEvent）：滑动后 600ms 不弹气泡（passive 取消长按生效）✓、长按 600ms 正常弹删除气泡 ✓；图片预览 img `touch-action:none` ✓。桌面端长按逻辑不受影响（window.innerWidth>640 不执行）。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 控制台信息打印（用户「项目加入类似这里的打印」）
+- **需求**：把旧版 `filesync/src/client/index.ts` 的 `printMsg()`（控制台彩色打印项目名/描述/作者/版本）加到新版。
+- **实现**：`packages/web/src/main.ts` 加 `printMsg()`——项目名/版本从 `/api/health` 实时取（默认 filesyncEX / 6.0.0-beta1），作者（NoRain）与描述（"一个简单的局域网文件/文字同步服务"）为常量；三行 `console.log` 样式与旧版一致：项目名 `#e12885` 大字号 + 值 `#047878`（黛绿），标签 `#0f9d58` 绿。页面加载即打印。
+- 验证（Playwright 监听 console）：刷新后输出三行——`filesyncEX：一个简单的局域网文件/文字同步服务` / `作者：NoRain` / `当前版本：6.0.0-beta1`（版本取自 health）✓。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 消除剩余 wheel / touchstart scroll-blocking 警告（用户「还有两个警告 wheel + touchstart」）
+- **来源**：①`connectedCallback` 里 `this.addEventListener("wheel", this.onHostWheel)` 未指定 passive（onHostWheel 需 preventDefault 转发滚轮到容器，不能 passive）→ Chrome 警告；②消息列表 lit 模板 `@touchstart=${() => this.msgPressStart(m)}`（msgPressStart 不 preventDefault）non-passive 且 `.msg` 无 touch-action → 警告。
+- **修复**：
+  - wheel：`addEventListener("wheel", this.onHostWheel, { passive: false })` 显式声明 non-passive——Chrome 只对"未指定 passive"的滚动监听器警告，显式声明（开发者明确意图）不警告，且 preventDefault 仍生效。
+  - 消息 touchstart：`.msg` 加 `touch-action: pan-y`（声明该元素仅垂直滚动 → 其上 non-passive touchstart 不再视为 scroll-blocking，不警告）；图片预览 `@touchstart` 此前已由 `touch-action:none` 覆盖，同样不警告。
+- 验证（Playwright 鼠标滚轮触发滚动 + 监听 console）：wheel 滚动后 `warnings: []`（无 Violation）✓；`.msg` computed `touch-action: pan-y` ✓。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 消除最后一个 touchstart 警告（用户「还有一个警告 touchstart」）
+- **根因**：`touch-action: pan-y` 只是辅助——**lit 模板 `@touchstart` 绑定的监听器仍是 `passive:false`**（CDP `getEventListeners` 实测），Chrome 对 lit 的 non-passive touchstart 依旧警告（警告栈指向 lit EventPart，bundle `:15`）。lit 3 已移除 eventOptions，无法在模板内设 passive。
+- **修复**：消息模板去掉 `@touchstart`，改为**组件级手动 passive 事件委托**——`connectedCallback` 里 `this.addEventListener("touchstart", this.onMsgTouchStart, { passive: true })`（disconnectedCallback 移除）；`onMsgTouchStart` 用 `e.composedPath()[0]` 取**原始目标**（shadow DOM 事件重定向会把组件监听器的 `e.target` 置为 host，`closest(".msg")` 会失败）再找 `.msg[data-id]` → `msgPressStart(m)`。
+- 验证（Playwright）：①CDP 确认 `.msg` 上 touchstart 监听器 `[]`、组件上 touchstart `[{passive:true}]`（无 lit non-passive）✓；②移动视口 390 composed TouchEvent——touchstart 后 `longPressTimer` 为 number（委托触发）、滑动取消长按 ✓、长按 600ms 弹删除气泡 ✓。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 消除图片预览 wheel/touchstart/touchmove 三警告（用户「桌面端点开图片预览弹出三个警告」）
+- **根因**：图片预览 `<img class="ph">` 的 lit 模板 `@wheel`/`@touchstart`/`@touchmove` 绑定（zoomPreview/touchStart/touchMove 均需 preventDefault 缩放/拖动）默认 non-passive → 预览打开渲染时 Chrome 弹 3 个 scroll-blocking 警告（栈指向 lit EventPart）。不能 passive（会破坏缩放/拖动）；`touch-action:none` 已加但仍警告。
+- **修复（app.ts）**：图片 img 模板移除 `@wheel`/`@touchstart`/`@touchmove`/`@touchend`/`@touchcancel`（保留 `@mousedown` 拖动，非滚动事件不警告）；新增 `updated()` 钩子：预览 img 存在且未标记（`dataset.pvBound`）时手动 `addEventListener` 并**显式 `{passive:false}`**（Chrome 只警告"未指定 passive"的监听，显式声明不警告且 preventDefault 有效），箭头函数保持组件 this；每次渲染后对新 img 自动重绑（re-render 重建 img 不丢绑定）。`updated` 需传 `changedProperties` 参数（TS2554 修复）。
+- 验证（Playwright 桌面端）：上传图片 → 打开预览 → 滚轮缩放，console **`warnings: []`**（无 Violation）✓；img `dataset.pvBound=true`、滚轮缩放 transform `translate(...) scale(1.15)` 正常 ✓；touch-action:none 保留。
+- 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 移动端视频封面不显示修复（用户「为什么移动端无法显示视频第一帧作为封面」）
+- **根因**：视频卡片 `<video muted preload="metadata">` 靠浏览器自动显示首帧，但**缺 `playsinline`**——iOS Safari 对无 `playsinline` 的视频按全屏视频处理、预加载被节流，不渲染首帧封面；且这种"依赖 video 元素自动显示首帧"的方式在移动端（尤其 iOS）不可靠。桌面/Chrome 正常（实测 readyState=4、1280×720）。
+- **修复（app.ts + app.css）**：①消息卡 video 加 `playsinline` + `webkit-playsinline`（iOS 内联加载）；②**canvas 取首帧兜底**——video 绑定 `@loadeddata` → `captureVideoCover(m)` 用 canvas `drawImage` 取首帧转 dataURL（jpeg 0.72）存入 `videoCovers Map`（key=消息 id，防重），`requestUpdate` 后把 video 替换为 `<img class="vcover">` 封面（不依赖浏览器自动显示首帧，省流量）；③预览 `<video controls>` 也加 playsinline/webkit-playsinline；④CSS `.card.video .vthumb .vcover` 复用 object-fit cover。
+- 验证（Playwright 上传真实 mp4 4.3MB）：取帧后 `hasCoverImg=true`、`coverDataLen=8235`（dataURL 有真实 JPEG 数据）、`hasVideo=false`（video 已被 img 替换）✓。iOS 低数据模式（完全不加载视频）仍无法前端解决，需服务端生成缩略图，正常移动网络下 playsinline+canvas 取帧可靠。
+- 本次未打包 exe（按用户要求只增量构建 web）。

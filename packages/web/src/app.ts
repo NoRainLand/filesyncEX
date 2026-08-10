@@ -182,6 +182,8 @@ export class FilesyncApp extends LitElement {
   playingId: string | null = null;
   sheet: "attach" | "progress" | "settings" | "qr" | null = null;
   preview: { kind: string; msg: MsgDataT } | null = null;
+  /** 视频首帧封面（canvas 取帧 dataURL，key=消息 id；iOS/移动端不依赖 video 自动显示首帧） */
+  private videoCovers = new Map<string, string>();
   nick = "";
   httpUrl = "";
   qrDataUrl = "";
@@ -244,9 +246,11 @@ export class FilesyncApp extends LitElement {
     window.addEventListener("resize", this.onResize);
     window.addEventListener("click", this.onDocClick);
     // 主界面任何位置滚轮都转发到滚动容器（桌面 .container / 移动 .list）
-    this.addEventListener("wheel", this.onHostWheel);
+    this.addEventListener("wheel", this.onHostWheel, { passive: false });
+    // 消息长按（移动端）：组件级 passive touchstart 委托（lit 模板 @touchstart 无法设 passive，会触发 scroll-blocking 警告）
+    this.addEventListener("touchstart", this.onMsgTouchStart, { passive: true });
   }
-  disconnectedCallback(): void { window.removeEventListener("resize", this.onResize); window.removeEventListener("click", this.onDocClick); this.removeEventListener("wheel", this.onHostWheel); this.ws?.close(); super.disconnectedCallback(); }
+  disconnectedCallback(): void { window.removeEventListener("resize", this.onResize); window.removeEventListener("click", this.onDocClick); this.removeEventListener("wheel", this.onHostWheel); this.removeEventListener("touchstart", this.onMsgTouchStart); this.ws?.close(); super.disconnectedCallback(); }
   private onResize = (): void => { this.requestUpdate(); this.scrollToLatest(); };
   /** 全局滚轮：弹层/预览打开时不劫持；否则把滚轮统一转发到当前滚动容器 */
   private onHostWheel = (e: WheelEvent): void => {
@@ -307,11 +311,31 @@ export class FilesyncApp extends LitElement {
   private msgPressStart(m: MsgDataT): void {
     if (window.innerWidth > 640 || this.sheet || this.preview) return;
     clearTimeout(this.longPressTimer);
+    // 滑动取消长按：window passive touchmove（不 preventDefault，消除 scroll-blocking 警告）；每次 touchstart 重复 add 同引用是幂等的
+    window.addEventListener("touchmove", this.cancelLongPress, { passive: true });
     this.longPressTimer = window.setTimeout(() => {
+      window.removeEventListener("touchmove", this.cancelLongPress);
       this.blockClickUntil = Date.now() + 600; // 屏蔽长按抬起后产生的 click
       this.openDelBubble(m);
     }, 500);
   }
+  /** 滑动取消长按（passive 监听回调，组件 this 绑定） */
+  private cancelLongPress = (): void => {
+    clearTimeout(this.longPressTimer);
+    window.removeEventListener("touchmove", this.cancelLongPress);
+  }
+  /** 消息长按开始（移动端）：组件级 touchstart 委托，passive 注册消除 scroll-blocking 警告 */
+  private onMsgTouchStart = (e: TouchEvent): void => {
+    // shadow DOM 事件重定向会把 e.target 置为 host，须用 composedPath() 取原始目标
+    const origin = e.composedPath()[0] as HTMLElement | null;
+    const el = origin?.closest<HTMLElement>(".msg");
+    if (!el) return;
+    const id = el.dataset.id;
+    if (!id) return;
+    const m = this.msgs.find((x) => x.id === id);
+    if (m) this.msgPressStart(m);
+  };
+
   private msgPressEnd(): void { clearTimeout(this.longPressTimer); }
   private msgClickGuard(e: Event): void {
     if (this.delBubble) { this.closeDelBubble(); return; }
@@ -526,6 +550,38 @@ export class FilesyncApp extends LitElement {
     }
   }
   private closePreview(): void { this.preview = null; }
+  /** 视频首帧封面：loadeddata 后 canvas 取帧转 dataURL，替换 video 为 img（移动端/iOS 不依赖 video 自动显示首帧） */
+  private captureVideoCover(m: MsgDataT): void {
+    if (this.videoCovers.has(m.id)) return;
+    const v = this.shadowRoot?.querySelector<HTMLVideoElement>(`.msg[data-id="${m.id}"] .card.video video`);
+    if (!v || !v.videoWidth || !v.videoHeight) return;
+    try {
+      const c = document.createElement("canvas");
+      c.width = v.videoWidth;
+      c.height = v.videoHeight;
+      const ctx = c.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(v, 0, 0, c.width, c.height);
+      this.videoCovers.set(m.id, c.toDataURL("image/jpeg", 0.72));
+      this.requestUpdate();
+    } catch {
+      /* 取帧受限（编码/跨域）时保持 video 原样 */
+    }
+  }
+  /** 图片预览手势：手动绑定（lit 模板 @wheel/@touchstart/@touchmove 无法设 passive，会触发 scroll-blocking 警告）。
+   *  显式 {passive:false} 保持 preventDefault 缩放/拖动；每次渲染后对新 img 绑定（re-render 重建 img 后自动重绑） */
+  protected updated(changedProperties: Map<PropertyKey, unknown>): void {
+    super.updated(changedProperties);
+    const img = this.shadowRoot?.querySelector<HTMLImageElement>(".viewer .vbody.pv-img img.ph");
+    if (img && !img.dataset.pvBound) {
+      img.dataset.pvBound = "1";
+      img.addEventListener("wheel", (e) => this.zoomPreview(e), { passive: false });
+      img.addEventListener("touchstart", (e) => this.touchStart(e), { passive: false });
+      img.addEventListener("touchmove", (e) => this.touchMove(e), { passive: false });
+      img.addEventListener("touchend", () => this.touchEnd());
+      img.addEventListener("touchcancel", () => this.touchEnd());
+    }
+  }
   /** 图片预览滚轮缩放：以鼠标位置为锚点（translate + scale，无 transform-origin 累积漂移） */
   private zoomPreview(e: WheelEvent): void {
     e.preventDefault();
@@ -853,12 +909,18 @@ export class FilesyncApp extends LitElement {
             <div class="ovl" @click=${(e: Event) => e.stopPropagation()}><span class="mm"><span class="name">${f?.name ?? ""}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></span><span class="ops">${downBtn}</span></div>${delBtn}
           </div>`;
         break;
-      case "video":
+      case "video": {
+        const cover = this.videoCovers.get(m.id);
         content = html`<div class="card video">
-            <div class="vthumb" @click=${() => { if (this.debounceKey("pv-" + m.id, 400)) this.openPreview("video", m); }}><video src="${f?.url ?? ""}" muted preload="metadata"></video></div>
+            <div class="vthumb" @click=${() => { if (this.debounceKey("pv-" + m.id, 400)) this.openPreview("video", m); }}>
+              ${cover
+                ? html`<img class="vcover" src="${cover}" alt="" />`
+                : html`<video src="${f?.url ?? ""}" muted playsinline webkit-playsinline preload="metadata" @loadeddata=${() => this.captureVideoCover(m)}></video>`}
+            </div>
             <div class="ovl" @click=${(e: Event) => e.stopPropagation()}><span class="mm"><span class="name">${f?.name ?? ""}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></span><span class="ops">${downBtn}</span></div>${delBtn}
           </div>`;
         break;
+      }
       case "audio":
         content = html`<div class="card audio ${this.playingId === m.id ? "playing" : ""}" data-id="${m.id}">
             <div class="ap">
@@ -882,7 +944,7 @@ export class FilesyncApp extends LitElement {
         break;
     }
 
-    return html`<div class="msg ${this.delBubble?.id === m.id ? "del-selected" : ""}" data-id="${m.id}" @touchstart=${() => this.msgPressStart(m)} @touchmove=${this.msgPressEnd} @touchend=${this.msgPressEnd} @mousedown=${() => this.msgPressStart(m)} @mouseup=${this.msgPressEnd} @mouseleave=${this.msgPressEnd} @contextmenu=${(e: Event) => { if (window.innerWidth <= 640) e.preventDefault(); }} @click=${(e: Event) => this.msgClickGuard(e)}>
+    return html`<div class="msg ${this.delBubble?.id === m.id ? "del-selected" : ""}" data-id="${m.id}" @touchend=${this.msgPressEnd} @mousedown=${() => this.msgPressStart(m)} @mouseup=${this.msgPressEnd} @mouseleave=${this.msgPressEnd} @contextmenu=${(e: Event) => { if (window.innerWidth <= 640) e.preventDefault(); }} @click=${(e: Event) => this.msgClickGuard(e)}>
       <div class="avatar">${(m.sender.deviceName[0] ?? "?").toUpperCase()}</div>
       <div class="body">
         <div class="head">${head}</div>
@@ -1023,8 +1085,8 @@ export class FilesyncApp extends LitElement {
   private renderPreview(pv: { kind: string; msg: MsgDataT }) {
     const f = pv.msg.file;
     let body: unknown;
-    if (pv.kind === "image") body = html`<img class="ph" src="${f?.url ?? ""}" alt="" @wheel=${(e: WheelEvent) => this.zoomPreview(e)} @mousedown=${(e: MouseEvent) => this.startDrag(e)} @touchstart=${(e: TouchEvent) => this.touchStart(e)} @touchmove=${(e: TouchEvent) => this.touchMove(e)} @touchend=${this.touchEnd} @touchcancel=${this.touchEnd} />`;
-    else if (pv.kind === "video") body = html`<video class="ph" src="${f?.url ?? ""}" controls></video>`;
+    if (pv.kind === "image") body = html`<img class="ph" src="${f?.url ?? ""}" alt="" @mousedown=${(e: MouseEvent) => this.startDrag(e)} />`;
+    else if (pv.kind === "video") body = html`<video class="ph" src="${f?.url ?? ""}" controls playsinline webkit-playsinline></video>`;
     else if (pv.kind === "audio") body = html`<audio class="ph" src="${f?.url ?? ""}" controls style="width:80%"></audio>`;
     else if (pv.kind === "code") body = html`<div class="codeview">${unsafeHTML(highlightCode(pv.msg.code?.content ?? "", pv.msg.code?.lang ?? "ts"))}</div>`;
     const title = pv.kind === "image" ? "图片预览" : pv.kind === "video" ? "视频预览" : pv.kind === "audio" ? "音频播放" : "代码预览";
