@@ -135,7 +135,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
       await engine.addMessage({
         id: randomUUID(),
         kind: "text",
-        sender: { deviceId: "__system__", deviceName: "Rain Die", color: "#047878", platform: "other" },
+        sender: { deviceId: "__system__", deviceName: "Rose Die", color: "#047878", platform: "other" },
         ts: Date.now(),
         text: "是信息，好耶！<copyright by NoRain>",
       });
