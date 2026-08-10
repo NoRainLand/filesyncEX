@@ -1194,3 +1194,9 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
 - **打包提速**：package.mjs 加 `needBuild()` 增量构建（src/public 比 dist 新才构建；protocol/core 恒建保证基础依赖，server/web/shell 增量跳过；FSEX_FORCE_BUILD=1 强制全量）。重复打包 46.5s → 38.1s（构建 ~18s 中省 ~8s；pkg 阶段 ~28s 是 GZip 压缩 + 写 74MB exe 的物理成本，无法大幅降低）。
 - **坑**：`--no-bytecode` 单独用报 "no source breaks final executable"（pkg 5.16.1 packer.js：入口被标记 STORE_BLOB 且 --no-bytecode 删 BLOB 后无 STORE_CONTENT）。需 `--public` 替代（顶层源码明文，但体积 81MB > compress-only 76.6MB），故最终选 `--compress GZip`。dictionary（--no-dict=*）去掉 .pnpm 第三方包后体积无明显变化（压缩后占比小），未采用。
 - 验证：exe 74.3MB 运行正常（logo + 无 err）、版本 beta1、sqlite 落盘（data/filesync.db+wal+shm）。
+
+## [6.0.0-beta1] 端口被占用时自动切换 + 打印提示（用户「自动切换端口，并且打印提示」）
+- server/src/index.ts：新增 `findFreePort(startPort, maxTries)`（net.createServer 探测空闲端口，EADDRINUSE 继续向后试，最多 20 个）；`run()` 在 listen 前探测：默认端口被占用 → 自动切到第一个空闲端口并 `console.log("  ⚠ 端口 X 已被占用，已自动切换到端口 Y")`；httpUrl/wsUrl/wsPort/返回值均改用实际端口；全部占用则报错退出（提示改 serverConfig.json 或 FSEX_HTTP_PORT，顺带去掉无效的 FSEX_WS_PORT 提示——WS 复用 HTTP 端口）。
+- server/src/HttpServer.ts：health 接口 `port` 改用 `req.socket.localPort ?? cfg.httpPort`（返回实际监听端口，前端二维码/地址自动切换后显示正确）。
+- 验证：①脚本级（dist）——blocker 占 4100 → 自动切 4101，health port=4101 ✓；②exe 级（release exe）——blocker 占 4100 → exe 打印「⚠ 端口 4100 已被占用，已自动切换到端口 4101」+ banner 4101 + 4101 实际监听 ✓。均已清理测试进程。
+- 注：esbuild 会把中文字符转成 \uXXXX 存进 bundle.cjs/exe，用中文搜不到不代表代码没打进（改用 findFreePort 等 ASCII 标识搜）。

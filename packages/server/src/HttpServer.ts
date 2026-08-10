@@ -26,8 +26,8 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
   // 文件引用计数归零 → 删除物理文件（订阅引擎事件）
   engine.events.on("file-gc", ({ key }) => uploads.deleteFile(key));
 
-  /* 健康检查（返回本机局域网 IP + HTTP 端口，供前端二维码/地址使用真实地址） */
-  app.get("/api/health", (_req, res) => res.json({ ok: true, name: "filesyncEX", version: "6.0.0-beta1", lanIp: lanAddress(), port: cfg.httpPort }));
+  /* 健康检查（返回本机局域网 IP + 实际 HTTP 端口，供前端二维码/地址使用真实地址；端口自动切换时取实际监听端口） */
+  app.get("/api/health", (req, res) => res.json({ ok: true, name: "filesyncEX", version: "6.0.0-beta1", lanIp: lanAddress(), port: req.socket.localPort ?? cfg.httpPort }));
 
   /* 消息历史（REST 兜底；首屏主要走 WS welcome） */
   app.get("/api/msgs", async (_req, res) => {

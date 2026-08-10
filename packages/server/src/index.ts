@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
+import net from "node:net";
 import express from "express";
 import { WebSocketServer } from "ws";
 import Database from "better-sqlite3";
@@ -83,6 +84,37 @@ async function createStore(cfg: ServerConfig): Promise<Store> {
   }
 }
 
+/**
+ * 探测空闲端口：从 startPort 起逐个测试（临时 TCP server），返回第一个可监听的端口。
+ * EADDRINUSE 继续向后试；全部占用或其它错误则抛错。
+ */
+function findFreePort(startPort: number, maxTries: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let i = 0;
+    const probe = () => {
+      const port = startPort + i;
+      const srv = net.createServer();
+      srv.unref();
+      srv.once("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE" && i + 1 < maxTries) {
+          i++;
+          probe();
+        } else if (err.code === "EADDRINUSE") {
+          reject(new Error(`端口 ${startPort}~${startPort + maxTries - 1} 均被占用，无法启动。可修改 serverConfig.json 的 httpPort 或用环境变量 FSEX_HTTP_PORT 指定其他端口。`));
+        } else {
+          reject(err);
+        }
+      });
+      srv.once("listening", () => {
+        srv.close();
+        resolve(port);
+      });
+      srv.listen(port);
+    };
+    probe();
+  });
+}
+
 /** 组装并启动 HTTP + WS 服务 */
 export async function run(opts: RunOptions = {}): Promise<RunResult> {
   const cfg = loadConfig(opts.config);
@@ -110,21 +142,22 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   });
   const wsServer = new SocketServer(engine, wss);
 
+  // 端口监听：默认端口被占用时自动向后探测空闲端口（最多 20 个），并打印切换提示
+  const MAX_PORT_TRIES = 20;
+  const requestedPort = cfg.httpPort;
+  const httpPort = await findFreePort(requestedPort, MAX_PORT_TRIES);
+  if (httpPort !== requestedPort) {
+    console.log(`  ⚠ 端口 ${requestedPort} 已被占用，已自动切换到端口 ${httpPort}`);
+  }
   await new Promise<void>((resolve, reject) => {
-    const onErr = (err: NodeJS.ErrnoException) => {
-      if (err.code === "EADDRINUSE") {
-        reject(new Error(`端口 ${cfg.httpPort} 已被占用（可能已有 filesyncEX 或其他服务在运行）。可修改 serverConfig.json 中的 httpPort/wsPort，或用环境变量 FSEX_HTTP_PORT/FSEX_WS_PORT 指定。`));
-      } else {
-        reject(err);
-      }
-    };
+    const onErr = (err: NodeJS.ErrnoException) => reject(err);
     httpServer.once("error", onErr);
-    httpServer.listen(cfg.httpPort, () => resolve());
+    httpServer.listen(httpPort, () => resolve());
   });
 
   const lan = lanAddress();
-  const httpUrl = `http://${lan}:${cfg.httpPort}`;
-  const wsUrl = `ws://${lan}:${cfg.httpPort}/ws`; // WS 复用 HTTP 端口
+  const httpUrl = `http://${lan}:${httpPort}`;
+  const wsUrl = `ws://${lan}:${httpPort}/ws`; // WS 复用 HTTP 端口
 
   if (opts.verbose !== false && !cfg.quiet) {
     console.log("");
@@ -155,6 +188,6 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
     }
   };
 
-  return { httpPort: cfg.httpPort, wsPort: cfg.httpPort, httpUrl, wsUrl, engine, close, broadcastNotice: (level, message) => wsServer.broadcastNotice(level, message) };
+  return { httpPort, wsPort: httpPort, httpUrl, wsUrl, engine, close, broadcastNotice: (level, message) => wsServer.broadcastNotice(level, message) };
 }
 
