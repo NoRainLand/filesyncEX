@@ -2,6 +2,7 @@
   "name": "@filesyncex/web",
   "version": "6.0.0-beta1",
   "private": true,
+  "license": "GPL-2.0-or-later",
   "type": "module",
   "scripts": {
     "dev": "vite",

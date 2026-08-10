@@ -1426,3 +1426,13 @@ equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器�
 - **改动（app.css）**：基础 `.panel-shell` 阴影 `0 -10px 30px` → **`0 0 30px`（四周对称）**，不偏上也不偏下；**移动端 media 里 `.panel-shell` 覆盖回 `0 -10px 30px`**（移动端 sheet 贴底，投影朝上投在磨砂背景上，保持不回归）。阴影仍在 shell（transform 动画之外），内容 scale 不受影响。
 - 验证（Playwright）：设置面板 `.panel-shell` `box-shadow=rgba(0,0,0,0.25) 0px 0px 30px 0px`（四周对称）、`transform:none` ✓；页面保持打开可查看效果。
 - 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 开源授权：GPL-2.0-or-later（用户「在项目根目录生成 GPL-2.0-or-later 授权文件」）
+- 新建根目录 `LICENSE.md`：完整 GPL-2.0（June 1991）官方全文 + 项目头说明（filesyncEX，Copyright (C) 2026 NoRainLand，SPDX: GPL-2.0-or-later），How to Apply 部分已填项目信息。
+- 6 个 `package.json`（根 + core/protocol/server/shell/web）补 `"license": "GPL-2.0-or-later"`（JSON 验证有效）。
+- 选择理由：依赖 `@audio/decode-aac` 为 GPL-2.0，项目用 GPL-2.0-or-later 与其完全兼容（GPL-2/3 与 Apache 互不兼容，Apache 需替换该解码器）。
+- 未打包 exe。
+
+## [6.0.0-beta1] README 补开源协议小节（用户「要的，加上加上」）
+- README 目录加「开源协议」条目；文末新增「开源协议」小节：GPL-2.0-or-later 声明 + shields.io 徽章（GPL 红）+ 三条说明（可自由使用但衍生须开源 / aac 解码器 GPL-2.0 兼容 / 指向 LICENSE.md）+ Copyright (C) 2026 NoRainLand。
+- 未打包 exe。

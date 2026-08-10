@@ -21,6 +21,7 @@
 - [踩过的坑](#踩过的坑)
 - [可能存在的问题 / 已知限制](#可能存在的问题--已知限制)
 - [常用脚本](#常用脚本)
+- [开源协议](#开源协议)
 
 ---
 
@@ -276,3 +277,17 @@ release/       # 打包产物（filesyncex.exe）
 | `pnpm start` | 以 Node 运行（非 exe） |
 | `pnpm package` | 打包 exe（增量构建，约 40s） |
 | `FSEX_FORCE_BUILD=1 pnpm package` | 强制全量构建后打包 |
+
+---
+
+## 开源协议
+
+本项目采用 **GNU General Public License v2.0-or-later**（SPDX: `GPL-2.0-or-later`）授权。
+
+[![License: GPL-2.0-or-later](https://img.shields.io/badge/License-GPL--2.0--or--later-red.svg)](LICENSE.md)
+
+- 你可以自由使用、复制、修改、再分发本项目；但**修改后的衍生作品必须以相同协议开源**。
+- 内嵌的音频解码器 `@audio/decode-aac`（GPL-2.0）与本协议完全兼容。
+- 完整条款见 [LICENSE.md](LICENSE.md)。
+
+Copyright (C) 2026 NoRainLand
