@@ -1,6 +1,6 @@
 {
   "name": "filesyncex",
-  "version": "6.0.0-alpha1",
+  "version": "6.0.0-beta1",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.15.0",

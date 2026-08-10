@@ -1186,3 +1186,11 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
   - 服务端 packages/server/src/HttpServer.ts：新增 `POST /api/upload/direct`（express.raw limit 64mb，query 带 name/mime/device）。
 - 验证（临时脚本调 run() 启动构建后 server + HTTP 实测）：direct 上传 100KB → 200、返回文件消息、落盘 c3bfc7d2d061_test_small.bin(102400) ✓；分片链路 init→chunk→complete 走 finalize 仍正常（big.bin 102400）✓；测试后已清理。
 - 注意：小文件直接上传无秒传（跳过 sha 查重），可接受；阈值 8MB 如需调整改前端 DIRECT_UPLOAD_LIMIT + 服务端 DIRECT_LIMIT。
+
+## [6.0.0-beta1] 版本改 beta + 打包优化：GZip 压缩 + 增量构建 + better-sqlite3 精简（用户「版本改 beta、包体大能否压缩、打包太慢」）
+- **版本 beta**：6.0.0-alpha1 → 6.0.0-beta1（根 + 5 个 package.json + server HttpServer health + server index banner + smoke.mjs）。验证 exe VersionInfo = filesyncEX 6.0.0-beta1。
+- **包体压缩**：pkg 加 `--compress GZip` → release/filesyncex.exe 106.9MB → 74.3MB（-30.5%）。fix-icon 与压缩兼容（payload 段搬移逻辑与内容无关，压缩后 payload 38.8MB 更小，PAYLOAD_POSITION+PAYLOAD_SIZE==PRELUDE_POSITION 校验仍成立）。
+- **better-sqlite3 精简**：复制后删除 deps/src/node_modules（deps 是 sqlite C 编译源码 9.5MB，运行时不需要；只需 package.json + lib + build/Release/*.node）→ 12.96MB → 1.67MB。进一步减小 exe + 复制更快。
+- **打包提速**：package.mjs 加 `needBuild()` 增量构建（src/public 比 dist 新才构建；protocol/core 恒建保证基础依赖，server/web/shell 增量跳过；FSEX_FORCE_BUILD=1 强制全量）。重复打包 46.5s → 38.1s（构建 ~18s 中省 ~8s；pkg 阶段 ~28s 是 GZip 压缩 + 写 74MB exe 的物理成本，无法大幅降低）。
+- **坑**：`--no-bytecode` 单独用报 "no source breaks final executable"（pkg 5.16.1 packer.js：入口被标记 STORE_BLOB 且 --no-bytecode 删 BLOB 后无 STORE_CONTENT）。需 `--public` 替代（顶层源码明文，但体积 81MB > compress-only 76.6MB），故最终选 `--compress GZip`。dictionary（--no-dict=*）去掉 .pnpm 第三方包后体积无明显变化（压缩后占比小），未采用。
+- 验证：exe 74.3MB 运行正常（logo + 无 err）、版本 beta1、sqlite 落盘（data/filesync.db+wal+shm）。
