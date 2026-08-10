@@ -1436,3 +1436,10 @@ equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器�
 ## [6.0.0-beta1] README 补开源协议小节（用户「要的，加上加上」）
 - README 目录加「开源协议」条目；文末新增「开源协议」小节：GPL-2.0-or-later 声明 + shields.io 徽章（GPL 红）+ 三条说明（可自由使用但衍生须开源 / aac 解码器 GPL-2.0 兼容 / 指向 LICENSE.md）+ Copyright (C) 2026 NoRainLand。
 - 未打包 exe。
+
+## [6.0.0-beta1] 修复 ws.ts「frame 类型未知」警告（用户「这里有点小警告，你修一下」）
+- **现象**：`packages/web/src/ws.ts` 语言服务报 `frame` 类型为 unknown（onmessage 里 `let frame: ServerFrameT` 后 switch frame.type 报错）；但本地 `tsc`（5.9.3）通过。
+- **根因**：VS Code 语言服务（内置 TS 版本）对 **zod v4 的 `z.discriminatedUnion` 的 `z.infer` 推断退化为 unknown**（本地 tsc 5.9.3 正常）。决定性验证：`const __w: ServerFrameT = 42;` 语言服务不报错 → 证明 ServerFrameT 被解析为 unknown。
+- **修复（protocol/src/schema.ts）**：`ClientFrame`/`ServerFrame` 类型由 `z.infer<typeof ...>` 改为**手写联合类型**（普通 TS 类型，语言服务必定能解析），加注释「勿改回 z.infer，改 schema 需同步」；ws.ts 赋值处补 `as ServerFrameT` 断言。
+- 验证：protocol/server/web 全量 tsc 构建通过；`get_errors` 全 workspace 无错误 ✓。
+- 本次未打包 exe（按用户要求只增量构建）。

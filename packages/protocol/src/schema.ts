@@ -127,7 +127,13 @@ export const ClientFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("rename"), name: z.string().regex(/^[A-Za-z0-9_]{1,10}$/, "昵称仅允许大小写字母、下划线和数字，最长 10 位") }),
   z.object({ type: z.literal("ping") }),
 ]);
-export type ClientFrame = z.infer<typeof ClientFrame>;
+/** 手写联合类型（勿改回 z.infer：部分 TS 版本对 zod v4 discriminatedUnion 的 infer 会退化为 unknown）。改 schema 时需同步此处 */
+export type ClientFrame =
+  | { type: "hello"; device: DeviceInfo }
+  | { type: "send"; msg: MsgInput }
+  | { type: "del"; id: string }
+  | { type: "rename"; name: string }
+  | { type: "ping" };
 
 export const ServerFrame = z.discriminatedUnion("type", [
   /** 连接欢迎：自身设备 + 全量历史 + 在线设备 */
@@ -145,4 +151,12 @@ export const ServerFrame = z.discriminatedUnion("type", [
   /** 服务器通知：异常 / 维护 / 关闭（前端弹不可关闭大窗，确认后重连） */
   z.object({ type: z.literal("notice"), level: z.enum(["info", "warn", "error", "maintenance", "shutdown"]), message: z.string() }),
 ]);
-export type ServerFrame = z.infer<typeof ServerFrame>;
+/** 手写联合类型（勿改回 z.infer：部分 TS 版本对 zod v4 discriminatedUnion 的 infer 会退化为 unknown）。改 schema 时需同步此处 */
+export type ServerFrame =
+  | { type: "welcome"; self: DeviceInfo; msgs: MsgData[]; peers: DeviceInfo[] }
+  | { type: "add"; msg: MsgData }
+  | { type: "del"; id: string }
+  | { type: "peers"; peers: DeviceInfo[] }
+  | { type: "renamed"; device: DeviceInfo }
+  | { type: "pong" }
+  | { type: "notice"; level: "info" | "warn" | "error" | "maintenance" | "shutdown"; message: string };

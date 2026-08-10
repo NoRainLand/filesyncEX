@@ -54,7 +54,7 @@ export class WsClient {
     this.ws.onmessage = (e) => {
       let frame: ServerFrameT;
       try {
-        frame = JSON.parse(String(e.data));
+        frame = JSON.parse(String(e.data)) as ServerFrameT;
       } catch {
         return;
       }
