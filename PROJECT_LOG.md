@@ -1278,3 +1278,9 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
 - 打包进 exe：web/dist/**/* 已在 shell pkg assets，favicon.ico 与 FS_apple152.png 均在 dist 根，会随 pkg 打进 exe。
 - 验证：web 构建 dist 含 favicon.ico + FS_apple152.png；浏览器 link[rel=apple-touch-icon] 指向 /FS_apple152.png，fetch 200 + 3726B ✓。
 - 本次未打包 exe（按用户要求只增量构建）。
+
+## [6.0.0-beta1] apple 图标改名同步（用户「apple152 改了名字，看看需要改配置么」）
+- 用户把 web/public 的 FS_apple152.png 改名为 apple-touch-icon.png（3726B）。
+- 需要同步：index.html 的 `<link rel="apple-touch-icon" href="/FS_apple152.png">` → `href="/apple-touch-icon.png"`。
+- 验证：web 构建 dist 含 apple-touch-icon.png；dist/index.html 引用 /apple-touch-icon.png、无 FS_apple 残留 ✓。
+- 打包进 exe 机制不变（dist 根随 web/dist/**/*）。本次未打包 exe。
