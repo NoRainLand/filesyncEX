@@ -30,12 +30,10 @@ const ASCII_ART = [
   "                                \\::::/    /",
   "                                 \\::/    /",
   "                                  \\/____/",
-  "",
 ].join("\n");
 
 async function main(): Promise<void> {
   console.log(ASCII_ART);
-  console.log("");
   const isPkg = !!(process as unknown as { pkg?: unknown }).pkg;
   const config: { webDir?: string; quiet?: boolean } = {};
 
@@ -46,12 +44,6 @@ async function main(): Promise<void> {
   }
 
   const srv = await run({ config });
-
-  console.log("");
-  console.log("  filesyncEX 6.0.0-alpha1");
-  console.log(`  本机网页   http://127.0.0.1:${srv.httpPort}`);
-  console.log(`  局域网     ${srv.httpUrl}`);
-  console.log("  按 Ctrl+C 退出");
 
   const shutdown = (): void => {
     void srv.close().then(() => process.exit(0));
