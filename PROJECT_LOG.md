@@ -1382,3 +1382,21 @@ equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器�
 - **修复（app.ts + app.css）**：①消息卡 video 加 `playsinline` + `webkit-playsinline`（iOS 内联加载）；②**canvas 取首帧兜底**——video 绑定 `@loadeddata` → `captureVideoCover(m)` 用 canvas `drawImage` 取首帧转 dataURL（jpeg 0.72）存入 `videoCovers Map`（key=消息 id，防重），`requestUpdate` 后把 video 替换为 `<img class="vcover">` 封面（不依赖浏览器自动显示首帧，省流量）；③预览 `<video controls>` 也加 playsinline/webkit-playsinline；④CSS `.card.video .vthumb .vcover` 复用 object-fit cover。
 - 验证（Playwright 上传真实 mp4 4.3MB）：取帧后 `hasCoverImg=true`、`coverDataLen=8235`（dataURL 有真实 JPEG 数据）、`hasVideo=false`（video 已被 img 替换）✓。iOS 低数据模式（完全不加载视频）仍无法前端解决，需服务端生成缩略图，正常移动网络下 playsinline+canvas 取帧可靠。
 - 本次未打包 exe（按用户要求只增量构建 web）。
+
+## [6.0.0-beta1] 视频封面改「前端取帧上传 + 服务器存图 + 网页加载图片」（用户「能否服务器解析第一帧，网页直接加载图片」「借用前端上传时解析第一帧上传到服务器」）
+- **方案**：不用 ffmpeg（避免 exe 体积 +80MB）。**前端在上传视频前本地取首帧**（ObjectURL + video + canvas），生成 jpeg 封面**上传到服务器**，服务器存图并把封面 URL 挂到视频消息 `file.cover`；网页（任何设备含 iOS）直接 `<img src={cover}>` 加载服务器图片，不再依赖 video 解码首帧。
+- **协议（schema.ts）**：`FileMeta` 加 `cover`（封面相对路径）；`UploadInitReq` 加 `coverKey`（视频上传关联封面）。
+- **服务器**：①`UploadService` 加 `covers: Map<uploadId, coverKey>`（内存关联，init 存 / complete 取，断点续传客户端重带 coverKey）；`saveCover(buf)` 存 `uploadDir/<random>_cover.jpg` 返回 coverKey；`complete`/`finalize`（含 direct）meta 加 `cover: /api/file/<coverKey>`。②`HttpServer` 加 `POST /api/upload/cover`（raw jpeg → coverKey）；`/api/upload/direct` query 加 coverKey 透传。
+- **前端**：`api.ts` 加 `apiUploadCover(blob)→coverKey`；`uploadFile(file, cb, coverKey?)`/`apiUploadInit`/`apiUploadDirect` 传递 coverKey。`app.ts` 加 `extractVideoCover(file)`（取帧→传封面→coverKey），`handleFiles`/`retryUpload` 对视频先取帧上传封面再传视频（`rec.coverKey` 缓存）；视频消息渲染优先 `m.file?.cover` 显示 img，历史视频（无 cover）回退 canvas 实时取帧（captureVideoCover 保留）。
+- 验证（Playwright 上传真实 mp4 4.3MB）：消息 `file.cover=/api/file/049cd46e_cover.jpg`、渲染 `img.vcover`、**封面 HTTP 200 从服务器加载** ✓、hasVideo=false ✓。跨设备一致显示（img 无需视频解码），无 ffmpeg、exe 体积不变。
+- 本次未打包 exe（按用户要求只增量构建 protocol+server+web）。
+
+## [6.0.0-beta1] 视频封面纯黑修复（用户「为什么渲染出来的图片都是纯黑色的」）
+- **根因**：`loadeddata` 事件触发时视频数据刚就绪，**首帧画面可能还没实际解码渲染**，此时 `canvas.drawImage` 拿到的是**黑帧**（封面图本身是黑的，非渲染问题）。
+- **修复（app.ts）**：取帧前 **seek 强制解码一帧** + **纯黑检测换时间点重试**：
+  - 新增 `grabVideoFrame(v)`：依次尝试 `currentTime` = 0.01/0.1/1/0.5（≤ duration*0.9），每次等待 `seeked`（800ms 超时兜底）强制解码该帧，再 `drawVideoFrame` 取帧。
+  - `drawVideoFrame`：drawImage 后 `getImageData` 采样平均亮度，`< 4/255` 判为黑帧返回 null（自动试下一个时间点）。
+  - `extractVideoCover`（上传前取帧）与 `captureVideoCover`（历史视频 canvas 回退）都改用 `grabVideoFrame`。
+  - 顺带修 TS2532（`noUncheckedIndexedAccess` 下 `d[i]` 可能 undefined，用 `?? 0`）。
+- 验证（Playwright 上传真实 mp4）：服务器封面 `1280×720`、**平均亮度 54.2**（非黑）、`isBlack=false` ✓。
+- 本次未打包 exe（按用户要求只增量构建 web）。

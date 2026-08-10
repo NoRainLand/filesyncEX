@@ -10,6 +10,7 @@ interface InitUploadInput {
   sha256?: string;
   device: import("@filesyncex/protocol").DeviceInfoT;
   uploadId?: string;
+  coverKey?: string;
 }
 
 export async function apiUploadInit(input: InitUploadInput): Promise<UploadInitResT> {
@@ -75,8 +76,9 @@ export async function apiUploadComplete(uploadId: string): Promise<UploadComplet
 }
 
 /** 小文件直接上传：一次 POST 整个文件，跳过 SHA-256 哈希与分片（消除「上传前等待」） */
-export async function apiUploadDirect(file: File, device: import("@filesyncex/protocol").DeviceInfoT): Promise<UploadCompleteResT> {
+export async function apiUploadDirect(file: File, device: import("@filesyncex/protocol").DeviceInfoT, coverKey?: string): Promise<UploadCompleteResT> {
   const q = new URLSearchParams({ name: file.name, mime: file.type || "", device: JSON.stringify(device) });
+  if (coverKey) q.set("coverKey", coverKey);
   const r = await fetch(`/api/upload/direct?${q.toString()}`, {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
@@ -84,6 +86,18 @@ export async function apiUploadDirect(file: File, device: import("@filesyncex/pr
   });
   if (!r.ok) throw new Error((await r.json()).error ?? "上传失败");
   return (await r.json()) as UploadCompleteResT;
+}
+
+/** 上传视频封面（jpeg blob）→ 返回 coverKey（随视频上传关联，服务器存为消息封面） */
+export async function apiUploadCover(blob: Blob): Promise<string> {
+  const r = await fetch("/api/upload/cover", {
+    method: "POST",
+    headers: { "Content-Type": "image/jpeg" },
+    body: blob,
+  });
+  if (!r.ok) throw new Error((await r.json()).error ?? "封面上传失败");
+  const d = (await r.json()) as { coverKey: string };
+  return d.coverKey;
 }
 
 /** 纯 JS 增量 SHA-256（不依赖 crypto.subtle，兼容局域网 HTTP 非安全上下文） */
@@ -188,12 +202,12 @@ export async function fileSha256(file: Blob): Promise<string> {
   return hasher.digestHex();
 }
 
-/** 上传文件：≤ DIRECT_UPLOAD_LIMIT 直接整块上传（跳过哈希/分片）；更大走分片（断点续传 + 秒传） */
-export async function uploadFile(file: File, onProgress?: (sent: number, total: number) => void): Promise<UploadCompleteResT> {
+/** 上传文件：≤ DIRECT_UPLOAD_LIMIT 直接整块上传（跳过哈希/分片）；更大走分片（断点续传 + 秒传）。coverKey 为视频封面（可空） */
+export async function uploadFile(file: File, onProgress?: (sent: number, total: number) => void, coverKey?: string): Promise<UploadCompleteResT> {
   // 小文件直接上传：跳过整文件 SHA-256 与分片，消除「上传前等待」
   if (file.size <= DIRECT_UPLOAD_LIMIT) {
     onProgress?.(file.size, file.size);
-    return await apiUploadDirect(file, getDevice());
+    return await apiUploadDirect(file, getDevice(), coverKey);
   }
   const sha = await fileSha256(file);
   const cacheKey = "fsex_upload_" + sha;
@@ -210,6 +224,7 @@ export async function uploadFile(file: File, onProgress?: (sent: number, total: 
     sha256: sha,
     device: getDevice(),
     uploadId: savedUploadId,
+    coverKey,
   });
   if (init.existed) {
     try {

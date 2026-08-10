@@ -5,7 +5,7 @@ import ClipboardJS from "clipboard";
 import type { DeviceInfoT, MsgDataT } from "@filesyncex/protocol";
 import { getDevice, saveDevice } from "./device.js";
 import { WsClient } from "./ws.js";
-import { uploadFile, DIRECT_UPLOAD_LIMIT } from "./api.js";
+import { uploadFile, DIRECT_UPLOAD_LIMIT, apiUploadCover } from "./api.js";
 import appCss from "./app.css?inline";
 
 /* ================= helpers ================= */
@@ -153,6 +153,8 @@ interface UploadRec {
   kind: string;
   fail?: boolean;
   file?: File;
+  /** 视频封面 key（上传前本地取帧生成并上传到服务器，随视频关联） */
+  coverKey?: string;
 }
 
 export class FilesyncApp extends LitElement {
@@ -480,7 +482,11 @@ export class FilesyncApp extends LitElement {
       this.msgs = [...this.msgs, placeholder];
       this.scrollToLatest();
       try {
-        await uploadFile(file, (sent, total) => { rec.pct = Math.round((sent / total) * 100); this.uploads = [...this.uploads]; });
+        // 视频：上传前本地取首帧生成封面并上传到服务器（消息带 cover，网页直接加载图片；失败则无封面回退 canvas）
+        if (kind === "video" && !rec.coverKey) {
+          rec.coverKey = await this.extractVideoCover(file);
+        }
+        await uploadFile(file, (sent, total) => { rec.pct = Math.round((sent / total) * 100); this.uploads = [...this.uploads]; }, rec.coverKey);
         // 上传成功：移除占位卡（真实消息由 WS onAdd 广播，同 id 去重不冲突）
         this.msgs = this.msgs.filter((m) => m.id !== key);
         this.uploads = this.uploads.filter((x) => x !== rec);
@@ -504,6 +510,78 @@ export class FilesyncApp extends LitElement {
   }
   private onDrop(e: DragEvent): void { e.preventDefault(); void this.handleFiles(e.dataTransfer?.files ?? null); }
 
+  /** 视频首帧封面：本地取帧（ObjectURL + video + canvas）→ 上传到服务器 → 返回 coverKey；失败返回 undefined */
+  private async extractVideoCover(file: File): Promise<string | undefined> {
+    let url: string | undefined;
+    try {
+      url = URL.createObjectURL(file);
+      const v = document.createElement("video");
+      v.muted = true;
+      v.preload = "metadata";
+      v.src = url;
+      await new Promise<void>((res, rej) => {
+        v.onloadeddata = () => res();
+        v.onerror = () => rej(new Error("video load fail"));
+      });
+      // seek 强制解码一帧再取（loadeddata 直接 drawImage 可能拿到黑帧）；纯黑自动换时间点重试
+      const canvas = await this.grabVideoFrame(v);
+      if (!canvas) return undefined;
+      const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/jpeg", 0.7));
+      if (!blob) return undefined;
+      return await apiUploadCover(blob);
+    } catch {
+      return undefined;
+    } finally {
+      if (url) URL.revokeObjectURL(url);
+    }
+  }
+
+  /** 取视频一帧（seek 强制解码，纯黑自动换时间点重试）；全部失败返回 null */
+  private async grabVideoFrame(v: HTMLVideoElement): Promise<HTMLCanvasElement | null> {
+    const dur = v.duration && isFinite(v.duration) ? v.duration : 0;
+    const candidates = [0.01, 0.1, 1, 0.5];
+    for (const base of candidates) {
+      const t = dur > 0 ? Math.min(base, dur * 0.9) : base;
+      await new Promise<void>((res) => {
+        let done = false;
+        const finish = (): void => { if (!done) { done = true; res(); } };
+        v.onseeked = finish;
+        try {
+          v.currentTime = t;
+        } catch {
+          /* noop */
+        }
+        setTimeout(finish, 800); // 兜底：解码慢/不支持 seek 时超时继续
+      });
+      const c = this.drawVideoFrame(v);
+      if (c) return c;
+    }
+    return null;
+  }
+
+  /** 把 video 当前帧绘制到 canvas；画面几乎纯黑返回 null（判定为未解码帧） */
+  private drawVideoFrame(v: HTMLVideoElement): HTMLCanvasElement | null {
+    const c = document.createElement("canvas");
+    c.width = v.videoWidth || 640;
+    c.height = v.videoHeight || 360;
+    const ctx = c.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(v, 0, 0, c.width, c.height);
+    try {
+      const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      let sum = 0;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4 * 101) {
+        sum += ((d[i] ?? 0) + (d[i + 1] ?? 0) + (d[i + 2] ?? 0)) / 3;
+        n++;
+      }
+      if (n > 0 && sum / n < 4) return null; // 平均亮度 < 4/255 ≈ 纯黑
+    } catch {
+      /* 读取受限忽略 */
+    }
+    return c;
+  }
+
   /** 断点续传：点击失败的大文件占位卡，用内存里的 File 重新上传（同 sha → 服务端自动续传） */
   private async retryUpload(rec: UploadRec): Promise<void> {
     if (!rec.file) return;
@@ -512,7 +590,7 @@ export class FilesyncApp extends LitElement {
     this.uploads = [...this.uploads];
     this.msgs = [...this.msgs];
     try {
-      await uploadFile(rec.file, (sent, total) => { rec.pct = Math.round((sent / total) * 100); this.uploads = [...this.uploads]; });
+      await uploadFile(rec.file, (sent, total) => { rec.pct = Math.round((sent / total) * 100); this.uploads = [...this.uploads]; }, rec.coverKey);
       // 续传成功：移除占位卡（真实消息由 WS onAdd 广播，同 id 去重）
       this.msgs = this.msgs.filter((m) => m.id !== rec.key);
       this.uploads = this.uploads.filter((x) => x !== rec);
@@ -551,18 +629,15 @@ export class FilesyncApp extends LitElement {
   }
   private closePreview(): void { this.preview = null; }
   /** 视频首帧封面：loadeddata 后 canvas 取帧转 dataURL，替换 video 为 img（移动端/iOS 不依赖 video 自动显示首帧） */
-  private captureVideoCover(m: MsgDataT): void {
+  private async captureVideoCover(m: MsgDataT): Promise<void> {
     if (this.videoCovers.has(m.id)) return;
     const v = this.shadowRoot?.querySelector<HTMLVideoElement>(`.msg[data-id="${m.id}"] .card.video video`);
     if (!v || !v.videoWidth || !v.videoHeight) return;
     try {
-      const c = document.createElement("canvas");
-      c.width = v.videoWidth;
-      c.height = v.videoHeight;
-      const ctx = c.getContext("2d");
-      if (!ctx) return;
-      ctx.drawImage(v, 0, 0, c.width, c.height);
-      this.videoCovers.set(m.id, c.toDataURL("image/jpeg", 0.72));
+      // seek 强制解码一帧再取（loadeddata 直接 drawImage 可能黑帧）
+      const canvas = await this.grabVideoFrame(v);
+      if (!canvas) return;
+      this.videoCovers.set(m.id, canvas.toDataURL("image/jpeg", 0.72));
       this.requestUpdate();
     } catch {
       /* 取帧受限（编码/跨域）时保持 video 原样 */
@@ -910,7 +985,7 @@ export class FilesyncApp extends LitElement {
           </div>`;
         break;
       case "video": {
-        const cover = this.videoCovers.get(m.id);
+        const cover = m.file?.cover ?? this.videoCovers.get(m.id);
         content = html`<div class="card video">
             <div class="vthumb" @click=${() => { if (this.debounceKey("pv-" + m.id, 400)) this.openPreview("video", m); }}>
               ${cover

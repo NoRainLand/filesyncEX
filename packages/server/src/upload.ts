@@ -24,6 +24,8 @@ export class UploadService {
   private engine: SyncEngine;
   private uploadDir: string;
   chunkSize: number;
+  /** uploadId → 视频封面 key（前端上传视频前先生成并上传封面；内存 map，重启后断点续传会重新携带 coverKey） */
+  private covers = new Map<string, string>();
 
   constructor(opts: UploadServiceOptions) {
     this.store = opts.store;
@@ -50,6 +52,7 @@ export class UploadService {
       const prev = await this.store.getUpload(req.uploadId);
       if (prev && prev.name === req.name && prev.size === req.size) {
         const done = await this.store.listUploadChunks(prev.uploadId);
+        if (req.coverKey) this.covers.set(prev.uploadId, req.coverKey);
         return {
           ok: true,
           res: { uploadId: prev.uploadId, chunkSize: this.chunkSize, chunkCount: prev.chunkCount, done, existed: false } as import("@filesyncex/protocol").UploadInitResT,
@@ -86,6 +89,7 @@ export class UploadService {
       createdAt: Date.now(),
       device: req.device,
     });
+    if (req.coverKey) this.covers.set(uploadId, req.coverKey);
     fs.mkdirSync(this.sessionDir(uploadId), { recursive: true });
     const done = await this.store.listUploadChunks(uploadId);
     const res = UploadInitRes.parse({ uploadId, chunkSize: this.chunkSize, chunkCount, done, existed: false });
@@ -107,6 +111,8 @@ export class UploadService {
   async complete(uploadId: string): Promise<{ ok: true; res: UploadCompleteRes } | { ok: false; error: string }> {
     const s = await this.store.getUpload(uploadId);
     if (!s) return { ok: false, error: "上传会话不存在" };
+    const coverKey = this.covers.get(uploadId);
+    this.covers.delete(uploadId);
     const dir = this.sessionDir(uploadId);
     const safeName = (s.name || "unnamed").replace(/[\\\/:*?"<>|]/g, "_");
     const tmpPath = path.join(this.uploadDir, ".tmp-" + uploadId);
@@ -145,6 +151,7 @@ export class UploadService {
         sha256: digest,
         key,
         url: "/api/file/" + encodeURIComponent(key),
+        cover: coverKey ? "/api/file/" + encodeURIComponent(coverKey) : undefined,
       };
       await this.store.saveFile(key, meta);
       const sender = s.device ?? this.engine.self;
@@ -157,14 +164,22 @@ export class UploadService {
     }
   }
 
+  /** 保存视频封面图（jpeg），返回 coverKey（文件存 uploadDir/<key>_cover.jpg，/api/file/<key> 可下载） */
+  async saveCover(buf: Buffer): Promise<{ ok: true; coverKey: string } | { ok: false; error: string }> {
+    if (!buf || buf.length === 0) return { ok: false, error: "空封面数据" };
+    const coverKey = randomUUID().slice(0, 8) + "_cover.jpg";
+    fs.writeFileSync(path.join(this.uploadDir, coverKey), buf);
+    return { ok: true, coverKey };
+  }
+
   /** 小文件直接上传：整块落盘并广播（前端保证 ≤ DIRECT_LIMIT，跳过哈希/分片） */
-  async direct(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer): Promise<{ ok: true; res: UploadCompleteRes } | { ok: false; error: string }> {
+  async direct(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer, coverKey?: string): Promise<{ ok: true; res: UploadCompleteRes } | { ok: false; error: string }> {
     if (size > DIRECT_LIMIT) return { ok: false, error: "文件过大，请用分片上传" };
-    return this.finalize(name, size, mime, device, data);
+    return this.finalize(name, size, mime, device, data, coverKey);
   }
 
   /** 落盘最终文件 + 建索引 + 广播文件消息（分片 complete 与小文件 direct 共用） */
-  private async finalize(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer): Promise<{ ok: true; res: UploadCompleteRes }> {
+  private async finalize(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer, coverKey?: string): Promise<{ ok: true; res: UploadCompleteRes }> {
     const sha = createHash("sha256").update(data).digest("hex");
     // 落盘到 uploads/<sha>_<name>（key 即文件名）
     const safeName = (name || "unnamed").replace(/[\\/:*?"<>|]/g, "_");
@@ -178,6 +193,7 @@ export class UploadService {
       sha256: sha,
       key,
       url: "/api/file/" + encodeURIComponent(key),
+      cover: coverKey ? "/api/file/" + encodeURIComponent(coverKey) : undefined,
     };
     await this.store.saveFile(key, meta);
 

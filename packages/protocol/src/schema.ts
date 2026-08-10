@@ -40,6 +40,8 @@ export const FileMeta = z.object({
   url: z.string().optional(),
   /** 图片/视频缩略图数据（dataURL，小图预览用） */
   thumb: z.string().optional(),
+  /** 视频封面图相对路径 /api/file/<coverKey>（服务端存储，网页直接加载图片） */
+  cover: z.string().optional(),
   /** 文件 SHA-256（秒传去重用） */
   sha256: z.string().optional(),
 });
@@ -82,6 +84,8 @@ export const UploadInitReq = z.object({
   device: DeviceInfo, // 上传者设备身份（用于文件消息的 sender）
   /** 断点续传：客户端持久化的上次 uploadId，匹配 name/size 则复用会话并返回已传分片 */
   uploadId: z.string().optional(),
+  /** 视频封面图 key（前端上传视频前先生成并上传封面，随上传会话关联） */
+  coverKey: z.string().optional(),
 });
 export type UploadInitReq = z.infer<typeof UploadInitReq>;
 

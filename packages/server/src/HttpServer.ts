@@ -83,6 +83,18 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     res.json(r.res);
   });
 
+  /* 上传：视频封面（body 为 jpeg；返回 coverKey，随视频上传 init/direct 关联到消息） */
+  app.post(
+    "/api/upload/cover",
+    express.raw({ type: ["image/jpeg", "application/octet-stream", "*/*"], limit: "4mb" }),
+    async (req, res) => {
+      const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? []);
+      const r = await uploads.saveCover(buf);
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      res.json({ coverKey: r.coverKey });
+    }
+  );
+
   /* 上传：小文件直接上传（body 为整个文件，query 携带 name/mime/device；≤ DIRECT_LIMIT 跳过哈希/分片） */
   app.post(
     "/api/upload/direct",
@@ -95,7 +107,8 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
       } catch {
         device = undefined;
       }
-      const r = await uploads.direct(String(req.query.name ?? ""), buf.length, String(req.query.mime || "") || undefined, device, buf);
+      const coverKey = String(req.query.coverKey || "") || undefined;
+      const r = await uploads.direct(String(req.query.name ?? ""), buf.length, String(req.query.mime || "") || undefined, device, buf, coverKey);
       if (!r.ok) return res.status(400).json({ error: r.error });
       res.json(r.res);
     }
