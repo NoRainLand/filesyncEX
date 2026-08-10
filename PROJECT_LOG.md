@@ -1230,3 +1230,10 @@ oUncheckedIndexedAccess:true → Uint32Array/Uint8Array 索引访问需 ! 非空
 - app.css：`.card.upload-ph.retry { cursor: pointer; }` + `.ph-mm .name.retry { color: var(--pink); }`。
 - Playwright 验证（真实 server 4190 + web/dist）：①小文件 direct 拦截 500 → 占位删除 + toast「上传失败」✓；②10MB 分片 chunk 全拦截 500（重试 4 次后失败）→ 占位保留、红色 !、文案「上传中断·点击续传」、retry 可点 ✓；点击续传（放行）→ 占位移除 + 真实消息（_t_big.bin 10MB · 文件 · 下载链接）✓。
 - 已重打包 exe（75.1MB）运行验证通过（无 err、版本 beta1）。
+
+## [6.0.0-beta1] 首次启动欢迎消息（同步旧版 filesync 的假消息）
+- 旧版：ServerConfig.welcomeMsg = text「是信息，好耶！<copyright by NoRain>」；DatabaseOperation.createTable 时若 dbPath 不存在（needWellcomeMsg=false，即首次）→ writeToDatabase(welcomeMsg)。
+- 同步到新版：server/src/index.ts run() 在 engine 创建后，`engine.listMessages(1)` 为空（无历史=首次启动）→ `addMessage` 插入欢迎消息：kind text、sender { deviceId:"__system__", deviceName:"系统", color:"#047878", platform:"other" }、text 沿用旧版文案。import 加 randomUUID。
+- 验证：首次启动（空 sqlite 库）消息数 1「系统 | text | 是信息，好耶！<copyright by NoRain>」；二次启动（库保留）仍 1 条不重复 ✓。
+- 注意：本轮回测时清空了 release/data（原为测试产生的数据），exe 首次启动会重新生成 + 插入欢迎消息。
+- 已重打包 exe（75.1MB）运行验证通过（无 err、版本 beta1）。

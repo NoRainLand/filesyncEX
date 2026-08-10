@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import net from "node:net";
+import { randomUUID } from "node:crypto";
 import { WebSocketServer } from "ws";
 import Database from "better-sqlite3";
 import { MemoryStore, SqliteStore, SyncEngine, type Store } from "@filesyncex/core";
@@ -126,6 +127,23 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
 
   const store = await createStore(cfg);
   const engine = new SyncEngine(store, { historyLimit: cfg.historyLimit });
+
+  // 首次启动（无任何历史消息）插入欢迎消息——沿用旧版 filesync 的假消息
+  try {
+    const exist = await engine.listMessages(1);
+    if (exist.length === 0) {
+      await engine.addMessage({
+        id: randomUUID(),
+        kind: "text",
+        sender: { deviceId: "__system__", deviceName: "Rain Die", color: "#047878", platform: "other" },
+        ts: Date.now(),
+        text: "是信息，好耶！<copyright by NoRain>",
+      });
+    }
+  } catch (e) {
+    console.warn("[welcome] 插入欢迎消息失败:", (e as Error).message);
+  }
+
   const uploads = new UploadService({ store, engine, uploadDir: cfg.uploadDir });
   const app = createHttpApp(cfg, engine, uploads);
 
