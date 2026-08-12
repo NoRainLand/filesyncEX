@@ -152,6 +152,10 @@ export class FilesyncApp extends LitElement {
   /** 服务器通知弹窗池：可同时存在多个通知（异常/维护/关闭/警告…），各自可关闭/重连 */
   notices: { id: number; level: string; message: string }[] = [];
   private noticeSeq = 0;
+  /** 断线自动重连：剩余次数（默认 3）与流程标志 */
+  private reconnectLeft = 0;
+  private reconnectTimer: number | null = null;
+  private autoReconnecting = false;
   text = "";
   codeMode = false;
   codeLang = "ts";
@@ -219,9 +223,30 @@ export class FilesyncApp extends LitElement {
     });
     this.ws = new WsClient(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`, {
       onConnecting: () => { this.connState = "connecting"; },
-      onOpen: () => { this.connState = "connected"; if (this.self) this.ws?.send({ type: "hello", device: this.self }); },
-      onClose: () => { this.connState = "disconnected"; },
-      onNotice: (level, message) => { this.showNotice(level, message); },
+      onOpen: () => {
+        // 重连成功：停止自动重连流程，移除掉线类/断线重连中通知（onWelcome 负责同步数据）
+        const wasReconnecting = this.autoReconnecting;
+        this.autoReconnecting = false;
+        if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+        this.connState = "connected";
+        this.notices = this.notices.filter((n) => n.level !== "shutdown" && n.level !== "maintenance" && n.level !== "disconnected" && n.level !== "reconnecting");
+        if (wasReconnecting) this.flash(this.t("reconnect_success"));
+        if (this.self) this.ws?.send({ type: "hello", device: this.self });
+      },
+      onClose: () => {
+        this.connState = "disconnected";
+        // 正在自动重连流程中（重连失败）→ 继续尝试或次数用尽转「服务器断开连接」
+        if (this.autoReconnecting) { this.tryReconnect(); return; }
+        // 服务器主动关闭/维护通知已存在 → 不自动重连，等用户点「确定」
+        if (this.notices.some((n) => n.level === "shutdown" || n.level === "maintenance")) return;
+        // 客户端断开 → 自动重连（最多 3 次，弹「断线重连中」）
+        this.startAutoReconnect();
+      },
+      onNotice: (level, message) => {
+        this.showNotice(level, message);
+        // 服务器维护：直接弹通知并主动断开连接（等用户点确定重连）
+        if (level === "maintenance") this.ws?.close();
+      },
       onWelcome: (_s, msgs, peers) => { this.msgs = msgs; this.peers = peers; this.scrollToLatest(); },
       onAdd: (msg) => { if (!this.msgs.some((m) => m.id === msg.id)) { this.msgs = [...this.msgs, msg]; this.scrollToLatest(); } },
       onDel: (id) => { this.msgs = this.msgs.filter((m) => m.id !== id); },
@@ -230,7 +255,7 @@ export class FilesyncApp extends LitElement {
         if (this.self && device.deviceId === this.self.deviceId) { this.self = { ...device }; this.nick = device.deviceName; }
         this.peers = this.peers.map((p) => (p.deviceId === device.deviceId ? device : p));
       },
-    });
+    }, false);
     this.ws.connect();
     window.addEventListener("resize", this.onResize);
     window.addEventListener("click", this.onDocClick);
@@ -798,15 +823,22 @@ export class FilesyncApp extends LitElement {
   /* ---------- 服务器通知（异常/维护/关闭） ---------- */
   private noticeLevelLabel(level: string): string {
     switch (level) {
-      case "shutdown": return this.t("notice_shutdown");
-      case "maintenance": return this.t("notice_maintenance");
+      case "shutdown":
+      case "maintenance": return this.t("notice_maintenance"); // 服务器主动关闭/维护 → 统一「服务器维护中」
+      case "disconnected": return this.t("notice_disconnected");
+      case "reconnecting": return this.t("notice_reconnecting");
       case "error": return this.t("notice_error");
       case "warn": return this.t("notice_warn");
       default: return this.t("notice_info");
     }
   }
   private showNotice(level: string, message: string): void {
-    // 通知弹窗池：每次追加一个独立弹窗（可多个并存），各自可关闭/重连
+    // 掉线类通知（服务器主动关闭/维护/客户端断开）内容统一为操作提示，标题由 level 决定
+    const dropped = level === "shutdown" || level === "maintenance" || level === "disconnected";
+    if (dropped) message = this.t("notice_retry");
+    // 通知弹窗池：每次追加一个独立弹窗（可多个并存），各自可关闭/重连；
+    // 去重：同 level 且同 message 的通知已存在时不重复弹（避免掉线通知刷屏）
+    if (this.notices.some((n) => n.level === level && n.message === message)) return;
     this.notices = [...this.notices, { id: ++this.noticeSeq, level, message }];
   }
   private dismissNotice(id: number): void {
@@ -819,20 +851,64 @@ export class FilesyncApp extends LitElement {
     if (now - this.confirmReconnectAt < 3000) return;
     this.confirmReconnectAt = now;
     const n = this.notices.find((x) => x.id === id);
+    if (!n) return;
+    if (n.level === "shutdown" || n.level === "maintenance" || n.level === "disconnected") {
+      // 掉线类确定：关闭当前通知 → 弹「断线重连中」并自动重连
+      this.dismissNotice(id);
+      this.startAutoReconnect();
+      return;
+    }
+    // 其他通知：立即关闭并强制重连
     this.dismissNotice(id);
     this.connState = "connecting";
     this.ws?.forceReconnect();
-    this.flash(n?.level === "shutdown" ? this.t("reconnecting_shutdown") : this.t("reconnecting"));
+  }
+
+  /* ---------- 断线自动重连（最多 3 次） ---------- */
+  /** 按 level 移除通知 */
+  private dismissNoticeLevel(level: string): void {
+    this.notices = this.notices.filter((n) => n.level !== level);
+  }
+  /** 更新「断线重连中」通知的剩余次数文案 */
+  private updateReconnectNotice(): void {
+    const left = String(Math.max(this.reconnectLeft, 0));
+    this.notices = this.notices.map((n) => (n.level === "reconnecting" ? { ...n, message: this.t("notice_reconnect_left", { n: left }) } : n));
+  }
+  /** 开始断线自动重连：弹「断线重连中」通知并尝试连接（最多 3 次） */
+  private startAutoReconnect(): void {
+    this.autoReconnecting = true;
+    this.reconnectLeft = 3;
+    this.dismissNoticeLevel("reconnecting");
+    this.showNotice("reconnecting", this.t("notice_reconnect_left", { n: String(this.reconnectLeft) }));
+    this.tryReconnect();
+  }
+  /** 尝试一次重连；次数用尽则关闭「断线重连中」并弹「服务器断开连接」 */
+  private tryReconnect(): void {
+    if (this.reconnectLeft <= 0) {
+      this.autoReconnecting = false;
+      this.dismissNoticeLevel("reconnecting");
+      this.showNotice("disconnected", this.t("notice_retry"));
+      return;
+    }
+    this.updateReconnectNotice();
+    this.connState = "connecting";
+    this.reconnectLeft--;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = window.setTimeout(() => { this.ws?.connect(); }, 1000);
   }
 
   private renderNotice() {
     if (this.notices.length === 0) return nothing;
-    return html`<div class="notice-mask">${this.notices.map((n) => html`<div class="notice-panel ${n.level}">
-      <button class="nclose" title=${this.t("close")} @click=${() => { if (this.debounceKey("notice-close-" + n.id, 300)) this.dismissNotice(n.id); }}>✕</button>
-      <div class="ntitle">${this.noticeLevelLabel(n.level)}</div>
-      <div class="nbody">${n.message}</div>
-      <button class="btn" @click=${() => this.confirmNotice(n.id)}>${this.t("reconnect_confirm")}</button>
-    </div>`)}</div>`;
+    return html`<div class="notice-mask">${this.notices.map((n) => {
+      const isReconnecting = n.level === "reconnecting";
+      const locked = isReconnecting || n.level === "shutdown" || n.level === "maintenance" || n.level === "disconnected";
+      return html`<div class="notice-panel ${n.level}">
+        ${locked ? nothing : html`<button class="nclose" title=${this.t("close")} @click=${() => { if (this.debounceKey("notice-close-" + n.id, 300)) this.dismissNotice(n.id); }}>✕</button>`}
+        <div class="ntitle">${this.noticeLevelLabel(n.level)}</div>
+        <div class="nbody">${n.message}${isReconnecting ? html`<span class="dots"></span>` : ""}</div>
+        ${isReconnecting ? nothing : html`<button class="btn" @click=${() => this.confirmNotice(n.id)}>${this.t("reconnect_confirm")}</button>`}
+      </div>`;
+    })}</div>`;
   }
   private copyText(t: string): void {
     void this.copyToClipboard(t).then((ok) => this.flash(ok ? this.t("copied") : this.t("copy_failed")));

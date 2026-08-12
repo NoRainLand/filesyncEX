@@ -23,14 +23,16 @@ export class WsClient {
   private handlers: WsHandlers;
   private retry = 0;
   private closedByUser = false;
+  private autoReconnect = true;
   private queue: ClientFrameT[] = [];
   private hbTimer: ReturnType<typeof setInterval> | null = null;
   private lastPong = 0;
   connected = false;
 
-  constructor(url: string, handlers: WsHandlers) {
+  constructor(url: string, handlers: WsHandlers, autoReconnect = true) {
     this.url = url;
     this.handlers = handlers;
+    this.autoReconnect = autoReconnect;
   }
 
   connect(): void {
@@ -88,7 +90,7 @@ export class WsClient {
       this.connected = false;
       this.stopHeartbeat();
       this.handlers.onClose?.();
-      if (!this.closedByUser) {
+      if (!this.closedByUser && this.autoReconnect) {
         const delay = Math.min(1000 * 2 ** this.retry, 15000);
         this.retry++;
         setTimeout(() => this.connect(), delay);

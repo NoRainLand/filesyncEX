@@ -1488,3 +1488,50 @@ equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器�
 - 放 `scripts/` 而非 `tool/`（tool/ 会被 package.mjs 同步进 web/dist 打包）。
 - 测试：beta2→beta3 更新 11 文件 ✓、改回 beta2 恢复 11 文件 ✓、同版本提示无需修改 ✓；grep 无 beta3 残留。
 - 未打包 exe。
+
+## [6.0.0-beta2] 掉线通知去重（用户「掉线通知弹了一个之后，不应该弹第二个」）
+- 根因：`showNotice` 无条件追加，同一掉线通知重复收到时弹多个。
+- 改动（app.ts）：`showNotice` 加去重——已存在同 `level` 且同 `message` 的 pending 通知则跳过；不同内容仍可并存（保留通知池能力）。
+- 验证（Playwright）：同一通知连续 3 次 → notices 仅 1 个（弹窗只渲染一个）；不同内容（error+ warn）→ 2 个并存 ✓。
+- 本次未打包 exe。
+
+## [6.0.0-beta2] 掉线/维护通知不可关闭 + 重连成功自动关 + 断线兜底（用户需求）
+- **改动（app.ts）**：
+  ① `renderNotice`：shutdown/maintenance 通知**不渲染 ✕**（不可关闭），其他（info/warn/error）保留可关。
+  ② `confirmNotice`：掉线类（shutdown/maintenance）确认后**不立即关闭**（保留），连接成功才关；其他通知照旧立即关。
+  ③ `onOpen`（重连成功）：**自动移除掉线类通知**（shutdown/maintenance）。
+  ④ `onClose`（WS 断开）：**兜底弹「服务器维护」通知**（已有掉线类则不重复）——无论维护/关闭/断线都连不上服务器，保证有通知。
+- 验证（Playwright）：shutdown 面板无 ✕ / info 有 ✕ ✓；确认重连后连接成功 shutdown 自动移除、info 保留 ✓；kill server → 弹 maintenance（服务器维护中）无 ✕、connState connecting 重连中 ✓。
+- 本次未打包 exe。
+
+## [6.0.0-beta2] 掉线通知统一为两种形态（用户「只有两种情况」）
+- **情况1 服务器主动关闭**（shutdown/maintenance notice）：标题统一「服务器维护中」，内容固定「点击确定尝试重新连接服务器」。
+- **情况2 客户端断开**（onClose 兜底，新增 level=disconnected）：标题「服务器断开连接」，内容固定「点击确定尝试重新连接服务器」。
+- **改动**：
+  ① i18n 新增 `notice_disconnected`（服务器断开连接）、`notice_retry`（点击确定尝试重新连接服务器）；shutdown 标题改走 `notice_maintenance`。
+  ② `showNotice`：掉线类（shutdown/maintenance/disconnected）**强制内容为 notice_retry**（忽略服务器传入 message）。
+  ③ `onClose` 兜底改弹 `disconnected`。
+  ④ `noticeLevelLabel`：shutdown+maintenance →「服务器维护中」、disconnected →「服务器断开连接」。
+  ⑤ 不可关闭（locked）与 onOpen 自动移除范围加入 disconnected。
+- 验证（Playwright）：shutdown → 维护中/固定内容/无 ✕；disconnected → 断开连接/固定内容/无 ✕；kill server → 弹 disconnected（服务器断开连接）无 ✕、自动重连 ✓。
+- 本次未打包 exe。
+
+## [6.0.0-beta2] 断线自动重连流程（用户「维护主动断开 / 客户端断开自动重连3次 / 确定按钮进重连」）
+- **需求1 服务器维护**：收到 maintenance notice → 弹「服务器维护中」（有确定按钮）并**主动 `ws.close()` 断开**（onNotice 处理）。
+- **需求2 客户端断开**：onClose 无服务器通知 → 弹「断线重连中」（标题，内容「正在自动尝试点选重连，剩余次数X」，**无 ✕、无确定按钮**）并**自动重连最多 3 次**；成功（onOpen）同步数据（onWelcome）+ 自动关闭；3 次失败 → 关闭「断线重连中」→ 弹「服务器断开连接」（有确定按钮）。
+- **需求3 确定按钮**：任何掉线通知（维护/断开）点「确定」→ 关当前通知 → 弹「断线重连中」并自动重连。
+- **改动**：ws.ts `autoReconnect` 参数（app 传 false，关闭 WS 内建无限退避重连，改由 app 层控制次数）；app.ts 新增 `reconnectLeft/reconnectTimer/autoReconnecting` + `startAutoReconnect/tryReconnect/updateReconnectNotice/dismissNoticeLevel`；i18n 加 `notice_reconnecting`/`notice_reconnect_left`；renderNotice 对 reconnecting 不渲染 ✕ 和确定按钮。
+- **坑**：`window.setTimeout` 返回 number，reconnectTimer 类型用 `number | null`（`ReturnType<typeof setTimeout>` 解析成 Node Timeout 报 TS2322）。
+- 验证（Playwright）：断线 → 弹「断线重连中」剩余次数 2→1 → 3 次失败转「服务器断开连接」✓；点确定 → 弹「断线重连中」→ 重连成功 connected、通知自动关闭 ✓。
+- 本次未打包 exe。
+
+## [6.0.0-beta2] 重连成功 toast + 断线重连中省略号动画（用户两项）
+- **重连成功 toast**：`onOpen` 里若 `autoReconnecting`（处于重连流程）→ `flash("服务器重连成功")`（i18n `reconnect_success`）；首次连接不提示。
+- **断线重连中省略号动画**：`renderNotice` 对 `reconnecting` 通知内容尾部加 `.dots`（3 个 `<i>` 圆点），CSS `dotTyping` 动画（0/.2/.4s 依次点亮循环 = 打字机省略号 `...`）。
+- 验证（Playwright）：断线重连中期间 `.dots` 3 点 + animationName=dotTyping ✓；确认重连→重连成功 connected、通知关闭、toast「服务器重连成功」✓。
+- 本次未打包 exe。
+
+## [6.0.0-beta2] 省略号改文字形式（用户「直接在通知内容后面加，也就是文字」）
+- 「断线重连中」尾部省略号由 3 个圆点 `<i>` 元素改为**文字省略号**：`.dots` 空 span，`::after { content: "..." }`（3ch 宽 + overflow hidden），`dotType` 动画在 3ch 容器内平移文字，循环显示 `... → .. → .`。
+- 验证（Playwright）：`.dots::after` content="..."、animationName=dotType、宽度 3ch（27px）、无障碍快照显示文字 ... ✓。
+- 本次未打包 exe。
