@@ -1469,3 +1469,16 @@ equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器�
 - 设置面板语言区块从「连接」下方移到**设备指纹后面**（顺序：连接 → 设备身份/昵称（默认昵称/我的昵称/设备指纹）→ 语言 → 工具 → 关于）。
 - 验证（Playwright）：seclabels Connection→Language→Tools→About、`fpBeforeLang=true`（设备指纹 code.fp 在 st-lang 前）✓。
 - 本次未打包 exe。
+
+## [6.0.0-beta2] 静态资源缓存策略（根治 Firefox 缓存旧 index.html → 旧 CSS）
+- **背景**：Firefox 一直用旧版 CSS，实为缓存了入口 `index.html`（不带 hash）→ 引用旧 hash JS → 旧 CSS；而带 hash 的 JS/CSS（?inline 内联）本身不会缓存旧。
+- **改动（server/src/HttpServer.ts）**：`express.static` 加 `setHeaders`——`/assets/*`（Vite 带 hash 构建资产）设 `Cache-Control: public, max-age=31536000, immutable`；其余（index.html/favicon/字体等不带 hash）设 `no-cache` 每次重新校验。SPA 回退 `sendFile` 兜底也加 `no-cache`。
+- 验证（curl -I）：`/` → `no-cache`；`/assets/index-*.js` → `public, max-age=31536000, immutable`；`/fonts/*.woff2` → `no-cache` ✓。
+- 效果：改版后 Firefox 刷新必然拿新 index.html → 新 hash JS → 新 CSS；带 hash 资产永久缓存不损性能。
+- 本次未打包 exe。
+
+## [6.0.0-beta2] 合并两次 /api/health 请求为一次（用户「合并为一次吧」）
+- **背景**：main.ts printMsg（取 name/version 打印）与 app.ts connectedCallback（取 lanIp/port 拼 httpUrl）各自 fetch /api/health，重复请求。
+- **改动**：api.ts 新增 `HealthT` 接口 + `fetchHealth()`（模块级缓存 Promise：多次调用只发一次请求，失败回退空对象）；main.ts / app.ts 都改用它。
+- 验证（Playwright 监听请求）：reload 后 `/api/health` 仅 `healthCount: 1` ✓。
+- 本次未打包 exe。

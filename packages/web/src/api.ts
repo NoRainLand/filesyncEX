@@ -3,6 +3,25 @@ import { getDevice } from "./device.js";
 
 /** HTTP API 客户端（相对路径，走 Vite 代理或同源静态服务） */
 
+export interface HealthT {
+  ok?: boolean;
+  name?: string;
+  version?: string;
+  lanIp?: string;
+  port?: number;
+}
+
+let healthPromise: Promise<HealthT> | null = null;
+/** 获取服务器健康信息（真实局域网 IP/端口/版本）。共享 Promise：多次调用只发一次请求，失败回退空对象 */
+export function fetchHealth(): Promise<HealthT> {
+  if (!healthPromise) {
+    healthPromise = fetch("/api/health")
+      .then((r) => r.json() as Promise<HealthT>)
+      .catch(() => ({} as HealthT));
+  }
+  return healthPromise;
+}
+
 interface InitUploadInput {
   name: string;
   size: number;

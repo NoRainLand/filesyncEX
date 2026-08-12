@@ -1,5 +1,6 @@
 import "./app.js";
 import { NiarApp } from "./NiarApp.js";
+import { fetchHealth } from "./api.js";
 
 // 控制台彩蛋：暴露 window.NiarApp（NiarApp.execute("me") 查作者信息）+ window.joke()（冷笑话）
 NiarApp.init();
@@ -13,7 +14,7 @@ async function printMsg(): Promise<void> {
   let name = "filesyncEX";
   let version = "6.0.0-beta2";
   try {
-    const d = (await fetch("/api/health").then((r) => r.json())) as { name?: string; version?: string };
+    const d = await fetchHealth();
     name = d?.name || name;
     version = d?.version || version;
   } catch {

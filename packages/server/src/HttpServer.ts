@@ -162,8 +162,18 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
   /* 静态资源：构建后的前端（pkg 打包时目录由 shell 注入） */
   const webDir = cfg.webDir;
   if (fs.existsSync(path.join(webDir, "index.html"))) {
-    app.use(express.static(webDir));
-    app.get("*", (_req, res) => res.sendFile(path.join(webDir, "index.html")));
+    // 缓存策略：Vite 带 hash 的构建资产（/assets/*）内容寻址 → 永久缓存（immutable）；
+    // 入口 index.html 与 favicon/字体等不带 hash → no-cache 每次重新校验，避免陈旧入口引用旧 hash 资源
+    app.use(express.static(webDir, {
+      setHeaders: (res, filePath) => {
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        } else {
+          res.setHeader("Cache-Control", "no-cache");
+        }
+      },
+    }));
+    app.get("*", (_req, res) => res.setHeader("Cache-Control", "no-cache").sendFile(path.join(webDir, "index.html")));
   } else {
     app.get("/", (_req, res) => res.type("text/plain; charset=utf-8").send("filesyncEX 服务运行中（前端未构建，请先构建 packages/web）"));
   }

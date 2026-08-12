@@ -5,7 +5,7 @@ import ClipboardJS from "clipboard";
 import type { DeviceInfoT, MsgDataT } from "@filesyncex/protocol";
 import { getDevice, saveDevice } from "./device.js";
 import { WsClient } from "./ws.js";
-import { uploadFile, DIRECT_UPLOAD_LIMIT, apiUploadCover } from "./api.js";
+import { uploadFile, DIRECT_UPLOAD_LIMIT, apiUploadCover, fetchHealth } from "./api.js";
 import type { Lang } from "./i18n.js";
 import { loadLang, saveLang, dict, dayLabel, fmtType } from "./i18n.js";
 import appCss from "./app.css?inline";
@@ -212,14 +212,11 @@ export class FilesyncApp extends LitElement {
     super.connectedCallback();
     this.httpUrl = `${location.protocol}//${location.host}`;
     // 向服务器要真实局域网 IP（二维码/地址用真实地址，避免 127.0.0.1）
-    void fetch("/api/health")
-      .then((r) => r.json())
-      .then((d) => {
-        if (d && d.lanIp && d.lanIp !== "127.0.0.1") {
-          this.httpUrl = `${location.protocol}//${d.lanIp}${d.port ? `:${d.port}` : ""}`;
-        }
-      })
-      .catch(() => { /* 保持 location.host */ });
+    void fetchHealth().then((d) => {
+      if (d && d.lanIp && d.lanIp !== "127.0.0.1") {
+        this.httpUrl = `${location.protocol}//${d.lanIp}${d.port ? `:${d.port}` : ""}`;
+      }
+    });
     this.ws = new WsClient(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`, {
       onConnecting: () => { this.connState = "connecting"; },
       onOpen: () => { this.connState = "connected"; if (this.self) this.ws?.send({ type: "hello", device: this.self }); },
