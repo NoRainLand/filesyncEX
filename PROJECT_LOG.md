@@ -1482,3 +1482,9 @@ equestTimeout=120s（避免 chunk 间隙服务器关闭连接池导致浏览器�
 - **改动**：api.ts 新增 `HealthT` 接口 + `fetchHealth()`（模块级缓存 Promise：多次调用只发一次请求，失败回退空对象）；main.ts / app.ts 都改用它。
 - 验证（Playwright 监听请求）：reload 后 `/api/health` 仅 `healthCount: 1` ✓。
 - 本次未打包 exe。
+
+## [6.0.0-beta2] 一键统一版本号脚本（用户「加个脚本，一键修改为同一个版本」）
+- 新建 `scripts/set-version.mjs`：从根 package.json 自动读当前版本，一键全文替换为指定新版本；覆盖 11 个位置（根+5 子包 package.json、HttpServer.ts health version、index.ts banner、main.ts 默认版本、README 版本行、LICENSE 示例）。用法 `node scripts/set-version.mjs 6.0.0-beta3`；根 package.json 加 `set-version` npm script。
+- 放 `scripts/` 而非 `tool/`（tool/ 会被 package.mjs 同步进 web/dist 打包）。
+- 测试：beta2→beta3 更新 11 文件 ✓、改回 beta2 恢复 11 文件 ✓、同版本提示无需修改 ✓；grep 无 beta3 残留。
+- 未打包 exe。

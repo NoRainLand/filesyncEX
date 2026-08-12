@@ -1,6 +1,6 @@
 {
   "name": "filesyncex",
-  "version": "6.0.0-beta2",
+  "version": "6.0.0",
   "private": true,
   "license": "GPL-2.0-or-later",
   "type": "module",
@@ -13,6 +13,7 @@
     "dev:web": "pnpm --filter @filesyncex/web dev",
     "dev:server": "pnpm --filter @filesyncex/server dev",
     "start": "pnpm --filter @filesyncex/shell start",
-    "package": "pnpm --filter @filesyncex/shell package"
+    "package": "pnpm --filter @filesyncex/shell package",
+    "set-version": "node scripts/set-version.mjs"
   }
 }

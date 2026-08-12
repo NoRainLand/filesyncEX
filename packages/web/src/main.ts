@@ -12,7 +12,7 @@ NiarApp.init();
  */
 async function printMsg(): Promise<void> {
   let name = "filesyncEX";
-  let version = "6.0.0-beta2";
+  let version = "6.0.0";
   try {
     const d = await fetchHealth();
     name = d?.name || name;
