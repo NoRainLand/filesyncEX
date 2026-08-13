@@ -1273,7 +1273,7 @@ export class FilesyncApp extends LitElement {
         <div class="tool-sec">
           <hr />
           <p class="st-sec">${this.t("st_tool")}</p>
-          <a class="btn tool" href="/tool/QuickSendTool.exe" download>${I_DOWN}${this.t("download_qst")}</a>
+          <a class="btn tool" href="https://github.com/NoRainLand/QuickSendTool/releases" target="_blank" rel="noopener">${I_LINK}${this.t("download_qst")}</a>
           <p class="muted">${this.t("tool_note")}</p>
         </div>
         <!-- 关于 -->

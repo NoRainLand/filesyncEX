@@ -184,7 +184,6 @@ packages/
     scripts/
       package.mjs        # 完整打包流水线
       fix-icon.mjs       # rcedit 改图标后恢复 pkg payload
-tool/          # 附加工具（随包分发，如 QuickSendTool.exe）
 fonts/         # 前端字体（随 web 打包进 exe）
 release/       # 打包产物（filesyncex.exe）
 ```

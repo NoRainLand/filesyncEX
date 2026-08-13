@@ -46,23 +46,6 @@ run("pnpm --filter @filesyncex/protocol build", root);
 console.log("▶ 构建 core");
 run("pnpm --filter @filesyncex/core build", root);
 
-// 同步根目录 tool/ 到 web/public/tool（Vite 会复制进 dist，随 web 打包进 exe）
-console.log("▶ 同步 tool/ → web/public/tool");
-{
-  const srcTool = path.join(root, "tool");
-  const dstTool = path.join(root, "packages", "web", "public", "tool");
-  fs.mkdirSync(dstTool, { recursive: true });
-  if (fs.existsSync(srcTool)) {
-    for (const f of fs.readdirSync(srcTool)) {
-      const s = path.join(srcTool, f);
-      if (fs.statSync(s).isFile()) fs.copyFileSync(s, path.join(dstTool, f));
-    }
-    console.log("   已同步:", fs.readdirSync(srcTool).filter((f) => fs.statSync(path.join(srcTool, f)).isFile()).join(", "));
-  } else {
-    console.log("   (tool/ 目录不存在，跳过)");
-  }
-}
-
 // 同步根目录 fonts/ 到 web/public/fonts（@font-face 引用的字体，Vite 复制进 dist 打包进 exe）
 console.log("▶ 同步 fonts/ → web/public/fonts");
 {

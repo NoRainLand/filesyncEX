@@ -27,8 +27,7 @@ bt.log
 bt.err
 .tmp/
 
-# 二进制工具：根 tool/（QuickSendTool.exe 等）需提交进 git
-# （打包产物 exe 由上方 release/ 覆盖忽略）
+# 附加工具（QuickSendTool 已改为 GitHub releases 分发，不再内置）
 
 # 测试临时脚本 / 临时目录
 *.tmp
