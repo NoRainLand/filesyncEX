@@ -543,10 +543,15 @@ export class FilesyncApp extends LitElement {
     }
   }
 
-  /** 取视频一帧（seek 强制解码，纯黑自动换时间点重试）；全部失败返回 null */
+  /** 取视频一帧做封面：从前往后梯度采样 + 「亮度区间 + 对比度」评分，首个合格即停；全不合格取最高分；全部失败返回 null */
   private async grabVideoFrame(v: HTMLVideoElement): Promise<HTMLCanvasElement | null> {
     const dur = v.duration && isFinite(v.duration) ? v.duration : 0;
-    const candidates = [0.01, 0.1, 1, 0.5];
+    const candidates = [0.3, 1, 2, 3, 5, 8];
+    if (dur > 0) {
+      // 追加按比例的中后段采样（短视频自动 clamp），长视频封面更居中
+      candidates.push(dur * 0.15, dur * 0.3);
+    }
+    let best: { c: HTMLCanvasElement; score: number } | null = null;
     for (const base of candidates) {
       const t = dur > 0 ? Math.min(base, dur * 0.9) : base;
       await new Promise<void>((res) => {
@@ -560,14 +565,16 @@ export class FilesyncApp extends LitElement {
         }
         setTimeout(finish, 800); // 兜底：解码慢/不支持 seek 时超时继续
       });
-      const c = this.drawVideoFrame(v);
-      if (c) return c;
+      const got = this.drawVideoFrame(v);
+      if (!got) continue;
+      if (got.score >= 1) return got.c; // 合格：亮度在区间且对比度足够
+      if (!best || got.score > best.score) best = got;
     }
-    return null;
+    return best ? best.c : null;
   }
 
-  /** 把 video 当前帧绘制到 canvas；画面几乎纯黑返回 null（判定为未解码帧） */
-  private drawVideoFrame(v: HTMLVideoElement): HTMLCanvasElement | null {
+  /** 把 video 当前帧绘制到 canvas，并计算「亮度 + 对比度」画面分；黑场/白闪/未解码帧分低 */
+  private drawVideoFrame(v: HTMLVideoElement): { c: HTMLCanvasElement; score: number } | null {
     const c = document.createElement("canvas");
     c.width = v.videoWidth || 640;
     c.height = v.videoHeight || 360;
@@ -576,17 +583,30 @@ export class FilesyncApp extends LitElement {
     ctx.drawImage(v, 0, 0, c.width, c.height);
     try {
       const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      const samples: number[] = [];
       let sum = 0;
-      let n = 0;
       for (let i = 0; i < d.length; i += 4 * 101) {
-        sum += ((d[i] ?? 0) + (d[i + 1] ?? 0) + (d[i + 2] ?? 0)) / 3;
-        n++;
+        const luma = ((d[i] ?? 0) + (d[i + 1] ?? 0) + (d[i + 2] ?? 0)) / 3;
+        samples.push(luma);
+        sum += luma;
       }
-      if (n > 0 && sum / n < 4) return null; // 平均亮度 < 4/255 ≈ 纯黑
+      const n = samples.length;
+      if (n === 0) return null;
+      const avg = sum / n;
+      let varSum = 0;
+      for (const s of samples) varSum += (s - avg) * (s - avg);
+      const variance = varSum / n;
+      // 亮度分：平均亮度落在 [30,225] 给满分（过暗=黑场、过亮=白闪，线性衰减）
+      const L_MIN = 30, L_MAX = 225;
+      const lumaScore = avg < L_MIN ? Math.max(0, avg / L_MIN)
+        : avg > L_MAX ? Math.max(0, (255 - avg) / (255 - L_MAX)) : 1;
+      // 对比度分：方差越高越可能有内容，≥150 满分
+      const varScore = Math.min(1, variance / 150);
+      const score = lumaScore * 0.5 + varScore * 0.5;
+      return { c, score };
     } catch {
-      /* 读取受限忽略 */
+      return null; // 读取受限忽略
     }
-    return c;
   }
 
   /** 断点续传：点击失败的大文件占位卡，用内存里的 File 重新上传（同 sha → 服务端自动续传） */
