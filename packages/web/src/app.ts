@@ -255,8 +255,11 @@ export class FilesyncApp extends LitElement {
     this.addEventListener("touchstart", this.onMsgTouchStart, { passive: true });
     // ESC：关闭预览 / 设置·二维码弹层 / 代码模式
     window.addEventListener("keydown", this.onKeyDown);
+    // 代码模式失焦关闭：点击或焦点跑到代码编辑器外时退出代码模式
+    document.addEventListener("pointerdown", this.onPointerDown, true);
+    document.addEventListener("focusin", this.onFocusIn, true);
   }
-  disconnectedCallback(): void { window.removeEventListener("resize", this.onResize); window.removeEventListener("click", this.onDocClick); this.removeEventListener("wheel", this.onHostWheel); this.removeEventListener("touchstart", this.onMsgTouchStart); window.removeEventListener("keydown", this.onKeyDown); this.ws?.close(); super.disconnectedCallback(); }
+  disconnectedCallback(): void { window.removeEventListener("resize", this.onResize); window.removeEventListener("click", this.onDocClick); this.removeEventListener("wheel", this.onHostWheel); this.removeEventListener("touchstart", this.onMsgTouchStart); window.removeEventListener("keydown", this.onKeyDown); document.removeEventListener("pointerdown", this.onPointerDown, true); document.removeEventListener("focusin", this.onFocusIn, true); this.ws?.close(); super.disconnectedCallback(); }
   private onResize = (): void => { this.requestUpdate(); this.scrollToLatest(); };
   /** ESC：依次关闭预览 → 设置/二维码弹层 → 代码模式 */
   private onKeyDown = (e: KeyboardEvent): void => {
@@ -264,6 +267,23 @@ export class FilesyncApp extends LitElement {
     if (this.preview) { this.closePreview(); return; }
     if (this.sheet) { this.sheet = null; return; }
     if (this.codeMode) { this.codeMode = false; return; }
+  };
+  /** 代码模式失焦关闭：点击代码编辑器外任意区域则退出代码模式 */
+  private onPointerDown = (e: PointerEvent): void => {
+    if (!this.codeMode) return;
+    const target = (e.composedPath()[0] ?? e.target) as Node;
+    // 代码编辑器 / 语言栏 / 发送按钮 / 代码模式开关（.bracebtn）都视为代码模式内部，不关闭
+    const el = target instanceof Element ? target : null;
+    if (el?.closest(".code-editor, .lang-bar, .send, .sendbtn, .bracebtn")) return;
+    this.codeMode = false;
+  };
+  /** 代码模式失焦关闭：焦点（Tab/点击可聚焦元素）跑到代码编辑器外则退出 */
+  private onFocusIn = (e: FocusEvent): void => {
+    if (!this.codeMode) return;
+    const target = (e.composedPath()[0] ?? e.target) as Node;
+    const el = target instanceof Element ? target : null;
+    if (el?.closest(".code-editor, .lang-bar, .send, .sendbtn, .bracebtn")) return;
+    this.codeMode = false;
   };
   /** 全局滚轮：弹层/预览打开时不劫持；否则把滚轮统一转发到当前滚动容器 */
   private onHostWheel = (e: WheelEvent): void => {
@@ -1127,7 +1147,7 @@ export class FilesyncApp extends LitElement {
       <label>${this.t("lang")}</label>
       <div class="lang-pick" @click=${(e: Event) => { e.stopPropagation(); if (this.debounceKey("lang-toggle", 250)) this.langOpen = !this.langOpen; }}>
         <span class="lang-cur">${langLabel(this.codeLang)}</span><span class="lang-arr">${upward ? "▴" : "▾"}</span>
-        ${this.langOpen ? html`<div class="lang-list">${LANG_LIST.map((l) => html`<div class="lang-opt ${l === this.codeLang ? "on" : ""}" @click=${() => { if (this.debounceKey("lang-" + l, 300)) { this.codeLang = l; this.langOpen = false; } }}>${langLabel(l)}</div>`)}</div>` : nothing}
+        ${this.langOpen ? html`<div class="lang-list">${LANG_LIST.map((l) => html`<div class="lang-opt ${l === this.codeLang ? "on" : ""}" @click=${(e: Event) => { e.stopPropagation(); if (this.debounceKey("lang-" + l, 300)) { this.codeLang = l; this.langOpen = false; } }}>${langLabel(l)}</div>`)}</div>` : nothing}
       </div>
     </div>`;
   }
