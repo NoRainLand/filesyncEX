@@ -1,0 +1,13 @@
+/* Prism 代码高亮主题：跟随项目主题（组件 host 带 .dark class → One Dark，否则 One Light） */
+.token.comment, .token.prolog, .token.cdata { color: var(--tok-com); }
+.token.doctype, .token.punctuation, .token.entity { color: var(--tok-punc); }
+.token.attr-name, .token.class-name, .token.boolean, .token.constant, .token.number, .token.atrule { color: var(--tok-num); }
+.token.keyword { color: var(--tok-kw); }
+.token.property, .token.tag, .token.symbol, .token.deleted, .token.important { color: var(--tok-prop); }
+.token.selector, .token.string, .token.char, .token.builtin, .token.inserted, .token.regex, .token.attr-value, .token.attr-value > .token.punctuation { color: var(--tok-str); }
+.token.variable, .token.operator, .token.function { color: var(--tok-fn); }
+.token.url { color: var(--tok-url); }
+/* One Light（浅色，默认） */
+:host { --tok-com: #a0a1a7; --tok-punc: #383a42; --tok-num: #b76b01; --tok-kw: #a626a4; --tok-prop: #e45649; --tok-str: #50a14f; --tok-fn: #4078f2; --tok-url: #0184bc; }
+/* One Dark（深色，host 带 .dark） */
+:host(.dark) { --tok-com: #5c6370; --tok-punc: #abb2bf; --tok-num: #d19a66; --tok-kw: #c678dd; --tok-prop: #e06c75; --tok-str: #98c379; --tok-fn: #61afef; --tok-url: #56b6c2; }

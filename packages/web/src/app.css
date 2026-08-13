@@ -55,7 +55,8 @@ header.app { display: flex; align-items: center; gap: 14px; margin-top: 8px; pad
 .lang-opt { padding: 8px 12px; font-size: 12px; color: var(--ink); cursor: pointer; white-space: nowrap; }
 .lang-opt:hover { background: var(--surface-2); }
 .lang-opt.on { color: var(--primary); font-weight: 700; }
-.code-editor textarea { width: 100%; flex: 1; min-height: 150px; max-height: 360px; resize: vertical; margin-top: 8px; border: 0; outline: none; background: #282c34; color: #abb2bf; font-family: var(--mono); font-size: 13px; line-height: 1.6; padding: 12px; tab-size: 2; box-sizing: border-box; border-radius: 0 0 10px 10px; scrollbar-width: none; }
+.code-editor textarea { width: 100%; flex: 1; min-height: 150px; max-height: 360px; resize: vertical; margin-top: 8px; border: 0; outline: none; background: #f5f5f5; color: #383a42; font-family: var(--mono); font-size: 13px; line-height: 1.6; padding: 12px; tab-size: 2; box-sizing: border-box; border-radius: 0 0 10px 10px; scrollbar-width: none; }
+:host(.dark) .code-editor textarea { background: #282c34; color: #abb2bf; }
 .code-editor textarea::-webkit-scrollbar { display: none; }
 /* 上传队列 */
 .queue { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
@@ -165,10 +166,15 @@ header.app { display: flex; align-items: center; gap: 14px; margin-top: 8px; pad
 .card.audio .mm .size { color: var(--muted); flex: none; white-space: nowrap; }
 .card.audio audio { display: none; }
 /* 代码（One Dark） */
-.card.code { max-width: 700px; background: #282c34; border-color: #3e4451; }
-.card.code .code-head { display: flex; align-items: center; gap: 8px; padding: 8px 14px 16px; border-bottom: 1px solid #3e4451; font-size: 13px; color: #7f848e; }
-.card.code .code-head .lang { color: #61afef; font-weight: 700; position: relative; top: 5px; }
-.card.code pre { margin: 0; padding: 12px 14px; overflow: hidden; max-height: 240px; font-size: 14px; line-height: 1.7; color: #abb2bf; font-family: var(--mono); white-space: pre; tab-size: 2; cursor: pointer; }
+/* 代码卡片：背景/前景跟随系统深浅色（与 Prism One Light / One Dark 主题一致） */
+.card.code { max-width: 700px; background: #f5f5f5; border-color: var(--line); }
+.card.code .code-head { display: flex; align-items: center; gap: 8px; padding: 8px 14px 16px; border-bottom: 1px solid var(--line); font-size: 13px; color: #6a6a6a; }
+.card.code .code-head .lang { color: #4078f2; font-weight: 700; position: relative; top: 5px; }
+.card.code pre { margin: 0; padding: 12px 14px; overflow: hidden; max-height: 240px; font-size: 14px; line-height: 1.7; color: #383a42; font-family: var(--mono); white-space: pre; tab-size: 2; cursor: pointer; }
+:host(.dark) .card.code { background: #282c34; border-color: #3e4451; }
+:host(.dark) .card.code .code-head { border-bottom-color: #3e4451; color: #7f848e; }
+:host(.dark) .card.code .code-head .lang { color: #61afef; }
+:host(.dark) .card.code pre { color: #abb2bf; }
 .tok-kw { color: #c678dd; } .tok-str { color: #98c379; } .tok-num { color: #d19a66; } .tok-fn { color: #61afef; } .tok-com { color: #5c6370; font-style: italic; } .tok-typ { color: #e5c07b; } .tok-var { color: #e06c75; } .tok-prop { color: #d19a66; } .tok-op { color: #56b6c2; } .tok-attr { color: #e5c07b; }
 /* 操作行（卡片底部，左对齐） */
 .ops { display: flex; gap: 8px; padding: 10px 14px 12px; }
@@ -254,9 +260,11 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
 .viewer .vbody.pv-img { overflow: hidden; align-items: flex-start; justify-content: flex-start; padding: 0; }
 .viewer .vbody.pv-img .ph { margin: auto; display: block; transform-origin: 0 0; will-change: transform; user-select: none; cursor: grab; border-radius: 0; touch-action: none; }
 .viewer .vbody .ph { max-width: 92vw; max-height: 70vh; }
-.viewer .vbody .codeview { width: fit-content; max-width: 92vw; max-height: 72vh; overflow: auto; background: #282c34; color: #abb2bf; padding: 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; white-space: pre; border-radius: 10px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.25) transparent; }
+.viewer .vbody .codeview { width: fit-content; max-width: 92vw; max-height: 72vh; overflow: auto; background: #f5f5f5; color: #383a42; padding: 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; white-space: pre; border-radius: 10px; scrollbar-width: thin; scrollbar-color: rgba(0,0,0,.25) transparent; }
 .viewer .vbody .codeview::-webkit-scrollbar { width: 10px; height: 10px; }
-.viewer .vbody .codeview::-webkit-scrollbar-thumb { background: rgba(255,255,255,.25); border-radius: 5px; border: 2px solid #282c34; }
+.viewer .vbody .codeview::-webkit-scrollbar-thumb { background: rgba(0,0,0,.25); border-radius: 5px; border: 2px solid #f5f5f5; }
+:host(.dark) .viewer .vbody .codeview { background: #282c34; color: #abb2bf; scrollbar-color: rgba(255,255,255,.25) transparent; }
+:host(.dark) .viewer .vbody .codeview::-webkit-scrollbar-thumb { background: rgba(255,255,255,.25); border: 2px solid #282c34; }
 .viewer .vbody .codeview::-webkit-scrollbar-track { background: transparent; }
 .viewer .vbody .codeview::-webkit-scrollbar-corner { background: transparent; }
 .viewer .vfoot { display: flex; gap: 10px; justify-content: center; padding: 12px 16px; flex: none; }

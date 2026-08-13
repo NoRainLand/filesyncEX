@@ -37,10 +37,8 @@ smoke.mjs
 .exetest/
 .bt/
 
-# 本地验证临时文件（_runN.mjs 启动脚本 / _ui-data 内存数据 / 临时截图）
-_runN.mjs
-_ui-data/
-_shot*.png
+# 本地验证临时文件 —— 统一放根目录 _dev/（启动脚本 / 内存数据 / 临时截图等一律写这里，勿散落到各处）
+_dev/
 
 # 系统 / 编辑器
 .DS_Store

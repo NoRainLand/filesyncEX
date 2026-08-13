@@ -8,6 +8,14 @@ import { WsClient } from "./ws.js";
 import { uploadFile, DIRECT_UPLOAD_LIMIT, apiUploadCover, fetchHealth } from "./api.js";
 import type { Lang } from "./i18n.js";
 import { loadLang, saveLang, dict, dayLabel, fmtType } from "./i18n.js";
+import Prism from "prismjs";
+import "prismjs/components/prism-typescript";
+import "prismjs/components/prism-python";
+import "prismjs/components/prism-ini";
+import "prismjs/components/prism-batch";
+import "prismjs/components/prism-json";
+import "prismjs/components/prism-sql";
+import prismTheme from "./prism-theme.css?inline";
 import appCss from "./app.css?inline";
 
 /* ================= helpers ================= */
@@ -57,50 +65,19 @@ const waveBars = () => {
   return bars;
 };
 
-/* ================= One Dark 语法高亮 ================= */
-const HIGHLIGHT_LANGS: Record<string, RegExp> = {
-  ts: /(\/\*[\s\S]*?\*\/|\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|\b(\d+(?:\.\d+)?)\b|\b(interface|type|enum|class|function|const|let|var|return|if|else|for|while|switch|case|break|continue|new|extends|implements|import|export|from|async|await|public|private|protected|readonly|static|this|super|typeof|instanceof|in|of|void|never|unknown|any|string|number|boolean|null|undefined)\b|\b([A-Za-z_$][\w$]*)(?=\s*\()/gm,
-  js: /(\/\*[\s\S]*?\*\/|\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|\b(\d+(?:\.\d+)?)\b|\b(const|let|var|function|return|if|else|for|while|switch|case|break|continue|new|class|extends|import|export|from|async|await|typeof|instanceof|in|of|null|undefined|this|super|try|catch|finally|throw)\b|\b([A-Za-z_$][\w$]*)(?=\s*\()/gm,
-  python: /(#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|"""(?:[^"\\]|\\.)*"""|'''[^'\\]*''')|\b(\d+(?:\.\d+)?)\b|\b(def|class|return|if|elif|else|for|while|in|not|and|or|import|from|as|with|try|except|finally|raise|pass|break|continue|lambda|yield|global|nonlocal|None|True|False|async|await|print|len|range|type|is)\b|\b([A-Za-z_]\w*)(?=\s*\()/gm,
-  ini: /(^[#;].*$)|(\[[^\]]*\])|(^[ \t]*[A-Za-z0-9_.-]+(?=[ \t]*=))/gm,
-  bat: /(^::.*$|^[ \t]*@?echo[ \t].*$)|(%[^%]+%|"[^"]*")|(^[ \t]*@?[A-Za-z][A-Za-z0-9]*\b)/gm,
-  json: /("[^"\\]*(?:\\.[^"\\]*)*")(?=\s*:)|("[^"\\]*(?:\\.[^"\\]*)*")|\b(true|false|null)\b|\b(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/gm,
-  sql: /(--.*$|\/\*[\s\S]*?\*\/)|('(?:[^'\\]|\\.)*')|\b(\d+(?:\.\d+)?)\b|\b(SELECT|FROM|WHERE|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|DROP|ALTER|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AND|OR|NOT|NULL|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|AS|DISTINCT|PRIMARY|KEY|FOREIGN|REFERENCES|UNIQUE|INDEX|IF|EXISTS|CASE|WHEN|THEN|ELSE|END|BEGIN|COMMIT|ROLLBACK|TRANSACTION|INT|VARCHAR|TEXT|BOOL|DATE|DATETIME|INTEGER)\b/gmi,
-  html: /(&lt;!--[\s\S]*?--&gt;)|(&lt;\/?[a-zA-Z][\w-]*)|(&lt;[a-zA-Z][\w-]*(?=[\s\/&gt;]))|(&gt;|&lt;\/|&lt;)|("[^"]*"|'[^']*')|(\b[a-zA-Z-]+(?==))/gm,
-  css: /(\/\*[\s\S]*?\*\/)|(#[0-9a-fA-F]{3,8}\b|\b[a-zA-Z-]+(?=\s*:))|(\b\d+(?:\.\d+)?(?:px|em|rem|%|vh|vw|s|ms)?\b)|(\.[a-zA-Z-][\w-]*|#[a-zA-Z-][\w-]*|:[a-zA-Z-]+|\*|\b[a-zA-Z-]+(?=\s*\{))/gm,
-};
-const HIGHLIGHT_GROUPS: Record<string, string[]> = {
-  ts: ["com", "str", "num", "kw", "fn"],
-  js: ["com", "str", "num", "kw", "fn"],
-  python: ["com", "str", "num", "kw", "fn"],
-  ini: ["com", "sec", "key"],
-  bat: ["com", "str", "kw"],
-  json: ["key", "str", "kw", "num"],
-  sql: ["com", "str", "num", "kw"],
-  html: ["com", "tag", "tag", "op", "str", "attr"],
-  css: ["com", "prop", "num", "sel"],
-};
-const TOKEN_CLASS: Record<string, string> = { com: "tok-com", str: "tok-str", num: "tok-num", kw: "tok-kw", fn: "tok-fn", sec: "tok-typ", key: "tok-prop", tag: "tok-var", op: "tok-op", attr: "tok-attr", sel: "tok-typ", prop: "tok-prop" };
+/* ================= Prism 语法高亮 ================= */
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** 代码语言 → Prism 语法名（html 用 markup，bat 用 batch） */
+const PRISM_LANG: Record<string, string> = { ts: "typescript", js: "javascript", python: "python", ini: "ini", bat: "batch", json: "json", sql: "sql", html: "markup", css: "css" };
+/** Prism 高亮：无对应语法时原样转义返回 */
 function highlightCode(code: string, lang: string): string {
-  const re = HIGHLIGHT_LANGS[lang] || HIGHLIGHT_LANGS.ts!;
-  const groups = HIGHLIGHT_GROUPS[lang] || HIGHLIGHT_GROUPS.ts!;
-  let html = "";
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(code))) {
-    if (re.lastIndex <= last) { re.lastIndex = last + 1; last = re.lastIndex; continue; }
-    if (m.index > last) html += esc(code.slice(last, m.index));
-    let cls: string | null = null;
-    for (let g = 1; g < m.length; g++) {
-      if (m[g] !== undefined) { cls = TOKEN_CLASS[groups[g - 1]!] || null; break; }
-    }
-    html += cls ? `<span class="${cls}">${esc(m[0])}</span>` : esc(m[0]);
-    last = re.lastIndex;
-  }
-  if (last < code.length) html += esc(code.slice(last));
-  return html;
+  const pl = PRISM_LANG[lang] || "typescript";
+  const grammar = Prism.languages[pl];
+  if (!grammar) return esc(code);
+  return Prism.highlight(code, grammar, pl);
 }
+
+
 
 /* ================= 图标（Heroicons） ================= */
 const I_QR = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0 1 3.75 9.375v-4.5ZM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 0 1-1.125-1.125v-4.5ZM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0 1 13.5 9.375v-4.5Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 6.75h.75v.75h-.75v-.75ZM6.75 16.5h.75v.75h-.75v-.75ZM16.5 6.75h.75v.75h-.75v-.75ZM13.5 13.5h.75v.75h-.75v-.75ZM13.5 19.5h.75v.75h-.75v-.75ZM19.5 13.5h.75v.75h-.75v-.75ZM19.5 19.5h.75v.75h-.75v-.75ZM16.5 16.5h.75v.75h-.75v-.75Z"/></svg>`;
@@ -134,7 +111,7 @@ interface UploadRec {
 }
 
 export class FilesyncApp extends LitElement {
-  static styles = unsafeCSS(appCss);
+  static styles = [unsafeCSS(appCss), unsafeCSS(prismTheme)];
 
   static properties = {
     msgs: { state: true }, peers: { state: true }, self: { state: true },
@@ -209,7 +186,20 @@ export class FilesyncApp extends LitElement {
     super();
     this.self = getDevice();
     this.nick = this.self.deviceName;
-    this.theme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+    this.theme = this.loadTheme();
+    document.documentElement.dataset.theme = this.theme;
+    this.classList.toggle("dark", this.theme === "dark");
+  }
+
+  /** 主题：localStorage 记录优先，首次跟随系统 prefers-color-scheme */
+  private loadTheme(): "light" | "dark" {
+    try {
+      const saved = localStorage.getItem("fsex_theme");
+      if (saved === "dark" || saved === "light") return saved;
+      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    } catch {
+      return "light";
+    }
   }
 
   connectedCallback(): void {
@@ -467,7 +457,12 @@ export class FilesyncApp extends LitElement {
     if (this.self) { const d = { ...this.self, deviceName: n }; this.self = d; saveDevice(d); }
     this.sheet = null;
   }
-  private toggleTheme(): void { this.theme = this.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = this.theme; }
+  private toggleTheme(): void {
+    this.theme = this.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = this.theme;
+    this.classList.toggle("dark", this.theme === "dark");
+    try { localStorage.setItem("fsex_theme", this.theme); } catch { /* noop */ }
+  }
   /** 打开二维码弹层并生成真实二维码 */
   private openQr(): void {
     this.sheet = "qr";
