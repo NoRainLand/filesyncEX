@@ -118,7 +118,7 @@ export class FilesyncApp extends LitElement {
     connState: { state: true }, notices: { state: true },
     text: { state: true }, codeMode: { state: true }, codeLang: { state: true }, codeText: { state: true },
     uploads: { state: true }, sheet: { state: true }, preview: { state: true }, nick: { state: true },
-    httpUrl: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, langOpen: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, lang: { state: true },
+    httpUrl: { state: true }, appVer: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, langOpen: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, lang: { state: true },
   };
 
   msgs: MsgDataT[] = [];
@@ -145,6 +145,8 @@ export class FilesyncApp extends LitElement {
   private videoCovers = new Map<string, string>();
   nick = "";
   httpUrl = "";
+  /** 应用版本（来自 /api/health，默认与当前版本一致） */
+  appVer = "6.0.0-beta2";
   qrDataUrl = "";
   theme: "light" | "dark" = "light";
   /** 提示弹窗池：可同时存在多个 toast，各自独立淡入/停留/上移淡出/移除（垂直堆叠） */
@@ -210,6 +212,7 @@ export class FilesyncApp extends LitElement {
       if (d && d.lanIp && d.lanIp !== "127.0.0.1") {
         this.httpUrl = `${location.protocol}//${d.lanIp}${d.port ? `:${d.port}` : ""}`;
       }
+      if (d?.version) this.appVer = d.version;
     });
     this.ws = new WsClient(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`, {
       onConnecting: () => { this.connState = "connecting"; },
@@ -1245,7 +1248,8 @@ export class FilesyncApp extends LitElement {
         <p class="muted">${this.t("http_label")}<code>${this.httpUrl}</code></p>
         <p class="muted">${this.t("ws_label")}<code>${wsUrl}</code></p>
         <hr />
-        <!-- 设备身份 / 昵称 -->
+        <!-- 昵称 -->
+        <p class="st-sec">${this.t("st_nick")}</p>
         <p class="st-note">${this.t("st_nicknote")}</p>
         <label>${this.t("my_nick")}
           <input class="field" .value=${this.nick} maxlength="10" placeholder=${this.t("nick_placeholder")} @input=${(e: Event) => (this.nick = (e.target as HTMLInputElement).value.replace(/[^A-Za-z0-9_]/g, ""))} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("rename", 600)) this.rename(); }} />
@@ -1269,12 +1273,17 @@ export class FilesyncApp extends LitElement {
         <!-- 关于 -->
         <hr />
         <p class="st-sec">${this.t("st_about")}</p>
+        <div class="st-about">
+          <p class="app-name">filesyncEX <span class="app-ver">${this.t("version")} ${this.appVer}</span></p>
+          <p class="muted">${this.t("app_desc")}</p>
+          <p class="muted">${this.t("copyright")} (C) 2026 NoRainLand</p>
+        </div>
         <a class="btn secondary tool" href="https://github.com/NoRainLand/filesyncEX" target="_blank" rel="noopener">${I_LINK}${this.t("goto_github")}</a>
       </div>`;
     } else if (s === "qr") {
       content = html`<div class="qrbox">${this.qrDataUrl ? html`<img src="${this.qrDataUrl}" alt=${this.t("qr")} />` : html`<div class="qr-loading">${this.t("qr_loading")}</div>`}</div><p>${this.t("qr_hint", { url: this.httpUrl })}</p>`;
     }
-    return html`<div class="mask" @click=${close}><div class="panel-shell ${s === "qr" ? "qr" : ""} ${s === "settings" ? "settings-panel" : ""}"><div class="panel" @click=${(e: Event) => e.stopPropagation()}><div class="handle"></div><div class="ptitle" @click=${close}>${s === "attach" ? this.t("sheet_attach") : s === "progress" ? this.t("sheet_progress") : s === "settings" ? this.t("sheet_settings") : this.t("sheet_qr")}</div>${content}</div></div></div>`;
+    return html`<div class="mask" @mousedown=${(e: MouseEvent) => { if (e.target === e.currentTarget) close(); }}><div class="panel-shell ${s === "qr" ? "qr" : ""} ${s === "settings" ? "settings-panel" : ""}"><div class="panel" @click=${(e: Event) => e.stopPropagation()}><div class="handle"></div><div class="ptitle" @click=${close}>${s === "attach" ? this.t("sheet_attach") : s === "progress" ? this.t("sheet_progress") : s === "settings" ? this.t("sheet_settings") : this.t("sheet_qr")}</div>${content}</div></div></div>`;
   }
 
   private renderPreview(pv: { kind: string; msg: MsgDataT }) {

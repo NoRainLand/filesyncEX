@@ -322,7 +322,7 @@ Also add information on how to contact you by electronic and paper mail.
 If the program is interactive, make it output a short notice like this
 when it starts in an interactive mode:
 
-    filesyncEX version 6.0.0, Copyright (C) 2026 NoRainLand
+    filesyncEX version 6.0.1, Copyright (C) 2026 NoRainLand
     filesyncEX comes with ABSOLUTELY NO WARRANTY; for details type `show w'.
     This is free software, and you are welcome to redistribute it
     under certain conditions; type `show c' for details.

@@ -199,7 +199,7 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
   animation: panelFade .25s ease;
 }
 @keyframes panelFade { from { opacity: 0; } to { opacity: 1; } }
-/* 面板内容：淡入 + 轻微放大（scale 只作用内容，不缩放外壳阴影） */
+/* 面板内容：仅淡入（去掉放大缩小动画） */
 .panel {
   border-radius: 16px 16px 0 0;
   padding-bottom: 14px;
@@ -207,11 +207,10 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
   max-height: 88vh;
   overflow-y: auto;
   animation: panelIn .28s ease;
-  transform-origin: bottom center;
 }
 @keyframes panelIn {
-  from { opacity: 0; transform: scale(.94); }
-  to { opacity: 1; transform: scale(1); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 /* 设置面板：内容自然排布，不出现上下滚动条 */
 .settings-panel .panel { max-height: none; overflow: visible; }
@@ -232,7 +231,7 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
 .settings .st-lang { display: flex; gap: 16px; margin-bottom: 4px; }
 .settings .st-lang .lang-opt { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 14px; color: var(--ink); }
 .settings .st-lang .lang-opt input[type="radio"] { width: 15px; height: 15px; margin: 0; accent-color: var(--primary); cursor: pointer; }
-.settings .st-sec { margin: 2px 0 4px; font-weight: 700; font-size: 14px; color: var(--ink); }
+.settings .st-sec { margin: 2px 0 4px; font-weight: 700; font-size: 16px; color: var(--ink); }
 .settings .st-conn { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .settings .st-conn .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; transition: background .3s, box-shadow .3s; }
 .settings .st-conn .dot.connecting { background: var(--warn); box-shadow: 0 0 0 3px rgba(217,160,32,.25); }
@@ -241,6 +240,9 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
 .settings .muted { margin: 0 0 4px; font-size: 13px; color: var(--muted); }
 .settings .muted code { background: var(--surface-2); padding: 1px 6px; border-radius: 4px; color: var(--primary); word-break: break-all; }
 .settings .st-note { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+.settings .st-about { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.settings .st-about .app-name { font-size: 17px; font-weight: 700; color: var(--ink); }
+.settings .st-about .app-ver { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 6px; }
 .settings hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
 .settings .field { margin-bottom: 8px; }
 .settings code.fp { display: inline-block; padding: 4px 8px; background: var(--surface-2); border-radius: 6px; color: var(--primary); font-size: 12px; word-break: break-all; }
