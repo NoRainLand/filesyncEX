@@ -5,7 +5,7 @@ import ClipboardJS from "clipboard";
 import type { DeviceInfoT, MsgDataT } from "@filesyncex/protocol";
 import { getDevice, saveDevice } from "./device.js";
 import { WsClient } from "./ws.js";
-import { uploadFile, DIRECT_UPLOAD_LIMIT, apiUploadCover, fetchHealth } from "./api.js";
+import { uploadFile, DIRECT_UPLOAD_LIMIT, apiUploadCover, apiUploadMsgCover, fetchHealth } from "./api.js";
 import type { Lang } from "./i18n.js";
 import { loadLang, saveLang, dict, dayLabel, fmtType } from "./i18n.js";
 import Prism from "prismjs";
@@ -242,6 +242,7 @@ export class FilesyncApp extends LitElement {
       },
       onWelcome: (_s, msgs, peers) => { this.msgs = msgs; this.peers = peers; this.scrollToLatest(); },
       onAdd: (msg) => { if (!this.msgs.some((m) => m.id === msg.id)) { this.msgs = [...this.msgs, msg]; this.scrollToLatest(); } },
+      onUpdate: (msg) => { this.msgs = this.msgs.map((m) => (m.id === msg.id ? msg : m)); },
       onDel: (id) => { this.msgs = this.msgs.filter((m) => m.id !== id); },
       onPeers: (peers) => { this.peers = peers; },
       onRenamed: (device) => {
@@ -698,6 +699,11 @@ export class FilesyncApp extends LitElement {
       if (!canvas) return;
       this.videoCovers.set(m.id, canvas.toDataURL("image/jpeg", 0.72));
       this.requestUpdate();
+      // 反向上传服务器封面（本地取帧结果持久化，跨设备共享）；服务器已有封面则不覆盖（409 忽略）
+      if (!m.file?.cover) {
+        const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/jpeg", 0.7));
+        if (blob) void apiUploadMsgCover(m.id, blob);
+      }
     } catch {
       /* 取帧受限（编码/跨域）时保持 video 原样 */
     }

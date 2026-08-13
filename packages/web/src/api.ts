@@ -119,6 +119,19 @@ export async function apiUploadCover(blob: Blob): Promise<string> {
   return d.coverKey;
 }
 
+/** 为已存在的消息反向上传视频封面（服务器已有封面时 409 拒绝；失败静默，本地封面已显示） */
+export async function apiUploadMsgCover(id: string, blob: Blob): Promise<void> {
+  try {
+    await fetch(`/api/msg/${encodeURIComponent(id)}/cover`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: blob,
+    });
+  } catch {
+    /* noop */
+  }
+}
+
 /** 纯 JS 增量 SHA-256（不依赖 crypto.subtle，兼容局域网 HTTP 非安全上下文） */
 class IncrementalSha256 {
   private static readonly K = new Uint32Array([

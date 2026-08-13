@@ -25,6 +25,9 @@ export class MemoryStore implements Store {
   async getMessage(id: string): Promise<MsgDataT | undefined> {
     return this.msgs.get(id);
   }
+  async updateMessage(id: string, msg: MsgDataT): Promise<void> {
+    this.msgs.set(id, msg);
+  }
   async removeMessage(id: string): Promise<void> {
     this.msgs.delete(id);
   }

@@ -28,6 +28,7 @@ export class SocketServer {
       this.broadcast({ type: "add", msg });
     }));
     this.offs.push(engine.events.on("deleted", ({ id }) => this.broadcast({ type: "del", id })));
+    this.offs.push(engine.events.on("updated", ({ msg }) => this.broadcast({ type: "update", msg })));
     this.offs.push(engine.events.on("peers", ({ peers }) => this.broadcast({ type: "peers", peers })));
 
     // 服务器侧心跳：每 30s 检查，超过 2 个周期未响应 pong 的连接判定失联并断开

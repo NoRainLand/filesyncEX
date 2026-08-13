@@ -7,6 +7,8 @@ export type Listener<T = unknown> = (payload: T) => void;
 export interface EventMap {
   /** 新消息落库（含本机发送，广播给其他设备） */
   message: { msg: import("@filesyncex/protocol").MsgDataT; fromSelf: boolean };
+  /** 消息被更新（如补充视频封面），广播给所有设备 */
+  updated: { msg: import("@filesyncex/protocol").MsgDataT };
   /** 消息被删除 */
   deleted: { id: string };
   /** 文件引用归零 → 请求删除物理文件（server 层订阅执行） */

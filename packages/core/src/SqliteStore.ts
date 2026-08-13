@@ -79,6 +79,9 @@ export class SqliteStore implements Store {
     const row = this.db.prepare("SELECT data FROM messages WHERE id = ?").get(id) as { data: string } | undefined;
     return row ? (JSON.parse(row.data) as MsgDataT) : undefined;
   }
+  async updateMessage(id: string, msg: MsgDataT): Promise<void> {
+    this.db.prepare("UPDATE messages SET data = ?, ts = ? WHERE id = ?").run(JSON.stringify(msg), msg.ts, id);
+  }
   async removeMessage(id: string): Promise<void> {
     this.db.prepare("DELETE FROM messages WHERE id = ?").run(id);
   }

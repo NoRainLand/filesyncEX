@@ -140,6 +140,8 @@ export const ServerFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("welcome"), self: DeviceInfo, msgs: z.array(MsgData), peers: z.array(DeviceInfo) }),
   /** 新增/广播消息 */
   z.object({ type: z.literal("add"), msg: MsgData }),
+  /** 消息更新（如补充视频封面），广播 */
+  z.object({ type: z.literal("update"), msg: MsgData }),
   /** 删除消息（广播） */
   z.object({ type: z.literal("del"), id: z.string() }),
   /** 在线设备列表变化 */
@@ -155,6 +157,7 @@ export const ServerFrame = z.discriminatedUnion("type", [
 export type ServerFrame =
   | { type: "welcome"; self: DeviceInfo; msgs: MsgData[]; peers: DeviceInfo[] }
   | { type: "add"; msg: MsgData }
+  | { type: "update"; msg: MsgData }
   | { type: "del"; id: string }
   | { type: "peers"; peers: DeviceInfo[] }
   | { type: "renamed"; device: DeviceInfo }

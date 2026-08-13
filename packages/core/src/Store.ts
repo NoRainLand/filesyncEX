@@ -26,6 +26,8 @@ export interface Store {
   saveMessage(msg: MsgDataT): Promise<void>;
   listMessages(limit?: number): Promise<MsgDataT[]>;
   getMessage(id: string): Promise<MsgDataT | undefined>;
+  /** 更新已存在的消息（如补充视频封面） */
+  updateMessage(id: string, msg: MsgDataT): Promise<void>;
   removeMessage(id: string): Promise<void>;
 
   /* ----- 上传会话（断点续传） ----- */

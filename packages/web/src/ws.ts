@@ -6,6 +6,8 @@ interface WsHandlers {
   onClose?: () => void;
   onWelcome?: (self: DeviceInfoT, msgs: MsgDataT[], peers: DeviceInfoT[]) => void;
   onAdd?: (msg: MsgDataT) => void;
+  /** 消息更新（如补充视频封面） */
+  onUpdate?: (msg: MsgDataT) => void;
   onDel?: (id: string) => void;
   onPeers?: (peers: DeviceInfoT[]) => void;
   onRenamed?: (device: DeviceInfoT) => void;
@@ -66,6 +68,9 @@ export class WsClient {
           break;
         case "add":
           this.handlers.onAdd?.(frame.msg);
+          break;
+        case "update":
+          this.handlers.onUpdate?.(frame.msg);
           break;
         case "del":
           this.handlers.onDel?.(frame.id);

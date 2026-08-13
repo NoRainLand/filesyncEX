@@ -107,6 +107,27 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     }
   );
 
+  /* 为已存在的视频消息补充封面（前端 canvas 取帧反向上传；已有封面则 409 拒绝，不覆盖） */
+  app.post(
+    "/api/msg/:id/cover",
+    express.raw({ type: ["image/jpeg", "application/octet-stream", "*/*"], limit: "4mb" }),
+    async (req, res) => {
+      const id = String(req.params.id);
+      const buf = toBuffer(req.body);
+      if (!buf) return res.status(400).json({ error: "请求体必须是二进制" });
+      const msg = await engine.getMessage(id);
+      if (!msg) return res.status(404).json({ error: "消息不存在" });
+      // 防覆盖：已有封面不允许覆盖
+      if (msg.file?.cover) return res.status(409).json({ error: "封面已存在，不覆盖" });
+      const r = await uploads.saveCover(buf);
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      const cover = "/api/file/" + encodeURIComponent(r.coverKey);
+      const updated: import("@filesyncex/protocol").MsgDataT = { ...msg, file: { ...msg.file!, cover } };
+      await engine.updateMessage(id, updated);
+      res.json({ cover, msg: updated });
+    }
+  );
+
   /* 上传：小文件直接上传（body 为整个文件，query 携带 name/mime/device；≤ DIRECT_LIMIT 跳过哈希/分片） */
   app.post(
     "/api/upload/direct",

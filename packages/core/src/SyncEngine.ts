@@ -48,6 +48,12 @@ export class SyncEngine {
     return this.store.getMessage(id);
   }
 
+  /** 更新消息（如补充视频封面）并广播 */
+  async updateMessage(id: string, msg: MsgDataT): Promise<void> {
+    await this.store.updateMessage(id, msg);
+    this.events.emit("updated", { msg });
+  }
+
   async removeMessage(id: string): Promise<void> {
     const msg = await this.store.getMessage(id);
     if (!msg) return;
