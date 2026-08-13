@@ -1,6 +1,6 @@
 /**
  * 打包脚本（纯 JS）：依次构建 protocol→core→server→web→shell，再运行 pkg 生成 exe。
- * 产物：release/filesyncex.exe（Windows x64, Node 18）
+ * 产物：release/filesyncex-<版本号>.exe（Windows x64, Node 18）
  */
 import { execSync } from "node:child_process";
 import path from "node:path";
@@ -10,6 +10,10 @@ import { fileURLToPath } from "node:url";
 const shellDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const root = path.resolve(shellDir, "../..");
 const run = (cmd, cwd) => execSync(cmd, { cwd, stdio: "inherit" });
+// 产物带版本号：release/filesyncex-<version>.exe（版本取根 package.json）
+const rootPkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+const version = rootPkg.version || "0.0.0";
+const exeName = `filesyncex-${version}.exe`;
 
 /** 增量构建：src/public 中存在比 dist 更新的文件才需要构建（没改的包跳过，加速重复打包） */
 function needBuild(pkg) {
@@ -126,12 +130,12 @@ run(
 // 避免破坏 pkg 快照。直接修补 fetched 会被 pkg 完整性校验覆盖，无效。）
 
 console.log("▶ pkg 打包（node18-win-x64，--compress GZip 压缩包体约 -28%）");
-run(`pnpm exec pkg ${JSON.stringify(path.join(shellDir, "dist/bundle.cjs"))} --compress GZip --targets node18-win-x64 --output ${JSON.stringify(path.join(outDir, "filesyncex.exe"))} --config ${JSON.stringify(path.join(shellDir, "package.json"))}`, shellDir);
+run(`pnpm exec pkg ${JSON.stringify(path.join(shellDir, "dist/bundle.cjs"))} --compress GZip --targets node18-win-x64 --output ${JSON.stringify(path.join(outDir, exeName))} --config ${JSON.stringify(path.join(shellDir, "package.json"))}`, shellDir);
 
 // 打包后修补 icon / 版本信息（保留 pkg payload）
 console.log("▶ rcedit 修改 icon / 版本信息（并恢复 pkg payload）");
 {
-  const exe = path.join(outDir, "filesyncex.exe");
+  const exe = path.join(outDir, exeName);
   const fs = await import("node:fs");
   if (fs.existsSync(exe) && fs.existsSync(path.join(root, "FS.ico"))) {
     run(`node scripts/fix-icon.mjs ${JSON.stringify(exe)} ${JSON.stringify(path.join(root, "FS.ico"))}`, shellDir);
@@ -140,4 +144,4 @@ console.log("▶ rcedit 修改 icon / 版本信息（并恢复 pkg payload）");
   }
 }
 
-console.log("✔ 打包完成：", path.join(outDir, "filesyncex.exe"));
+console.log("✔ 打包完成：", path.join(outDir, exeName));
