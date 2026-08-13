@@ -19,6 +19,16 @@ function streamCacheGet(key: string): Buffer | undefined {
   }
   return v;
 }
+
+/** 把请求体规范化为 Buffer；非二进制（如被 express.json 提前解析成对象）返回 null */
+function toBuffer(body: unknown): Buffer | null {
+  if (Buffer.isBuffer(body)) return body;
+  if (body == null) return Buffer.alloc(0);
+  if (typeof body === "string") return Buffer.from(body);
+  if (body instanceof ArrayBuffer) return Buffer.from(body);
+  if (ArrayBuffer.isView(body)) return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+  return null;
+}
 /** 写缓存，超出上限淘汰最久未用 */
 function streamCacheSet(key: string, buf: Buffer): void {
   streamCache.delete(key);
@@ -69,7 +79,8 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     async (req, res) => {
       const uploadId = String(req.params.uploadId);
       const index = Number(req.params.index);
-      const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? []);
+      const buf = toBuffer(req.body);
+      if (!buf) return res.status(400).json({ error: "请求体必须是二进制" });
       const r = await uploads.chunk(uploadId, index, buf);
       if (!r.ok) return res.status(400).json({ error: r.error });
       res.json(r.res);
@@ -88,7 +99,8 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     "/api/upload/cover",
     express.raw({ type: ["image/jpeg", "application/octet-stream", "*/*"], limit: "4mb" }),
     async (req, res) => {
-      const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? []);
+      const buf = toBuffer(req.body);
+      if (!buf) return res.status(400).json({ error: "请求体必须是二进制" });
       const r = await uploads.saveCover(buf);
       if (!r.ok) return res.status(400).json({ error: r.error });
       res.json({ coverKey: r.coverKey });
@@ -100,7 +112,8 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     "/api/upload/direct",
     express.raw({ type: ["application/octet-stream", "*/*"], limit: "64mb" }),
     async (req, res) => {
-      const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? []);
+      const buf = toBuffer(req.body);
+      if (!buf) return res.status(400).json({ error: "请求体必须是二进制" });
       let device: import("@filesyncex/protocol").DeviceInfoT | undefined;
       try {
         device = JSON.parse(String(req.query.device ?? "null"));
@@ -114,11 +127,13 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     }
   );
 
-  /* 下载 */
-  app.get("/api/file/:key", (req, res) => {
-    const p = uploads.filePath(String(req.params.key));
+  /* 下载（文件名用原始名，避免 Windows/Mac/iOS 下载到 xxx-原名 的存储 key） */
+  app.get("/api/file/:key", async (req, res) => {
+    const key = String(req.params.key);
+    const p = uploads.filePath(key);
     if (!p) return res.status(404).json({ error: "文件不存在" });
-    res.download(p);
+    const name = await uploads.displayName(key);
+    res.download(p, name);
   });
 
   /* 音频转码流：任意受支持格式 → 16-bit PCM WAV 流（浏览器原生可播，统一播放源）。

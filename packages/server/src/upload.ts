@@ -237,6 +237,12 @@ export class UploadService {
     return fs.existsSync(target) ? target : null;
   }
 
+  /** 下载显示名：优先 Store 索引里的原始文件名（meta.name，未清洗原名）；封面等未索引文件回退 key 本身 */
+  async displayName(key: string): Promise<string> {
+    const meta = await this.store.getFile(key);
+    return meta?.name || key;
+  }
+
   /** 物理删除文件（引用计数归零时调用）；key 白名单校验 */
   deleteFile(key: string): void {
     const p = this.filePath(key);
