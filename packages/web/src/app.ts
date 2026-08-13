@@ -253,9 +253,18 @@ export class FilesyncApp extends LitElement {
     this.addEventListener("wheel", this.onHostWheel, { passive: false });
     // 消息长按（移动端）：组件级 passive touchstart 委托（lit 模板 @touchstart 无法设 passive，会触发 scroll-blocking 警告）
     this.addEventListener("touchstart", this.onMsgTouchStart, { passive: true });
+    // ESC：关闭预览 / 设置·二维码弹层 / 代码模式
+    window.addEventListener("keydown", this.onKeyDown);
   }
-  disconnectedCallback(): void { window.removeEventListener("resize", this.onResize); window.removeEventListener("click", this.onDocClick); this.removeEventListener("wheel", this.onHostWheel); this.removeEventListener("touchstart", this.onMsgTouchStart); this.ws?.close(); super.disconnectedCallback(); }
+  disconnectedCallback(): void { window.removeEventListener("resize", this.onResize); window.removeEventListener("click", this.onDocClick); this.removeEventListener("wheel", this.onHostWheel); this.removeEventListener("touchstart", this.onMsgTouchStart); window.removeEventListener("keydown", this.onKeyDown); this.ws?.close(); super.disconnectedCallback(); }
   private onResize = (): void => { this.requestUpdate(); this.scrollToLatest(); };
+  /** ESC：依次关闭预览 → 设置/二维码弹层 → 代码模式 */
+  private onKeyDown = (e: KeyboardEvent): void => {
+    if (e.key !== "Escape") return;
+    if (this.preview) { this.closePreview(); return; }
+    if (this.sheet) { this.sheet = null; return; }
+    if (this.codeMode) { this.codeMode = false; return; }
+  };
   /** 全局滚轮：弹层/预览打开时不劫持；否则把滚轮统一转发到当前滚动容器 */
   private onHostWheel = (e: WheelEvent): void => {
     if (this.sheet || this.preview) return; // 弹层/预览内部自己滚
