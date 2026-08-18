@@ -31,6 +31,14 @@ export class MemoryStore implements Store {
   async removeMessage(id: string): Promise<void> {
     this.msgs.delete(id);
   }
+  async clearAll(): Promise<void> {
+    this.msgs.clear();
+    this.uploads.clear();
+    this.chunks.clear();
+    this.files.clear();
+    this.bySha.clear();
+    this.fileRefs.clear();
+  }
 
   async createUpload(s: UploadSession): Promise<void> {
     this.uploads.set(s.uploadId, s);

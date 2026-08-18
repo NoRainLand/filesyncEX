@@ -2,8 +2,6 @@ import "./app.js";
 import { NiarApp } from "./NiarApp.js";
 import { fetchHealth } from "./api.js";
 
-// 控制台彩蛋：暴露 window.NiarApp（NiarApp.execute("me") 查作者信息）+ window.joke()（冷笑话）
-NiarApp.init();
 (window as unknown as { NiarApp: typeof NiarApp }).NiarApp = NiarApp;
 
 /** 调试面板：仅当 URL 带 ?vc=1 时通过 CDN 动态加载 vConsole（不打包进应用，无 vc=1 零开销） */
@@ -30,7 +28,7 @@ initVConsole();
  */
 async function printMsg(): Promise<void> {
   let name = "filesyncEX";
-  let version = "6.0.1";
+  let version = "6.1.0";
   try {
     const d = await fetchHealth();
     name = d?.name || name;

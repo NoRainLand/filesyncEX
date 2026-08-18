@@ -129,6 +129,28 @@ run(
 // 然后把从原 exe 提取的 pkg payload+prelude 重新拼回并更新 PAYLOAD_POSITION/PRELUDE_POSITION，
 // 避免破坏 pkg 快照。直接修补 fetched 会被 pkg 完整性校验覆盖，无效。）
 
+// 先尝试杀掉 release 目录下正在运行的 exe 进程（打包会覆盖文件，exe 占用会导致 pkg 写入失败；
+// 按 exe 绝对路径精确匹配，避免误杀其他目录的同名进程，旧版本 exe 一并处理）
+console.log("▶ 检查并停止正在运行的旧版 exe（release/ 下）");
+{
+  const kill = (name, p) => {
+    try {
+      const ps = `Get-Process -Name '${name}' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq '${p.replace(/'/g, "''")}' } | Stop-Process -Force`;
+      const out = execSync(`powershell -NoProfile -Command "${ps.replace(/"/g, '\\"')}"`, { stdio: "pipe" }).toString();
+      if (/Stop-Process/.test(out)) console.log("   已停止:", p);
+    } catch {
+      /* 无进程或已结束，忽略 */
+    }
+  };
+  if (fs.existsSync(outDir)) {
+    for (const f of fs.readdirSync(outDir)) {
+      if (f.toLowerCase().endsWith(".exe") && !f.endsWith(".bak")) {
+        kill(path.basename(f, ".exe"), path.join(outDir, f));
+      }
+    }
+  }
+}
+
 console.log("▶ pkg 打包（node18-win-x64，--compress GZip 压缩包体约 -28%）");
 run(`pnpm exec pkg ${JSON.stringify(path.join(shellDir, "dist/bundle.cjs"))} --compress GZip --targets node18-win-x64 --output ${JSON.stringify(path.join(outDir, exeName))} --config ${JSON.stringify(path.join(shellDir, "package.json"))}`, shellDir);
 

@@ -85,6 +85,11 @@ export class SqliteStore implements Store {
   async removeMessage(id: string): Promise<void> {
     this.db.prepare("DELETE FROM messages WHERE id = ?").run(id);
   }
+  async clearAll(): Promise<void> {
+    this.db.transaction(() => {
+      this.db.exec("DELETE FROM messages; DELETE FROM files; DELETE FROM uploads; DELETE FROM chunks;");
+    })();
+  }
 
   /* ----- 上传会话 ----- */
   async createUpload(s: UploadSession): Promise<void> {

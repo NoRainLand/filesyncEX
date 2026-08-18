@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import net from "node:net";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer } from "ws";
 import Database from "better-sqlite3";
@@ -65,22 +66,24 @@ function acquireLock(dataDir: string): string | null {
   }
 }
 
-async function createStore(cfg: ServerConfig): Promise<Store> {
+async function createStore(cfg: ServerConfig): Promise<{ store: Store; backupDb?: (dest: string) => Promise<void> }> {
   if (cfg.store === "memory") {
     const s = new MemoryStore();
     await s.init();
-    return s;
+    return { store: s };
   }
   try {
     const db = new Database(cfg.dbFile);
     const s = new SqliteStore(db);
     await s.init();
-    return s;
+    // 数据导出用：WAL 模式下生成一致快照（better-sqlite3 backup 是异步 API，必须 await）
+    const backupDb = async (dest: string): Promise<void> => { await db.backup(dest); };
+    return { store: s, backupDb };
   } catch (e) {
     console.warn("[store] better-sqlite3 初始化失败，降级为内存存储:", (e as Error).message);
     const s = new MemoryStore();
     await s.init();
-    return s;
+    return { store: s };
   }
 }
 
@@ -125,7 +128,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
     throw new Error(`另一 filesyncEX 实例正在运行（数据目录 ${cfg.dataDir} 已被锁定）。请关闭后重试。`);
   }
 
-  const store = await createStore(cfg);
+  const { store, backupDb } = await createStore(cfg);
   const engine = new SyncEngine(store, { historyLimit: cfg.historyLimit });
 
   // 首次启动（无任何历史消息）插入欢迎消息——沿用旧版 filesync 的假消息
@@ -145,7 +148,39 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   }
 
   const uploads = new UploadService({ store, engine, uploadDir: cfg.uploadDir });
-  const app = createHttpApp(cfg, engine, uploads);
+  // 系统操作（关闭/重置）：close 在下方定义，用占位引用，运行时端点调用时已就绪
+  let shutdownImpl: (() => Promise<void>) | undefined;
+  const systemOps = {
+    /** 优雅关闭服务器并退出进程 */
+    shutdown: async (): Promise<void> => {
+      await shutdownImpl?.();
+      process.exit(0);
+    },
+    /** 重置服务器：清空全部消息/文件/上传会话 → 广播 → 优雅关闭 → 软重启（spawn 同进程再退出） */
+    reset: async (): Promise<void> => {
+      try {
+        await store.clearAll();
+        // 清空物理上传目录
+        if (cfg.uploadDir) {
+          fs.rmSync(cfg.uploadDir, { recursive: true, force: true });
+          fs.mkdirSync(cfg.uploadDir, { recursive: true });
+        }
+        console.log("[sys] 已清空全部数据，准备重启");
+      } catch (e) {
+        console.warn("[sys] 重置数据失败:", (e as Error).message);
+      }
+      wsServer.broadcastNotice("maintenance", "服务器已重置，正在重启...");
+      await new Promise((r) => setTimeout(r, 500)); // 留时间让通知送达
+      await shutdownImpl?.();
+      try {
+        spawn(process.execPath, process.argv.slice(1), { stdio: "inherit" });
+      } catch {
+        /* 重启失败则仅退出 */
+      }
+      process.exit(0);
+    },
+  };
+  const app = createHttpApp(cfg, engine, uploads, backupDb, systemOps);
 
   const httpServer = http.createServer(app);
   // 局域网大文件分片上传：调大 keep-alive 空闲超时，避免服务器在 chunk 间隙关闭连接池，
@@ -178,7 +213,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
 
   if (opts.verbose !== false && !cfg.quiet) {
     console.log("");
-    console.log("  filesyncEX 6.0.1");
+    console.log("  filesyncEX 6.1.0");
     console.log("  ------------------------------");
     console.log(`  网页端   ${httpUrl}`);
     console.log(`  WebSocket ${wsUrl}`);
@@ -209,6 +244,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
       }
     }
   };
+  shutdownImpl = close; // 系统操作（关闭/重置）在服务器运行后引用优雅关闭
 
   return { httpPort, wsPort: httpPort, httpUrl, wsUrl, engine, close, broadcastNotice: (level, message) => wsServer.broadcastNotice(level, message) };
 }

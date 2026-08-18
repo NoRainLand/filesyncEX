@@ -41,6 +41,13 @@ async function main(): Promise<void> {
     // pkg 内资源：<exe>/web/dist（assets 打包进去）
     config.webDir = path.join(__dirname, "../../web/dist");
     config.quiet = false;
+    // 工作目录切到 exe 所在目录：注册表/双击自启动时 Windows 给的 cwd 是 System32，
+    // 会导致 serverConfig.json / data/ 落到错误位置；切到 exe 旁使数据与配置始终随 exe 走。
+    try {
+      process.chdir(path.dirname(process.execPath));
+    } catch {
+      /* chdir 失败（只读目录等）时沿用原 cwd */
+    }
   }
 
   const srv = await run({ config });

@@ -1,11 +1,13 @@
 import express from "express";
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
 import type { ServerConfig } from "./config.js";
 import type { UploadService } from "./upload.js";
 import { SyncEngine } from "@filesyncex/core";
 import { lanAddress } from "./net.js";
 import { decodeToChannels, toWavBuffer } from "./wave.js";
+import { makeZip, type ZipEntry } from "./zip.js";
 
 /* 转码流缓存：key → WAV Buffer（只解码一次）；LRU 上限，防止大音频常驻内存 */
 const STREAM_CACHE_MAX = 8; // 最多同时缓存 8 个转码流
@@ -46,7 +48,14 @@ function streamCacheSet(key: string, buf: Buffer): void {
  *  - /api/file/<key>（下载）
  *  - /api/msgs（历史 REST 兜底）、/api/health
  */
-export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: UploadService): express.Express {
+export interface SystemOps {
+  /** 优雅关闭服务器并退出进程 */
+  shutdown: () => Promise<void>;
+  /** 重置服务器：清空全部数据并软重启 */
+  reset: () => Promise<void>;
+}
+
+export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: UploadService, backupDb?: (dest: string) => Promise<void>, systemOps?: SystemOps): express.Express {
   const app = express();
   app.use(express.json({ limit: "2mb" }));
 
@@ -54,7 +63,7 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
   engine.events.on("file-gc", ({ key }) => uploads.deleteFile(key));
 
   /* 健康检查（返回本机局域网 IP + 实际 HTTP 端口，供前端二维码/地址使用真实地址；端口自动切换时取实际监听端口） */
-  app.get("/api/health", (req, res) => res.json({ ok: true, name: "filesyncEX", version: "6.0.1", lanIp: lanAddress(), port: req.socket.localPort ?? cfg.httpPort }));
+  app.get("/api/health", (req, res) => res.json({ ok: true, name: "filesyncEX", version: "6.1.0", lanIp: lanAddress(), port: req.socket.localPort ?? cfg.httpPort }));
 
   /* 消息历史（REST 兜底；首屏主要走 WS welcome） */
   app.get("/api/msgs", async (_req, res) => {
@@ -155,6 +164,135 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     if (!p) return res.status(404).json({ error: "文件不存在" });
     const name = await uploads.displayName(key);
     res.download(p, name);
+  });
+
+  /* ---------- 系统能力（NiarApp 接口的后端） ---------- */
+
+  /** 是否 pkg 打包运行（pkg 注入全局 process.pkg）；开发模式为 false */
+  const isPackaged = (): boolean => !!((process as unknown as { pkg?: unknown }).pkg);
+
+  /** 解析 reg 命令错误：Windows 中文系统 stderr 为 GBK 编码，需转 UTF-8 否则日志乱码（TextDecoder gbk 由 Node ICU 内置，零依赖） */
+  const regErrorText = (e: unknown): string => {
+    const err = e as { stderr?: Buffer | string; message?: string };
+    const raw = err.stderr ?? err.message ?? "";
+    try {
+      const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(String(raw));
+      return new TextDecoder("gbk").decode(buf).trim() || "未知错误";
+    } catch {
+      return String(raw);
+    }
+  };
+
+  /** 注册表操作当前 exe 开机自启（HKCU Run 键，无需管理员）：body.action 1=开启 0=取消；仅打包模式可用 */
+  app.post("/api/sys/autostart", (req, res) => {
+    if (!isPackaged()) return res.status(400).json({ error: "开发模式无法操作开机自启（需先打包为 exe）" });
+    const action = Number((req.body as { action?: number } | undefined)?.action ?? 1);
+    const exe = process.execPath;
+    const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    try {
+      if (action === 1) {
+        execFileSync("reg", ["add", RUN_KEY, "/v", "filesyncEX", "/t", "REG_SZ", "/d", exe, "/f"], { stdio: "pipe" });
+        console.log(`[sys] 开启开机自启：${exe}（来自 ${req.ip}）`);
+        res.json({ ok: true, enabled: true, exe });
+      } else {
+        execFileSync("reg", ["delete", RUN_KEY, "/v", "filesyncEX", "/f"], { stdio: "pipe" });
+        console.log(`[sys] 取消开机自启：${exe}（来自 ${req.ip}）`);
+        res.json({ ok: true, enabled: false, exe });
+      }
+    } catch (e) {
+      const msg = regErrorText(e);
+      console.warn(`[sys] 开机自启操作失败（${action === 1 ? "开启" : "取消"}）: ${msg}`);
+      res.status(500).json({ error: "操作开机自启失败: " + msg });
+    }
+  });
+
+  /** 查询当前 exe 开机自启状态（读取 HKCU Run 键）。用 spawnSync：reg 失败（非 0 退出）不抛异常，避免 GBK stderr 进入任何日志 */
+  app.get("/api/sys/autostart", (_req, res) => {
+    if (!isPackaged()) return res.status(400).json({ error: "开发模式无开机自启状态（需先打包为 exe）" });
+    const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    let enabled = false;
+    try {
+      const r = spawnSync("reg", ["query", RUN_KEY, "/v", "filesyncEX"], { encoding: "buffer" });
+      if (r.status === 0 && r.stdout) {
+        const out = r.stdout.toString("utf8");
+        const m = /filesyncEX\s+REG_SZ\s+(.+)/.exec(out);
+        const value = m?.[1]?.trim().replace(/^"|"$/g, "");
+        enabled = !!value && value === process.execPath; // 值必须是当前 exe 才视为已开启
+      }
+    } catch {
+      enabled = false; // 读取异常 → 未开启
+    }
+    res.json({ ok: true, enabled, exe: process.execPath });
+  });
+
+  /** 关闭服务器（优雅关闭并退出进程） */
+  app.post("/api/sys/shutdown", (req, res) => {
+    console.log(`[sys] 关闭服务器（来自 ${req.ip}）`);
+    res.json({ ok: true });
+    setTimeout(() => { void systemOps?.shutdown(); }, 300); // 先回响应再关闭
+  });
+
+  /** 重置服务器：清空全部聊天记录/文件并软重启 */
+  app.post("/api/sys/reset", (req, res) => {
+    console.log(`[sys] 重置服务器（清空全部数据并重启，来自 ${req.ip}）`);
+    res.json({ ok: true });
+    setTimeout(() => { void systemOps?.reset(); }, 300); // 先回响应再执行
+  });
+
+  /** 打包当前所有数据（消息数据库一致快照 + uploads 全部文件）为 zip，以日期命名下载 */
+  app.get("/api/data/export", (req, res) => {
+    void (async () => {
+    try {
+      const files: ZipEntry[] = [];
+      // 数据库一致快照（WAL → backup；memory 存储无 db）
+      if (backupDb) {
+        const tmp = path.join(cfg.dataDir, `.export-${Date.now()}.db`);
+        try {
+          await backupDb(tmp);
+          if (fs.existsSync(tmp)) {
+            files.push({ path: "filesync.db", data: fs.readFileSync(tmp) });
+            fs.rmSync(tmp, { force: true });
+          }
+        } catch (e) {
+          fs.rmSync(tmp, { force: true });
+          console.warn("[export] 数据库备份失败:", (e as Error).message);
+        }
+      }
+      // uploads 全部文件（递归）
+      const uploadDir = cfg.uploadDir;
+      if (uploadDir && fs.existsSync(uploadDir)) {
+        const walk = (dir: string, prefix: string): void => {
+          for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) walk(full, prefix + e.name + "/");
+            else if (e.isFile()) files.push({ path: prefix + e.name, data: fs.readFileSync(full) });
+          }
+        };
+        walk(uploadDir, "uploads/");
+      }
+      const d = new Date();
+      const p2 = (n: number): string => String(n).padStart(2, "0");
+      const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+      const name = `filesyncEX-backup-${stamp}.zip`;
+      const buf = makeZip(files);
+      console.log(`[export] 数据导出：${files.length} 个文件，${buf.length} 字节 → ${name}（来自 ${req.ip}）`);
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
+      res.send(buf);
+    } catch (e) {
+      console.warn("[export] 导出失败:", (e as Error).message);
+      res.status(500).json({ error: "导出失败: " + String((e as Error).message) });
+    }
+    })();
+  });
+
+  /** 下载服务器本体（当前运行的 exe）；开发模式返回失败 */
+  app.get("/api/app/download", (req, res) => {
+    if (!isPackaged()) return res.status(400).json({ error: "开发模式没有打包产物（当前由 node 运行）" });
+    const exe = process.execPath;
+    if (!fs.existsSync(exe)) return res.status(404).json({ error: "打包产物不存在" });
+    console.log(`[sys] 下载服务器本体：${path.basename(exe)}（来自 ${req.ip}）`);
+    res.download(exe, path.basename(exe));
   });
 
   /* 音频转码流：任意受支持格式 → 16-bit PCM WAV 流（浏览器原生可播，统一播放源）。

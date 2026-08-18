@@ -29,6 +29,8 @@ export interface Store {
   /** 更新已存在的消息（如补充视频封面） */
   updateMessage(id: string, msg: MsgDataT): Promise<void>;
   removeMessage(id: string): Promise<void>;
+  /** 清空全部数据（消息/文件索引/上传会话；用于服务器重置） */
+  clearAll(): Promise<void>;
 
   /* ----- 上传会话（断点续传） ----- */
   createUpload(s: UploadSession): Promise<void>;
