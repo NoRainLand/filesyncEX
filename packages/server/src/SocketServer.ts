@@ -143,6 +143,17 @@ export class SocketServer {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
   }
 
+  /** 重置后广播：给所有在线客户端发空 welcome（msgs=[]），前端立即清空消息列表；不关闭连接、不重启 */
+  broadcastReset(): void {
+    const peers = this.peerList();
+    const fallback = { deviceId: "__system__", deviceName: "filesyncEX", color: "#047878", platform: "other" as const };
+    for (const c of this.conns.values()) {
+      if (c.ws.readyState === c.ws.OPEN) {
+        this.send(c.ws, { type: "welcome", self: c.device ?? this.engine.self ?? fallback, msgs: [], peers });
+      }
+    }
+  }
+
   private broadcast(frame: ServerFrame): void {
     const data = JSON.stringify(frame);
     for (const c of this.conns.values()) {

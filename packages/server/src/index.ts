@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import net from "node:net";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer } from "ws";
 import Database from "better-sqlite3";
@@ -156,7 +155,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
       await shutdownImpl?.();
       process.exit(0);
     },
-    /** 重置服务器：清空全部消息/文件/上传会话 → 广播 → 优雅关闭 → 软重启（spawn 同进程再退出） */
+    /** 重置服务器：清空全部消息/文件/上传会话，服务器保持运行（不关闭/不重启）；广播空 welcome 让所有前端立即同步为空列表 */
     reset: async (): Promise<void> => {
       try {
         await store.clearAll();
@@ -165,19 +164,11 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
           fs.rmSync(cfg.uploadDir, { recursive: true, force: true });
           fs.mkdirSync(cfg.uploadDir, { recursive: true });
         }
-        console.log("[sys] 已清空全部数据，准备重启");
+        console.log("[sys] 已清空全部数据（服务器保持运行）");
       } catch (e) {
         console.warn("[sys] 重置数据失败:", (e as Error).message);
       }
-      wsServer.broadcastNotice("maintenance", "服务器已重置，正在重启...");
-      await new Promise((r) => setTimeout(r, 500)); // 留时间让通知送达
-      await shutdownImpl?.();
-      try {
-        spawn(process.execPath, process.argv.slice(1), { stdio: "inherit" });
-      } catch {
-        /* 重启失败则仅退出 */
-      }
-      process.exit(0);
+      wsServer.broadcastReset(); // 让所有在线客户端立即清空消息列表（不断开连接）
     },
   };
   const app = createHttpApp(cfg, engine, uploads, backupDb, systemOps);

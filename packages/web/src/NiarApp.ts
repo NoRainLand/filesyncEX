@@ -181,7 +181,7 @@ export class NiarApp {
             ["NiarApp.exportData()", "打包所有数据（消息数据库 + 全部文件）为 zip 并下载"],
             ["NiarApp.downloadApp()", "下载服务器本体 exe（仅打包模式）"],
             ["NiarApp.shutdown()", "关闭服务器（优雅关闭并退出）"],
-            ["NiarApp.reset()", "重置服务器：清空全部聊天记录与文件并重启"],
+            ["NiarApp.reset()", "重置服务器：清空全部聊天记录与文件"],
             ["NiarApp.help()", "打印所有接口名及作用"],
         ];
         console.log("%cNiarApp 接口一览：", "color:#e12885;font-size:14px;font-weight:bold;");
