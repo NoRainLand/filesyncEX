@@ -14,6 +14,7 @@
     "dev:server": "pnpm --filter @filesyncex/server dev",
     "start": "pnpm --filter @filesyncex/shell start",
     "package": "pnpm --filter @filesyncex/shell package",
+    "package:linux": "FSEX_TARGET=linux pnpm --filter @filesyncex/shell package",
     "set-version": "node scripts/set-version.mjs"
   }
 }

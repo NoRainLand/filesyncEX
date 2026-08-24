@@ -183,9 +183,10 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     }
   };
 
-  /** 注册表操作当前 exe 开机自启（HKCU Run 键，无需管理员）：body.action 1=开启 0=取消；仅打包模式可用 */
+  /** 注册表操作当前 exe 开机自启（HKCU Run 键，无需管理员）：body.action 1=开启 0=取消；仅打包模式 + Windows 可用 */
   app.post("/api/sys/autostart", (req, res) => {
     if (!isPackaged()) return res.status(400).json({ error: "开发模式无法操作开机自启（需先打包为 exe）" });
+    if (process.platform !== "win32") return res.status(501).json({ error: "当前平台不支持注册表开机自启（仅 Windows）" });
     const action = Number((req.body as { action?: number } | undefined)?.action ?? 1);
     const exe = process.execPath;
     const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -206,9 +207,10 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     }
   });
 
-  /** 查询当前 exe 开机自启状态（读取 HKCU Run 键）。用 spawnSync：reg 失败（非 0 退出）不抛异常，避免 GBK stderr 进入任何日志 */
+  /** 查询当前 exe 开机自启状态（读取 HKCU Run 键）。用 spawnSync：reg 失败（非 0 退出）不抛异常，避免 GBK stderr 进入任何日志；仅 Windows */
   app.get("/api/sys/autostart", (_req, res) => {
     if (!isPackaged()) return res.status(400).json({ error: "开发模式无开机自启状态（需先打包为 exe）" });
+    if (process.platform !== "win32") return res.status(501).json({ error: "当前平台不支持注册表开机自启（仅 Windows）" });
     const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
     let enabled = false;
     try {

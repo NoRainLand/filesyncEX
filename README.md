@@ -203,13 +203,22 @@ release/       # 打包产物（filesyncex.exe）
 `pnpm package` 完整流程：
 
 1. 增量构建各包（源未变跳过，`FSEX_FORCE_BUILD=1` 强制全量）
-2. 同步 `tool/`、`fonts/` 到前端
+2. 同步 `fonts/` 到前端
 3. 精简复制 `better-sqlite3`（只留 `.node` + lib，删编译源码）及 `bindings`/`file-uri-to-path`
 4. `esbuild` 把 shell 入口 bundle 成单文件 CJS
-5. `pkg` 打包（`node18-win-x64`，`--compress GZip` 压缩包体）
-6. `fix-icon.mjs`：rcedit 设置图标 + 版本信息，并从原 exe 提取恢复 pkg payload
+5. `pkg` 打包（`--compress GZip` 压缩包体），打包前自动停止 `release/` 下正在运行的旧版进程
+6. `fix-icon.mjs`：rcedit 设置图标 + 版本信息，并从原 exe 提取恢复 pkg payload（仅 Windows）
 
-**产物**：`release/filesyncex.exe`（约 74 MB），双击即用。
+**产物（带版本号）**：
+- Windows：`release/filesyncex-<版本号>.exe`（约 74 MB），双击即用
+- Linux：`release/filesyncex-<版本号>-linux-x64`（在 Linux 环境执行 `pnpm package:linux` 或直接 `pnpm package` 自动识别平台）
+
+### Linux 打包说明
+
+- 在 Linux 机器 / 容器里执行 `pnpm package:linux`（或 `pnpm package`，脚本按 `process.platform` 自动选择 `node18-linux-x64`）。
+- **better-sqlite3 是原生模块**：必须在 Linux 环境 `pnpm install`（编译出 Linux 的 `.node`）后再打包，Windows 上无法交叉产出可用的 Linux 版模块。
+- Linux 产物为 ELF 二进制：跳过 rcedit/图标修补；杀旧进程改用 `pkill -f`；产物无 `.exe` 后缀。
+- 开机自启接口基于 Windows 注册表（`reg`），在 Linux 上返回"当前平台不支持"（501），其余功能（上传/同步/导出/下载/关闭/重置）跨平台一致。
 
 ---
 
@@ -282,7 +291,8 @@ release/       # 打包产物（filesyncex.exe）
 | `pnpm dev:server` | 服务端开发（tsx） |
 | `pnpm build` | 全量构建 |
 | `pnpm start` | 以 Node 运行（非 exe） |
-| `pnpm package` | 打包 exe（增量构建，约 40s） |
+| `pnpm package` | 打包（增量构建，Windows exe / Linux 自动识别） |
+| `pnpm package:linux` | 在 Linux 环境打包（强制 node18-linux-x64） |
 | `FSEX_FORCE_BUILD=1 pnpm package` | 强制全量构建后打包 |
 
 ---

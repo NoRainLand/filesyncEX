@@ -1,6 +1,7 @@
 /**
- * 打包脚本（纯 JS）：依次构建 protocol→core→server→web→shell，再运行 pkg 生成 exe。
- * 产物：release/filesyncex-<版本号>.exe（Windows x64, Node 18）
+ * 打包脚本（纯 JS）：依次构建 protocol→core→server→web→shell，再运行 pkg 生成可执行文件。
+ * 产物：release/filesyncex-<版本号>.exe（Windows x64）或 filesyncex-<版本号>-linux-x64（Linux）。
+ * 平台：默认按当前系统；`FSEX_TARGET=linux` 强制 Linux（在 Linux 环境里跑，better-sqlite3 原生模块需对应平台安装）。
  */
 import { execSync } from "node:child_process";
 import path from "node:path";
@@ -10,10 +11,12 @@ import { fileURLToPath } from "node:url";
 const shellDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const root = path.resolve(shellDir, "../..");
 const run = (cmd, cwd) => execSync(cmd, { cwd, stdio: "inherit" });
-// 产物带版本号：release/filesyncex-<version>.exe（版本取根 package.json）
+// 产物带版本号：Windows filesyncex-<version>.exe / Linux filesyncex-<version>-linux-x64（版本取根 package.json）
+const isLinux = process.env.FSEX_TARGET === "linux" || process.platform === "linux";
+const pkgTarget = isLinux ? "node18-linux-x64" : "node18-win-x64";
 const rootPkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const version = rootPkg.version || "0.0.0";
-const exeName = `filesyncex-${version}.exe`;
+const exeName = isLinux ? `filesyncex-${version}-linux-x64` : `filesyncex-${version}.exe`;
 
 /** 增量构建：src/public 中存在比 dist 更新的文件才需要构建（没改的包跳过，加速重复打包） */
 function needBuild(pkg) {
@@ -129,40 +132,48 @@ run(
 // 然后把从原 exe 提取的 pkg payload+prelude 重新拼回并更新 PAYLOAD_POSITION/PRELUDE_POSITION，
 // 避免破坏 pkg 快照。直接修补 fetched 会被 pkg 完整性校验覆盖，无效。）
 
-// 先尝试杀掉 release 目录下正在运行的 exe 进程（打包会覆盖文件，exe 占用会导致 pkg 写入失败；
-// 按 exe 绝对路径精确匹配，避免误杀其他目录的同名进程，旧版本 exe 一并处理）
-console.log("▶ 检查并停止正在运行的旧版 exe（release/ 下）");
+// 先尝试杀掉 release 目录下正在运行的旧版进程（打包会覆盖文件，占用会导致 pkg 写入失败；
+// 按可执行文件绝对路径精确匹配，避免误杀其他目录的同名进程，旧版本一并处理）
+console.log("▶ 检查并停止正在运行的旧版进程（release/ 下）");
 {
   const kill = (name, p) => {
     try {
-      const ps = `Get-Process -Name '${name}' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq '${p.replace(/'/g, "''")}' } | Stop-Process -Force`;
-      const out = execSync(`powershell -NoProfile -Command "${ps.replace(/"/g, '\\"')}"`, { stdio: "pipe" }).toString();
-      if (/Stop-Process/.test(out)) console.log("   已停止:", p);
+      if (isLinux) {
+        // Linux：pkill -f 按完整路径匹配
+        execSync(`pkill -f ${JSON.stringify(p)} 2>/dev/null; true`, { stdio: "pipe" });
+        console.log("   已执行 pkill:", p);
+      } else {
+        const ps = `Get-Process -Name '${name}' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq '${p.replace(/'/g, "''")}' } | Stop-Process -Force`;
+        const out = execSync(`powershell -NoProfile -Command "${ps.replace(/"/g, '\\"')}"`, { stdio: "pipe" }).toString();
+        if (/Stop-Process/.test(out)) console.log("   已停止:", p);
+      }
     } catch {
       /* 无进程或已结束，忽略 */
     }
   };
   if (fs.existsSync(outDir)) {
     for (const f of fs.readdirSync(outDir)) {
-      if (f.toLowerCase().endsWith(".exe") && !f.endsWith(".bak")) {
-        kill(path.basename(f, ".exe"), path.join(outDir, f));
-      }
+      const match = isLinux ? f.startsWith("filesyncex-") && !f.endsWith(".bak") : f.toLowerCase().endsWith(".exe") && !f.endsWith(".bak");
+      if (match) kill(path.basename(f, ".exe"), path.join(outDir, f));
     }
   }
 }
 
-console.log("▶ pkg 打包（node18-win-x64，--compress GZip 压缩包体约 -28%）");
-run(`pnpm exec pkg ${JSON.stringify(path.join(shellDir, "dist/bundle.cjs"))} --compress GZip --targets node18-win-x64 --output ${JSON.stringify(path.join(outDir, exeName))} --config ${JSON.stringify(path.join(shellDir, "package.json"))}`, shellDir);
+console.log(`▶ pkg 打包（${pkgTarget}，--compress GZip 压缩包体约 -28%）`);
+run(`pnpm exec pkg ${JSON.stringify(path.join(shellDir, "dist/bundle.cjs"))} --compress GZip --targets ${pkgTarget} --output ${JSON.stringify(path.join(outDir, exeName))} --config ${JSON.stringify(path.join(shellDir, "package.json"))}`, shellDir);
 
-// 打包后修补 icon / 版本信息（保留 pkg payload）
-console.log("▶ rcedit 修改 icon / 版本信息（并恢复 pkg payload）");
-{
-  const exe = path.join(outDir, exeName);
-  const fs = await import("node:fs");
-  if (fs.existsSync(exe) && fs.existsSync(path.join(root, "FS.ico"))) {
-    run(`node scripts/fix-icon.mjs ${JSON.stringify(exe)} ${JSON.stringify(path.join(root, "FS.ico"))}`, shellDir);
-  } else {
-    console.warn("   ⚠ 未找到 exe 或 FS.ico，跳过 icon 修补");
+// 打包后修补 icon / 版本信息（保留 pkg payload）——仅 Windows（rcedit 只支持 PE 资源）
+if (isLinux) {
+  console.log("⏭ Linux 跳过 rcedit（无 PE 资源，产物为 ELF 二进制）");
+} else {
+  console.log("▶ rcedit 修改 icon / 版本信息（并恢复 pkg payload）");
+  {
+    const exe = path.join(outDir, exeName);
+    if (fs.existsSync(exe) && fs.existsSync(path.join(root, "FS.ico"))) {
+      run(`node scripts/fix-icon.mjs ${JSON.stringify(exe)} ${JSON.stringify(path.join(root, "FS.ico"))}`, shellDir);
+    } else {
+      console.warn("   ⚠ 未找到 exe 或 FS.ico，跳过 icon 修补");
+    }
   }
 }
 
