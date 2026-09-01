@@ -1,5 +1,5 @@
 /* filesyncEX 网页端组件样式（拆分自 app.ts static styles） */
-:host { display: flex; justify-content: center; height: 100dvh; font-family: var(--mono); color: var(--ink); background: var(--bg); }
+:host { display: flex; justify-content: center; height: 100vh; height: 100dvh; font-family: var(--mono); color: var(--ink); background: var(--bg); } /* 先 100vh 兜底（老浏览器不支持 dvh 时保证宿主全高，输入框固定底部不随消息移动），支持 dvh 再用动态视口覆盖 */
 .container { width: 100%; max-width: 1000px; display: flex; flex-direction: column; height: 100%; overflow-y: auto; padding: 0 0 30px; box-sizing: border-box; scrollbar-width: none; }
 .container::-webkit-scrollbar { display: none; }
 /* ---------- Header ---------- */
