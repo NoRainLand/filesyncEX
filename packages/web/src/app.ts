@@ -33,6 +33,20 @@ const fmtSize = (n: number): string => {
   if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
   return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
 };
+/** 文件名省略总长：移动端 24（前 10 字符，效果经用户确认），桌面端 36（前面保留更多，屏幕宽） */
+const fileNameMax = () => (window.innerWidth <= 640 ? 24 : 36);
+/** 文件名中间省略：超长时保留开头 + 结尾（含扩展名），如「这是一个很长…文档.pdf」；返回即最终显示（CSS 尾部省略仅作小屏宽度兑底） */
+function ellipsizeFileName(name: string, max = fileNameMax()): string {
+  if (name.length <= max) return name;
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot) : "";        // ".pdf" 或 ""
+  const body = dot > 0 ? name.slice(0, dot) : name;   // 主文件名（无点则整体）
+  const head = Math.min(Math.max(6, Math.floor(max * 0.45)), body.length); // 头部保留：至少 6、留足尾巴
+  const tailMax = Math.max(0, max - head - 1 - ext.length);
+  const tailBody = Math.min(4, tailMax, body.length); // 尾部主体保留：最多 4 字符
+  const keepBody = tailBody > 0 ? body.slice(body.length - tailBody) : "";
+  return body.slice(0, head) + "…" + keepBody + ext;
+}
 /* fmtType 已迁移到 i18n.ts */
 /** 文件类型 → 消息 kind（与服务器 kindOf 一致）：用于上传占位卡匹配真实消息尺寸 */
 function fileKind(name: string, mime?: string): "image" | "audio" | "video" | "file" {
@@ -1069,7 +1083,7 @@ export class FilesyncApp extends LitElement {
         phBody = html`<div class="ph-body file">${blur}<span class="ph-ic">${I_FILE}</span>${ring}</div>`;
       }
       // 信息行（同真实消息 .mm：文件名 + 大小；失败的大文件提示可点击续传）
-      const mm = html`<div class="ph-mm"><span class="name ${retryable ? "retry" : ""}">${failed ? (retryable ? this.t("resume_click") : this.t("upload_failed_ph")) : f?.name ?? this.t("upload_ph")}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>`;
+      const mm = html`<div class="ph-mm"><span class="name ${retryable ? "retry" : ""}">${failed ? (retryable ? this.t("resume_click") : this.t("upload_failed_ph")) : f?.name ? ellipsizeFileName(f.name) : this.t("upload_ph")}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>`;
       // 操作行（同真实消息 .ops：下载占位按钮）
       const ops = html`<div class="ph-ops"><span class="btn secondary ph-down">${I_DOWN}${this.t("download")}</span></div>`;
       return html`<div class="msg">
@@ -1103,7 +1117,7 @@ export class FilesyncApp extends LitElement {
       case "image":
         content = html`<div class="card img">
             <div class="thumb" @click=${() => { if (this.debounceKey("pv-" + m.id, 400)) this.openPreview("image", m); }}><img src="${f?.url ?? ""}" alt="" /></div>
-            <div class="ovl" @click=${(e: Event) => e.stopPropagation()}><span class="mm"><span class="name">${f?.name ?? ""}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></span><span class="ops">${downBtn}</span></div>${delBtn}
+            <div class="ovl" @click=${(e: Event) => e.stopPropagation()}><span class="mm"><span class="name">${f?.name ? ellipsizeFileName(f.name) : ""}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></span><span class="ops">${downBtn}</span></div>${delBtn}
           </div>`;
         break;
       case "video": {
@@ -1114,7 +1128,7 @@ export class FilesyncApp extends LitElement {
                 ? html`<img class="vcover" src="${cover}" alt="" />`
                 : html`<video src="${f?.url ?? ""}" muted playsinline webkit-playsinline preload="metadata" @loadeddata=${() => this.captureVideoCover(m)}></video>`}
             </div>
-            <div class="ovl" @click=${(e: Event) => e.stopPropagation()}><span class="mm"><span class="name">${f?.name ?? ""}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></span><span class="ops">${downBtn}</span></div>${delBtn}
+            <div class="ovl" @click=${(e: Event) => e.stopPropagation()}><span class="mm"><span class="name">${f?.name ? ellipsizeFileName(f.name) : ""}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></span><span class="ops">${downBtn}</span></div>${delBtn}
           </div>`;
         break;
       }
@@ -1125,7 +1139,7 @@ export class FilesyncApp extends LitElement {
               <div class="wave" @click=${(e: MouseEvent) => this.seekAudio(m, e)}>${waveBars()}<i class="fill"></i><i class="ind"></i></div>
               <audio src="${this.audioSrc(m) ?? ""}" preload="none"></audio>
             </div>
-            <div class="mm"><span class="name">${f?.name ?? this.t("audio_name")}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>
+            <div class="mm"><span class="name">${f?.name ? ellipsizeFileName(f.name) : this.t("audio_name")}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>
             <div class="ops">${downBtn}</div>${delBtn}
           </div>`;
         break;
@@ -1134,7 +1148,7 @@ export class FilesyncApp extends LitElement {
         content = html`<div class="card file">
             <div class="file">
               <span class="ic">${I_FILE}</span>
-              <div class="meta"><span class="name">${f?.name ?? this.t("file_name")}</span><span class="sub">${f ? `${fmtSize(f.size)} · ${fmtType(this.lang, f.name, f.mime)}` : ""}</span></div>
+              <div class="meta"><span class="name">${f?.name ? ellipsizeFileName(f.name) : this.t("file_name")}</span><span class="sub">${f ? `${fmtSize(f.size)} · ${fmtType(this.lang, f.name, f.mime)}` : ""}</span></div>
             </div>
             <div class="ops">${downBtn}</div>${delBtn}
           </div>`;
@@ -1243,7 +1257,7 @@ export class FilesyncApp extends LitElement {
         <button class="att" @click=${() => { if (this.debounceKey("attach-file", 400)) { this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); close(); } }}><span class="ai">${I_FILE}</span>${this.t("attach_file")}</button>
       </div>`;
     } else if (s === "progress") {
-      content = html`<div class="qlist">${this.uploads.length === 0 ? html`<div class="qitem-row"><div class="qname" style="color:var(--muted)">${this.t("no_upload_task")}</div></div>` : this.uploads.map((u) => html`<div class="qitem-row"><div class="qname">${u.name} <small>${u.pct < 0 ? this.t("failed") : fmtSize(u.size)}</small></div><div class="qbar"><i style="width:${u.pct < 0 ? 100 : u.pct}%"></i></div><div class="qmeta"><span>${u.pct < 0 ? this.t("upload_failed") : u.pct + "%"}</span></div></div>`)}</div>`;
+      content = html`<div class="qlist">${this.uploads.length === 0 ? html`<div class="qitem-row"><div class="qname" style="color:var(--muted)">${this.t("no_upload_task")}</div></div>` : this.uploads.map((u) => html`<div class="qitem-row"><div class="qname">${ellipsizeFileName(u.name)} <small>${u.pct < 0 ? this.t("failed") : fmtSize(u.size)}</small></div><div class="qbar"><i style="width:${u.pct < 0 ? 100 : u.pct}%"></i></div><div class="qmeta"><span>${u.pct < 0 ? this.t("upload_failed") : u.pct + "%"}</span></div></div>`)}</div>`;
     } else if (s === "settings") {
       // WS 地址与 httpUrl 同源（真实局域网 IP + 端口），仅协议不同
       const wsUrl = this.httpUrl.replace(/^https?:/, location.protocol === "https:" ? "wss:" : "ws:") + "/ws";

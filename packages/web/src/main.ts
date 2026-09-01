@@ -28,7 +28,7 @@ initVConsole();
  */
 async function printMsg(): Promise<void> {
   let name = "filesyncEX";
-  let version = "6.1.0";
+  let version = "6.2.0";
   try {
     const d = await fetchHealth();
     name = d?.name || name;

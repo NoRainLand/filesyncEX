@@ -204,7 +204,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
 
   if (opts.verbose !== false && !cfg.quiet) {
     console.log("");
-    console.log("  filesyncEX 6.1.0");
+    console.log("  filesyncEX 6.2.0");
     console.log("  ------------------------------");
     console.log(`  网页端   ${httpUrl}`);
     console.log(`  WebSocket ${wsUrl}`);
