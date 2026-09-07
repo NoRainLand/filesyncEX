@@ -171,6 +171,15 @@ export class NiarApp {
     }
 
     /**
+     * LU（鹭）：新标签页打开「夜骑漫游」演示页（夜鹭骑自行车动画）。
+     * 页面文件 packages/web/public/night-heron-ride.html，随 web 构建拷入 dist 根，
+     * 由服务器静态托管在 /night-heron-ride.html；开发模式由 Vite 直接托管同路径。
+     */
+    public static LU(): void {
+        window.open("/night-heron-ride.html", "_blank", "noopener");
+    }
+
+    /**
      * help：打印所有接口名及作用
      */
     public static help(): string {
@@ -182,6 +191,7 @@ export class NiarApp {
             ["NiarApp.downloadApp()", "下载服务器本体 exe（仅打包模式）"],
             ["NiarApp.shutdown()", "关闭服务器（优雅关闭并退出）"],
             ["NiarApp.reset()", "重置服务器：清空全部聊天记录与文件"],
+            ["NiarApp.LU()", "立刻欣赏极度美艳夜师傅走夜鹭"],
             ["NiarApp.help()", "打印所有接口名及作用"],
         ];
         console.log("%cNiarApp 接口一览：", "color:#e12885;font-size:14px;font-weight:bold;");
