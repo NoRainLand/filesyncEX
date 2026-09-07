@@ -197,8 +197,7 @@ export class NiarApp {
         console.log("%cNiarApp 接口一览：", "color:#e12885;font-size:14px;font-weight:bold;");
         for (const [name, desc] of items) {
             // 每行单个 %c，保证不同环境下着色稳定（多 %c 并存可能被某些环境当字面处理）
-            console.log(`%c  ${name}`, "color:#047878;font-weight:bold;");
-            console.log(`%c    ${desc}`, "color:#6f7a82;");
+            console.log(`%c  ${name} %c   ${desc}`, "color:#047878;font-weight:bold;", "color:#6f7a82;");
         }
         return "NiarApp 接口已列出";
     }

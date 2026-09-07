@@ -18,6 +18,24 @@ const rootPkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf
 const version = rootPkg.version || "0.0.0";
 const exeName = isLinux ? `filesyncex-${version}-linux-x64` : `filesyncex-${version}.exe`;
 
+/** 混淆压缩开关：打包（本脚本）默认开启——用 esbuild --minify 做局部变量改名 + 去空白/注释 + 语法压缩。
+ *  普通开发构建（pnpm build / vite dev / tsc）不经本脚本，天然不混淆。
+ *  手动关闭：FSEX_OBFUSCATE=0|false|no|off */
+const obfuscate = !/^(0|false|no|off)$/i.test(process.env.FSEX_OBFUSCATE ?? "1");
+console.log(`▶ 混淆压缩：${obfuscate ? "开启（FSEX_OBFUSCATE=0 可关闭）" : "关闭（FSEX_OBFUSCATE=1 可开启）"}`);
+
+/** 用 esbuild --minify 混淆压缩单个文件并原地替换（先写临时文件再改名，避免读写冲突）。
+ *  format：node CJS 产物传 "cjs"；web ESM 产物传 "esm"；auto 按源码推断。 */
+function minifyFile(file, format = "auto") {
+  const tmp = `${file}.minify.tmp`;
+  const fmt = format === "auto" ? "" : `--format=${format}`;
+  run(`pnpm exec esbuild ${JSON.stringify(file)} --minify ${fmt} --outfile=${JSON.stringify(tmp)} --log-level=warning`, shellDir);
+  const before = fs.statSync(file).size;
+  fs.renameSync(tmp, file);
+  const after = fs.statSync(file).size;
+  console.log(`   ✔ 混淆 ${path.basename(file)}：${(before / 1024).toFixed(0)}KB → ${(after / 1024).toFixed(0)}KB`);
+}
+
 /** 增量构建：src/public 中存在比 dist 更新的文件才需要构建（没改的包跳过，加速重复打包） */
 function needBuild(pkg) {
   if (process.env.FSEX_FORCE_BUILD) return true;
@@ -71,8 +89,24 @@ console.log("▶ 同步 fonts/ → web/public/fonts");
 }
 
 buildPkg("server");
-buildPkg("web");
+if (obfuscate) {
+  // 混淆须基于干净产物：强制重建 web，避免 needBuild 跳过导致对旧产物重复混淆/漏混淆
+  console.log("▶ 混淆前端开启：强制重建 web 产物");
+  run("pnpm --filter @filesyncex/web build", root);
+} else {
+  buildPkg("web");
+}
 buildPkg("shell");
+// web 产物混淆：对 dist/assets/*.js 逐个 esbuild --minify（index.html / 字体等静态资源不动）
+if (obfuscate) {
+  const webAssets = path.join(root, "packages", "web", "dist", "assets");
+  const jsFiles = fs.existsSync(webAssets)
+    ? fs.readdirSync(webAssets).filter((f) => f.endsWith(".js")).map((f) => path.join(webAssets, f))
+    : [];
+  if (jsFiles.length === 0) console.warn("   ⚠ 未找到 web dist/assets/*.js（web 构建产物异常？）");
+  console.log(`▶ 混淆前端 assets（${jsFiles.length} 个 JS）`);
+  for (const f of jsFiles) minifyFile(f, "esm");
+}
 
 const outDir = path.join(root, "release");
 fs.mkdirSync(outDir, { recursive: true });
@@ -127,6 +161,10 @@ run(
   "pnpm exec esbuild src/index.ts --bundle --platform=node --format=cjs --target=node18 --outfile=dist/bundle.cjs --external:better-sqlite3 --log-level=warning",
   shellDir
 );
+if (obfuscate) {
+  console.log("▶ 混淆后端 bundle.cjs（esbuild --minify）");
+  minifyFile(path.join(shellDir, "dist", "bundle.cjs"), "cjs");
+}
 
 // rcedit 修改应用 icon / 版本信息：在 pkg 打包之后执行（fix-icon.mjs 会 rcedit 改资源，
 // 然后把从原 exe 提取的 pkg payload+prelude 重新拼回并更新 PAYLOAD_POSITION/PRELUDE_POSITION，
