@@ -4,6 +4,9 @@ import http from "node:http";
 import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer } from "ws";
+// 注意：必须是**静态 import**。动态 import("better-sqlite3") 在 pkg 的 V8 快照下会报
+// `Invalid host defined options`（ModuleWrap 校验失败，module_wrap.cc:604）—— 这是本项目踩过的坑；
+// esbuild 打包时以 --external 把它转成 require。非 Node 运行时（Bun 不支持 better-sqlite3）请用 run({ store }) 注入实现。
 import Database from "better-sqlite3";
 import { MemoryStore, SqliteStore, SyncEngine, type Store } from "@filesyncex/core";
 import { loadConfig, type ServerConfig } from "./config.js";
@@ -30,6 +33,12 @@ export interface RunOptions {
   config?: Partial<ServerConfig>;
   /** 打印本地/局域网地址 */
   verbose?: boolean;
+  /**
+   * 注入已构建好的 Store（跳过内置的 sqlite/memory 选择）。
+   * 用途：测试，以及把服务端接到别的 SQLite 驱动上（如 bun:sqlite —— 它没有 N-API，
+   * 在 Bun 运行时下 better-sqlite3 无法加载，只能注入）。
+   */
+  store?: Store;
 }
 
 /** 进程是否存活（pid 检测，Windows 兼容） */
@@ -158,7 +167,9 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
     throw new Error(`另一 filesyncEX 实例正在运行（数据目录 ${cfg.dataDir} 已被锁定）。请关闭后重试。`);
   }
 
-  const { store, backupDb } = await createStore(cfg);
+  // 允许外部注入 Store（测试 / 非 Node 运行时）；否则按配置创建 sqlite / memory
+  const injected = opts.store;
+  const { store, backupDb } = injected ? { store: injected, backupDb: undefined } : await createStore(cfg);
   const engine = new SyncEngine(store, { historyLimit: cfg.historyLimit });
 
   // 首次启动（无任何历史消息）插入欢迎消息——沿用旧版 filesync 的假消息

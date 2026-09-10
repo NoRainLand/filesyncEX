@@ -381,7 +381,9 @@ pnpm run set-version 6.5.0     # 例：6.4.0 → 6.5.0pnpm test                 
 - **思源宋体约 6 MB**：`SourceHanSerifCN-Medium.woff2` 是单个体积最大的资源（可子集化或换字体优化）。
 - **pkg 首次打包需联网**：需从 pkg-cache 下载 Node 基础二进制（约 40 MB），离线环境首次打包会失败。
 - **打包链路对 pkg 内部结构敏感**：`fix-icon.mjs` 依赖 pkg 的 payload 占位符布局，升级 `@yao-pkg/pkg` 后需回归验证；
-  `@yao-pkg/pkg` 上游已停止维护、目标为已 EOL 的 node18，中期建议评估 Node 22 SEA 或 Bun compile 替代。
+  `@yao-pkg/pkg` 上游已停止维护、目标为已 EOL 的 node18，中期建议评估 Bun compile 或 Node 22 SEA 替代 ——
+  **Bun compile 已实测过（Bun 1.4.2）**，结论与数据见 [docs/NOTES.md 第四节](docs/NOTES.md)：功能全通（含 `bun:sqlite` 顶替），
+  但产物更大（93.6 MB 且静态资源需外置，总计 99.9 MB vs 71.2 MB）、冷启动无优势、exe 图标与版本信息需另接资源编辑器，故**暂时不迁**。
 - **压缩 payload 的启动开销**：GZip 压缩换取体积，运行时首次解压使启动略慢（局域网场景可接受）。
 - **历史限制**：消息历史默认只保留 500 条（`historyLimit`），更早的消息会被裁掉（其附件仍留在磁盘上，由清理流程回收）。
 
@@ -393,7 +395,7 @@ pnpm run set-version 6.5.0     # 例：6.4.0 → 6.5.0pnpm test                 
 
 | 文档 | 内容 |
 |---|---|
-| **[docs/NOTES.md](docs/NOTES.md)** | 开发笔记：踩过的坑（打包/浏览器/依赖共 15 条）、做过的优化与**实测基准数据**、设计取舍备忘 |
+| **[docs/NOTES.md](docs/NOTES.md)** | 开发笔记：踩过的坑（打包/浏览器/依赖共 15 条）、做过的优化与**实测基准数据**、设计取舍备忘、**Bun compile vs pkg 实测对比** |
 | **[PROJECT_LOG.md](PROJECT_LOG.md)** | 项目操作日志：每次改动的动机、实现与验证（时间线） |
 | **[docs/API.md](docs/API.md)** | HTTP API 技术文档（端点、协议、鉴权、错误码） |
 | **[docs/CHAT_HISTORY.md](docs/CHAT_HISTORY.md)** | 开发对话记录 |

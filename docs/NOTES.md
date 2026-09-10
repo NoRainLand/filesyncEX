@@ -147,3 +147,72 @@
 - **为什么测试用自研 runner**：`node --test` 默认给每个测试文件 spawn 子进程（受限环境 EPERM），vitest 依赖 esbuild 子进程加载配置；
   自研进程内 runner 零依赖、无子进程，受限沙箱 / CI 都能跑。
 - **为什么原生模块失败要「报错而不是降级」**：降级成内存存储后功能看似正常、数据却在重启后消失，属于最危险的一类静默故障。
+
+---
+
+## 四、Bun compile 与 pkg 的实测对比（2026-09，Bun 1.4.2）
+
+结论先说：**继续用 pkg**。Bun compile 在这套项目里能做出来、功能也跑得通，但在「单文件分发」这个核心诉求上反而更弱，
+且要额外维护一条 Bun 专用链路。下面全部是实测数据（同一台机器、同一份代码）。
+
+### 4.1 体积与形式
+
+| | pkg（当前） | Bun compile |
+|---|---|---|
+| 产物 | `filesyncex-6.4.0.exe` **71.21 MB** | `filesyncex-bun.exe`（`--minify`）**93.61 MB** |
+| 静态资源（web/dist，含 6.03 MB 字体） | **内嵌在快照里**，单文件即可分发 | **未内嵌**，需与 exe 并列放 6.26 MB（总计 **99.87 MB**） |
+| 版本信息 / 图标 | rcedit 写入：ProductName `filesyncEX`、FileVersion `6.4.0`、OriginalFilename、图标全部正确 | **完全没有**：仍是 `ProductName: Bun` / `FileVersion: 1.4.2` / `CompanyName: Oven` / `OriginalFilename: bun.exe`；图标也是 Bun 的 |
+| 打包耗时 | 全流程约 40s（含构建/精简/捆绑/pkg/rcedit） | `bun build --compile` **约 1.3s**（254 模块） |
+
+> 内嵌体积差主要来自运行时本身：Bun 运行时 **82.1 MB**（未压缩，`--minify` 只省 0.5 MB），
+> pkg 用的 Node 18 基础二进制 40.5 MB 且 GZip 压缩后进包。
+
+### 4.2 运行表现
+
+| | pkg | Bun compile |
+|---|---|---|
+| 冷启动 | 572 / 638 / 2366 ms（中位 **638 ms**） | 638 / 4266 / 4292 / 4293 / 4800 ms（中位 **4292 ms**） |
+| 健康检查 / 直传 / 下载 | ✓ | ✓ |
+| 管理接口鉴权（403 / 200） | ✓ | ✓ |
+| 音频转码（WASM 解码 → WAV 流） | ✓ | ✓（两者输出字节数一致 16044） |
+| `health.version` | `6.4.0` | **`unknown`** —— 编译后 `import.meta.url` 指向 `$bunfs`，`version.ts` 里「向上找根 package.json」的兜底路径失效；要修得改用 `--define` 或嵌入 assets |
+| sqlite 持久化 | better-sqlite3（原生模块，ABI 需匹配） | 必须换成 `bun:sqlite`（Bun **不支持 N-API**，`better-sqlite3` 直接加载失败） |
+
+> Bun 那个 4.3s 中位大概率是**运行时被杀软反复扫描**（紧凑重启同一批 exe / 首次执行）；即便如此，它也**没有更快**。
+
+### 4.3 关键可行性验证：`bun:sqlite` 能顶替 `better-sqlite3`
+
+实测（`_dev/bun-probe.mts`，Bun 1.4.2 + 真实 web/dist）：把 `bun:sqlite` 的 `Database` 注入 `SqliteStore` 后，
+**health / 直传落库 / 消息读回 / 文件下载 / 分片上传 + 流式组装 / 同一文件二次上传 refs=2 / 流式导出 zip** 全部通过。
+
+为此做的两处**通用性改造**（与 Bun 无关，长期都有价值，已并入主线）：
+- `SqliteStore` 的句柄类型放宽为鸭子类型 `SqliteLike`（`exec` / `prepare().{run,get,all}`），
+  pragma 兼容两种调用形式，事务走 `withTransaction()`（有 `transaction()` 用它，没有就退化为直接执行）；
+- `run({ store })` 支持**注入 Store**（便于测试与非 Node 运行时）。
+
+### 4.4 各自的优势与代价
+
+**Bun compile 的优势**
+- 编译极快（1.3s vs 全流程 40s），零第三方打包依赖：`pkg` + `rcedit` + `fix-icon.mjs`（payload 修补）+ esbuild bundle 这一整套都可以不要；
+- **原生交叉编译**：`--target=bun-linux-x64|bun-windows-x64|bun-darwin-arm64` 直接在 Windows 上出 Linux/macOS 产物
+  （本项目当前的痛点：Linux 版必须在 Linux 机器上 `pnpm install` 才能拿到可用的 better-sqlite3）；
+- 内置 `bun:sqlite`：不再有「原生模块 ABI 与 Node 版本绑定」这类问题（当前最烦的一类故障）；
+- 运行时是新的 JSC，长期维护风险比「已停止维护的 @yao-pkg/pkg + 已 EOL 的 node18」低。
+
+**Bun compile 的代价**
+- **不是「单文件可分发」**：静态资源要另外处理（`Bun.embeddedFiles` / `import … with { type: "file" }` 需要**代码生成**把目录逐文件 import 进去，再写一层资产路由），
+  否则就回到「exe + web/ 目录」两件套；
+- **exe 资源元数据全无**：图标与版本信息仍是 Bun 的，需要额外接一个 `rcedit` 之类的资源编辑器（好在 Bun 的 PE 没有「payload 被重写」问题，这步比 pkg 简单）；
+- **体积更大**（+28.7 MB，含外置资源），冷启动没有优势；
+- **运行时语义换了**：JSC 而非 V8，`process`/Node 兼容层的边角行为需要逐项回归（本项目用了 `child_process` 调 `reg`、手写 zip、WASM 解码器等）；
+- **pkg 那条「动态 import better-sqlite3 会崩」的坑会重新出现**：Bun 下必须换成 `bun:sqlite`，即**要么放弃 pkg 要么维护两条入口**；
+- 生态/工具仍在大步演进，企业内网的分发签名、杀软白名单经验都比 Node 少。
+
+### 4.5 如果将来真要迁
+
+优先顺序（按投入产出）：
+1. **先拿到「资产内嵌 + exe 资源」这两块**：写一个 codegen（扫 `web/dist` → 生成 `import x from "./web/dist/…" with { type: "file" }` 清单），运行时用 `Bun.embeddedFiles` 做静态路由；再用 rcedit 补图标/版本；
+2. **`BunStore`**：`bun:sqlite` 的薄封装（今天的注入能力已经是现成的地基），并去掉 `better-sqlite3` 依赖与 ABI 预检逻辑；
+3. 用一个 feature flag 保留 pkg 入口一段时间（两条入口共用 `packages/server`，只是 store 与资产路由不同）；
+4. 逐项回归：`reg` 开机自启、手写 zip 导出、五个音频解码器、`child_process` 相关、WebSocket 心跳。
+

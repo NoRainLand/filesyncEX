@@ -1833,3 +1833,26 @@ es.download(p, name)。**顺带修复健壮性**：direct/chunk/cover 三个二�
   三、**设计取舍备忘**（直传阈值为何 8 MiB、切片为何由服务端定、裁剪为何不删附件、为何自研测试 runner、为何 ABI 失败要报错而非降级）。
 - **校验**：README 25 个目录锚点全部有效、6 个相对链接与 `img/image.png` 均存在；文中声明逐项核对过源码
   （5 个环境变量引用数、配置默认值、`dev:web` 代理端口、`chdir(exe 目录)`、产物名与 71.2 MB 体积、70 条测试）。
+
+---
+
+## [6.4.0] Bun compile vs pkg 实测对比（用户「帮我对比相对于当前项目 Bun compile 以及 PKG 之间的差距」）
+
+- **做法（全部实测，未下载/未引入到仓库）**：下载 Bun 1.4.2 便携版到 `_dev/bun`（gitignored），
+  ① 用 `bun:sqlite` 注入 `SqliteStore` 跑通服务端全链路；② `bun build --compile` 出 exe 并与现役 pkg 产物逐项对比（体积/冷启动/功能/PE 资源）。
+- **结论：暂时继续用 pkg**（数据见 `docs/NOTES.md` 第四节）：
+  | 维度 | pkg（现役） | Bun compile 1.4.2 |
+  |---|---|---|
+  | 产物 | 71.21 MB **单文件**（静态资源内嵌） | 93.61 MB + 需外置 web/dist 6.26 MB（合计 99.87 MB） |
+  | exe 资源 | 图标 + ProductName/FileVersion/OriginalFilename 全对 | **全是 Bun 的**（ProductName: Bun / 1.4.2 / Oven / bun.exe），图标也是 Bun |
+  | 冷启动 | 中位 638ms | 中位 4292ms（另有一次 638ms，疑杀软扫描；总之无优势） |
+  | 打包耗时 | 全流程 ~40s | `bun build --compile` **~1.3s**（254 模块） |
+  | 功能 | health/直传/下载/鉴权/音频转码(16044B) 全通 | **同上全通**，但 health.version 变 `unknown`（$bunfs 下找不到 package.json） |
+  | sqlite | better-sqlite3（需 ABI 匹配） | 必须换 `bun:sqlite`（Bun 不支持 N-API，better-sqlite3 直接加载失败） |
+- **Bun 的真实优势**：编译 1.3s 且**可原生交叉编译**（Windows 上直接出 linux/darwin 产物 —— 正打中本项目「Linux 版必须在 Linux 打包」的痛点）；内置 `bun:sqlite` 消除 ABI 类故障；可整体去掉 pkg+rcedit+fix-icon+esbuild 那套。
+- **Bun 的代价**：① 不是「单文件可分发」（静态资源要 codegen + `Bun.embeddedFiles` 自建资产路由）；② exe 图标/版本信息完全没有（需另接 rcedit）；③ 体积 +28.7 MB、启动无优势；④ 运行时语义换 JSC，需回归 `reg`/zip/WASM 解码器/child_process；⑤ 与 pkg 的「动态 import better-sqlite3 会崩」约束冲突 → 要么放弃 pkg 要么维护两条入口。
+- **可行性副产品（已并入主线，与 Bun 无关的通用性改造）**：
+  1. `SqliteStore` 句柄类型放宽为鸭子类型 `SqliteLike` + pragma 双形态兼容 + `withTransaction()`（无 `transaction()` 时退化为直接执行）；
+  2. `run({ store })` 支持**注入 Store**（测试/非 Node 运行时可换实现）。
+  这两处让「换 SQLite 驱动」从改代码变成注入；`better-sqlite3` 保持**静态 import**（pkg 要求，动态 import 会报 `Invalid host defined options`，注释已写明）。
+- **验证**：改造后服务端测试仍 **70 通过 0 失败**；`pnpm package` 重新打包成功并实测产物 —— health 正常（version 6.4.0 + limits）、`data/filesync.db` 正常写盘、**零降级告警**；Bun 侧 `_dev/bun-probe.mts` 9 项全过、`_dev/_compare_bun_pkg.mjs` 双产物 8 项全过、音频转码两者输出一致。

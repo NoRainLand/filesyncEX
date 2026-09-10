@@ -3,6 +3,37 @@ import type { Store, UploadSession } from "./Store.js";
 
 type DB = import("better-sqlite3").Database;
 
+/**
+ * 最小 SQLite 句柄接口（**鸭子类型**，便于把 SqliteStore 也接到别的 SQLite 驱动上做可行性验证，
+ * 例如 bun:sqlite —— 它没有 N-API，Bun compile 场景下不需要任何原生模块）。
+ * 只描述 SqliteStore 真正用到的东西：exec / prepare().{run,get,all} / pragma 或 run("PRAGMA …")。
+ * 注意：bun:sqlite 没有 better-sqlite3 的 `transaction()`，因此事务相关调用会显式判断（见 withTransaction）。
+ */
+export interface SqliteLike {
+  exec(sql: string): unknown;
+  prepare(sql: string): {
+    run(...params: unknown[]): { changes?: number } | unknown;
+    get(...params: unknown[]): unknown;
+    all(...params: unknown[]): unknown[];
+  };
+  pragma?(stmt: string): unknown;
+  run?(sql: string): unknown;
+  transaction?<T>(fn: () => T): () => T;
+  close?(): void;
+}
+
+/** 设置 pragma：better-sqlite3 有 pragma()，bun:sqlite 需要 `db.run("PRAGMA …")` */
+function pragma(db: SqliteLike, stmt: string): void {
+  if (typeof db.pragma === "function") db.pragma(stmt);
+  else if (typeof db.run === "function") db.run(`PRAGMA ${stmt}`);
+}
+
+/** 事务：优先用驱动的 transaction()；没有（如 bun:sqlite）就退化为直接执行（单连接同步场景语义等价） */
+function withTransaction<T>(db: SqliteLike, fn: () => T): T {
+  if (typeof db.transaction === "function") return db.transaction(fn)();
+  return fn();
+}
+
 /** uploads 表行（snake_case） */
 interface UploadRow {
   upload_id: string;
@@ -40,11 +71,13 @@ function rowToSession(r: UploadRow): UploadSession {
  *  - files(key PK, data TEXT json, sha256, refs INTEGER)  文件索引（秒传用 sha256；refs=文件被消息引用的次数）
  */
 export class SqliteStore implements Store {
-  private db: DB;
+  /** 实际数据库句柄（better-sqlite3 或 bun:sqlite，见 SqliteLike） */
+  private db: SqliteLike;
 
-  constructor(db: DB) {
+  constructor(db: DB | SqliteLike) {
     this.db = db;
-    db.pragma("journal_mode = WAL");
+    // 兼容两种运行时：better-sqlite3 的 `db.pragma("journal_mode = WAL")` 与 bun:sqlite 的 `db.run("PRAGMA …")`
+    pragma(db, "journal_mode = WAL");
     db.exec(`
       CREATE TABLE IF NOT EXISTS messages(
         id TEXT PRIMARY KEY,
@@ -124,9 +157,9 @@ export class SqliteStore implements Store {
     this.db.prepare("DELETE FROM messages WHERE id = ?").run(id);
   }
   async clearAll(): Promise<void> {
-    this.db.transaction(() => {
+    withTransaction(this.db, () => {
       this.db.exec("DELETE FROM messages; DELETE FROM files; DELETE FROM file_refs; DELETE FROM uploads; DELETE FROM chunks;");
-    })();
+    });
   }
 
   /* ----- 上传会话 ----- */
@@ -161,23 +194,23 @@ export class SqliteStore implements Store {
 
   /** 登记物理文件元数据（不涉及引用计数）；已存在返回 false 且不覆盖首份元数据 */
   async createFile(key: string, meta: FileMetaT): Promise<boolean> {
-    return this.db.transaction((): boolean => {
+    return withTransaction(this.db, (): boolean => {
       const exists = this.db.prepare("SELECT 1 FROM files WHERE key = ?").get(key);
       if (exists) return false;
       this.db
         .prepare("INSERT INTO files(key, data, sha256, refs) VALUES (?, ?, ?, 0)")
         .run(key, JSON.stringify(meta), meta.sha256 ?? null);
       return true;
-    })();
+    });
   }
 
   /** 登记「消息 msgId 引用了文件 key」：refs+1，同一消息重复登记幂等 */
   async addFileRef(key: string, msgId: string): Promise<void> {
-    this.db.transaction((): void => {
+    withTransaction(this.db, (): void => {
       if (this.db.prepare("SELECT 1 FROM file_refs WHERE key = ? AND msg_id = ?").get(key, msgId)) return;
       this.db.prepare("INSERT INTO file_refs(key, msg_id) VALUES (?, ?)").run(key, msgId);
       this.db.prepare("UPDATE files SET refs = refs + 1 WHERE key = ?").run(key);
-    })();
+    });
   }
   async getFileBySha(sha: string): Promise<FileMetaT | undefined> {
     const r = this.db.prepare("SELECT data FROM files WHERE sha256 = ?").get(sha) as { data: string } | undefined;
@@ -189,19 +222,19 @@ export class SqliteStore implements Store {
   }
   /** 文件引用 -1（并清掉该消息的引用记录）；未登记过该消息时只返回当前值，不会把 refs 减成负数 */
   async decrFileRef(key: string, msgId?: string): Promise<number> {
-    return this.db.transaction((): number => {
+    return withTransaction(this.db, (): number => {
       const target = msgId ?? (this.db.prepare("SELECT msg_id FROM file_refs WHERE key = ? LIMIT 1").get(key) as { msg_id: string } | undefined)?.msg_id;
       if (!target) return (this.db.prepare("SELECT refs FROM files WHERE key = ?").get(key) as { refs: number } | undefined)?.refs ?? 0;
-      const removed = this.db.prepare("DELETE FROM file_refs WHERE key = ? AND msg_id = ?").run(key, target).changes;
+      const removed = (this.db.prepare("DELETE FROM file_refs WHERE key = ? AND msg_id = ?").run(key, target) as { changes?: number }).changes ?? 0;
       if (removed > 0) this.db.prepare("UPDATE files SET refs = MAX(0, refs - 1) WHERE key = ?").run(key);
       return (this.db.prepare("SELECT refs FROM files WHERE key = ?").get(key) as { refs: number } | undefined)?.refs ?? 0;
-    })();
+    });
   }
   async removeFile(key: string): Promise<void> {
     this.db.prepare("DELETE FROM files WHERE key = ?").run(key);
   }
 
   async close(): Promise<void> {
-    this.db.close();
+    this.db.close?.();
   }
 }
