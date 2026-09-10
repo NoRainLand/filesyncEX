@@ -1872,3 +1872,22 @@ es.download(p, name)。**顺带修复健壮性**：direct/chunk/cover 三个二�
   | Bun compile（已实测） | ⚠️ 需自建 embeddedFiles 路由 | ❌ 无 | `bun:sqlite`（已验证） | ✅ 全平台 | 功能跑通，体积/启动/元数据吃亏 |
 - **顺带核实的事实**（本机）：Node 18/22 **没有** `--build-sea`，Node **25.9.0 有**；`require('node:sqlite')` 在 25.9 通过（22.15 未通过/需 flag）；node.exe 体积 18=66.6MB、22=80.5MB、**25=91.2MB**（pkg 用的压缩运行时 40.5MB）—— 这解释了 SEA 产物为什么最大。
 - **建议动手顺序**：① hakobu PoC（半天，改字段 + `hakobu doctor`）② Node SEA PoC（1–2 天，assets 路由 + `node:sqlite` 替掉 better-sqlite3，`Store` 注入能力已就绪）③ deno/Bun 仅在都不满意时再投入。
+
+---
+
+## [6.4.0] hakobu 迁移实测：管线跑通但暂不迁移（用户「你先试试 hakobu，如果没问题就迁移过去」）
+
+- **结论：保持 pkg**。hakobu 1.0.1 能把项目打出来并跑通全部功能，但**三处硬阻塞**使其无法替代 pkg（完整证据见 `docs/NOTES.md` 5.4）。
+- **做成的**：`hakobu . --entry dist/bundle.cjs --target node24-win-x64`（产物 107MB，内嵌 Node 24.14.0）；产物**验收 16/16 通过**（health/静态资源/WS/直传/引用计数/分片+流式SHA/动态切片/sqlite 落盘/管理接口鉴权/跨站拦截/导出 zip/正常退出）。
+- **阻塞项（可复现）**：
+  1. **自带 PE 元数据/图标注入会破坏 payload**：日志显示 `Injected PE metadata` 成功，但运行时 `pkg/prelude/bootstrap.js:1 SyntaxError: Invalid or unexpected token`；不带 `--icon/--product-name` 则完全正常 —— 与当年 rcedit 坑同源（重写 PE 会丢快照）。打包后用 rcedit 补元数据同样破坏 payload（`Pkg: Error reading from file`）。
+  2. **`--compress GZip` + 元数据注入** → `EBUSY: resource busy or locked`（不压缩可过，但体积 +8MB）。
+  3. **静态资源未进快照**：`hakobu inspect .` 只报 `Files (2 total)` —— CLI 的 `--assets` 与 `package.json` 的 `"hakobu"` 字段在已发布的 1.0.1 里**都未生效**（官方 doctor 自认「does not yet read legacy pkg config fields (scripts, assets)」）。结果 `/assets/*.js`、`/fonts/*`、夜鹭页全 404、首页落到「前端未构建」兜底 → **单文件可分发不成立**。
+  4. 体积 107MB vs pkg 71.18MB（+36MB，内嵌完整 Node 24 运行时）。
+- **净赚的通用改进（已并入主线）**：
+  1. 服务端 SQLite 打开顺序改为**优先 Node 内置 `node:sqlite`**（Node 22.5+/24+），回退 better-sqlite3 —— 消除原生模块 ABI 类故障，且 node24 目标不再依赖 better-sqlite3 预编译包；
+  2. 新增 `getRequire()` 多级回退（`__filename` → `import.meta.url` → 全局 require），修掉「CJS bundle 里 `import.meta.url` 被 esbuild 置空 → `createRequire` 报 filename 必须绝对路径」；
+  3. 测试辅助按运行时选驱动（`makeSqliteStore`/`openRawDb`/`sqliteGet`），Node 18（better-sqlite3）与 Node 25（node:sqlite）**都能跑满 70 条**（此前 Node 24+ 会跳过 27 条）；
+  4. `better-sqlite3` 由静态 import 改为惰性 require（打包目标 node24 下它无法加载），并在注释里写明 pkg 时代的约束由来。
+- **过程失误与修复（记录以免重犯）**：实验期间我把 `packages/shell/package.json` 的 `pkg` 字段删掉了（为验证 `hakobu` 字段是否被读取），导致随后 `pnpm package` 打出的 exe **丢失全部前端资源**（payload 从 31.5MB 掉到 24.2MB、首页显示「前端未构建」）。已恢复 `pkg` 字段并重新打包：**payload 31.55MB、产物 71.18MB、验收 16/16 通过**。
+- **验证**：Node 18 与 Node 25 下测试均 **70 通过 0 失败**；5 个包 `tsc` 全过；pkg 产物 16/16 验收通过（`_dev/_accept.mjs` 可复用）。

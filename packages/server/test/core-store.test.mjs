@@ -1,9 +1,8 @@
 import { describe, it, before, after, expect } from "./helpers/testkit.mjs";
 import path from "node:path";
 import fs from "node:fs";
-import Database from "better-sqlite3";
 import { SqliteStore, MemoryStore, SyncEngine } from "@filesyncex/core";
-import { rootDir } from "./helpers/server.mjs";
+import { rootDir, openRawDb } from "./helpers/server.mjs";
 
 const tmp = path.join(rootDir, "_dev", "test-tmp", "core-store");
 
@@ -25,7 +24,7 @@ describe("SqliteStore 文件引用计数", () => {
   before(async () => {
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.mkdirSync(tmp, { recursive: true });
-    db = new Database(path.join(tmp, "t.db"));
+    db = openRawDb(path.join(tmp, "t.db"));
     store = new SqliteStore(db);
     await store.init();
   });
@@ -72,7 +71,7 @@ describe("SqliteStore 文件引用计数", () => {
   });
 
   it("启动时按 messages 表重算 refs（旧库自动修复）", async () => {
-    const db2 = new Database(path.join(tmp, "legacy.db"));
+    const db2 = openRawDb(path.join(tmp, "legacy.db"));
     const store2 = new SqliteStore(db2);
     await store2.init();
     const meta = { name: "a.png", size: 10, mime: "image/png", sha256: "cafe", key: "legacy_key", url: "/api/file/legacy_key" };
@@ -82,7 +81,7 @@ describe("SqliteStore 文件引用计数", () => {
     db2.prepare("UPDATE files SET refs = 1 WHERE key = ?").run("legacy_key"); // 模拟旧版的错误状态
     db2.close();
 
-    const db3 = new Database(path.join(tmp, "legacy.db"));
+    const db3 = openRawDb(path.join(tmp, "legacy.db"));
     const store3 = new SqliteStore(db3); // 构造函数内重算 file_refs / refs
     await store3.init();
     expect(db3.prepare("SELECT refs FROM files WHERE key = ?").get("legacy_key").refs).toBe(2);

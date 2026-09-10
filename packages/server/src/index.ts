@@ -3,12 +3,9 @@ import path from "node:path";
 import http from "node:http";
 import net from "node:net";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { WebSocketServer } from "ws";
-// 注意：必须是**静态 import**。动态 import("better-sqlite3") 在 pkg 的 V8 快照下会报
-// `Invalid host defined options`（ModuleWrap 校验失败，module_wrap.cc:604）—— 这是本项目踩过的坑；
-// esbuild 打包时以 --external 把它转成 require。非 Node 运行时（Bun 不支持 better-sqlite3）请用 run({ store }) 注入实现。
-import Database from "better-sqlite3";
-import { MemoryStore, SqliteStore, SyncEngine, type Store } from "@filesyncex/core";
+import { MemoryStore, SqliteStore, SyncEngine, type SqliteLike, type Store } from "@filesyncex/core";
 import { loadConfig, type ServerConfig } from "./config.js";
 import { createHttpApp } from "./HttpServer.js";
 import { SocketServer } from "./SocketServer.js";
@@ -83,6 +80,55 @@ function isAbiMismatch(e: unknown): boolean {
   return err?.code === "ERR_DLOPEN_FAILED" || /NODE_MODULE_VERSION|compiled against a different Node\.js version/i.test(String(err?.message ?? ""));
 }
 
+/**
+ * 取一个可用的 `require`：不同产物形态下可用的入口不一样 ——
+ *  - ESM（tsx / tsc 产物 / Node SEA）：`createRequire(import.meta.url)`
+ *  - CJS（esbuild bundle → pkg/hakobu 快照）：`import.meta.url` 会被置空，改用 `__filename`
+ *  - 兜底：运行环境里本来就有 require（CJS）
+ * 注意必须在**调用时**再判断，不能在模块顶层（打包后 __filename/import.meta 的形态是产物决定的）。
+ */
+function getRequire(): NodeJS.Require {
+  const g = globalThis as unknown as { require?: NodeJS.Require; __filename?: string };
+  if (typeof __filename === "string") return createRequire(__filename);
+  try {
+    const url = import.meta.url;
+    if (url) return createRequire(url);
+  } catch {
+    /* import.meta 在 CJS 产物里不可用，继续兜底 */
+  }
+  if (g.require) return g.require;
+  throw new Error("无法取得 require（既没有 __filename 也没有 import.meta.url）");
+}
+
+/**
+ * 打开 SQLite 句柄：**优先用 Node 内置 `node:sqlite`**（Node 22.5+ 实验、24 起稳定），
+ * 拿不到才回退 better-sqlite3（老 Node 上仍可用）。
+ *
+ * 为什么要内置优先：内置模块没有原生依赖、没有 ABI 约束 —— 这正是本项目最烦的一类故障
+ * （better-sqlite3 的 `.node` 与 Node 版本强绑定，升级 Node 就要重新编译，预编译包常常滞后）。
+ * 打包目标 node24 下 better-sqlite3 尚无 ABI 137 预编译包，故打包产物必须走内置实现。
+ */
+async function openSqlite(file: string): Promise<{ db: SqliteLike; backup?: (dest: string) => Promise<void> }> {
+  type DatabaseSyncCtor = new (path: string) => SqliteLike & { backup?: (dest: string) => Promise<void> };
+  let DatabaseSync: DatabaseSyncCtor | undefined;
+  try {
+    DatabaseSync = (getRequire()("node:sqlite") as { DatabaseSync?: DatabaseSyncCtor }).DatabaseSync;
+  } catch {
+    DatabaseSync = undefined;
+  }
+  if (DatabaseSync) {
+    const db = new DatabaseSync(file);
+    // node:sqlite 的 backup() 在 24+ 提供；没有就退回「复制文件」的兜底（导出时会用到）
+    const backup = typeof db.backup === "function" ? (dest: string) => db.backup!(dest) : undefined;
+    return { db, backup };
+  }
+  // 回退：better-sqlite3（老 Node 上仍可用）。用 require 惰性取，避免在无原生模块的运行时（如 Bun）顶层就崩
+  const req2 = getRequire();
+  const BetterSqlite3 = (req2("better-sqlite3") as { default?: typeof import("better-sqlite3") }).default ?? req2("better-sqlite3");
+  const db = new (BetterSqlite3 as unknown as new (p: string) => SqliteLike & { backup: (dest: string) => Promise<void> })(file);
+  return { db, backup: async (dest: string) => { await (db as unknown as { backup: (d: string) => Promise<void> }).backup(dest); } };
+}
+
 async function createStore(cfg: ServerConfig): Promise<{ store: Store; backupDb?: (dest: string) => Promise<void> }> {
   if (cfg.store === "memory") {
     const s = new MemoryStore();
@@ -90,12 +136,10 @@ async function createStore(cfg: ServerConfig): Promise<{ store: Store; backupDb?
     return { store: s };
   }
   try {
-    const db = new Database(cfg.dbFile);
+    const { db, backup } = await openSqlite(cfg.dbFile ?? "filesync.db");
     const s = new SqliteStore(db);
     await s.init();
-    // 数据导出用：WAL 模式下生成一致快照（better-sqlite3 backup 是异步 API，必须 await）
-    const backupDb = async (dest: string): Promise<void> => { await db.backup(dest); };
-    return { store: s, backupDb };
+    return { store: s, backupDb: backup };
   } catch (e) {
     const msg = String((e as Error).message);
     // 原生模块与当前 Node ABI 不匹配：**不再静默降级内存存储**。

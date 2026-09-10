@@ -272,3 +272,40 @@
 3. deno compile / Bun compile：只在前两条都不满意时再投入（Bun 已验证「能做但要额外维护资产与元数据」，Deno 的 Node-API 约束对单文件分发不友好）。
 
 
+
+### 5.4 hakobu 实测结论（2026-09，@hakobu/hakobu 1.0.1 —— **暂不迁移**）
+
+用户要求「先试 hakobu，没问题就迁移」。实测下来**能跑通但没法整体替代 pkg**，故**保持 pkg**。以下是全部证据。
+
+**做成的部分（90% 管线打通）**
+- 打包成功：`hakobu . --entry dist/bundle.cjs --assets "web/**/*" --target node24-win-x64`，产物 **107 MB**（内含 Node 24.14.0 运行时）。
+- 产物**功能验收 16/16 通过**：health（version 6.4.0）、静态首页/前端资源/字体/夜鹭页、WebSocket、直传、引用计数与物理回收、分片 + 流式 SHA、动态切片、SQLite 落盘、管理接口鉴权（403/200）、跨站拦截、导出 zip、正常退出。
+- **运行时升到 Node 24 + 用内置 `node:sqlite`**（见下），彻底不需要 better-sqlite3。
+
+**三处硬阻塞（都有可复现证据）**
+1. **自带 PE 元数据/图标注入会破坏 payload → exe 直接起不来**：
+   `hakobu ... --icon FS.ico --product-name ... --file-version ...` 打包「成功且日志显示 Injected PE metadata」，但运行报
+   `pkg/prelude/bootstrap.js:1 SyntaxError: Invalid or unexpected token`（payload 被改坏）。不带 `--icon`/`--product-name` 时产物完全正常。
+   这与本项目当年踩过的 rcedit 坑同源：**任何重写 PE 资源的工具都会丢弃 pkg 快照数据**（我们有 `fix-icon.mjs` 专门处理它）。
+   试过替代方案：用 `rcedit` 在打包后补元数据/图标 → 报 `Pkg: Error reading from file`，同样破坏 payload。
+2. **`--compress GZip` 与元数据注入进一步冲突**：同一组合会直接报 `EBUSY: resource busy or locked`（不压缩时能成功，但体积 +8 MB）。
+3. **静态资源没进快照**：`hakobu inspect .` 显示 `Files (2 total)`，即 `--assets` / `package.json` 的 `"hakobu"` 字段都**未被采纳**
+   （1.0.1 里 hakobu 只按 `package.json.main` 找入口，文档描述的字段支持属于比 npm 上更新的版本）。
+   实测加 `--assets "web/**/*"` 后产物仍只有 2 个文件，`/assets/*.js`、`/fonts/*.woff2`、`/night-heron-ride.html` 全部 404，
+   首页走 SPA 兜底文案「前端未构建」。**单文件可分发这一核心诉求无法满足**。
+   （官方 doctor 也自认：`[legacy-pkg-config] Hakobu does not yet read legacy pkg config fields (scripts, assets)`）
+4. 体积：**107 MB vs pkg 71.18 MB**（+36 MB，因为内嵌完整 Node 24 运行时；pkg 用的是 GZip 压缩后的 node18 基础二进制）。
+
+**这次迁移尝试里净赚的通用改进（已并入主线，与迁不迁 hakobu 无关）**
+- 服务端 SQLite 打开顺序改为 **优先 Node 内置 `node:sqlite`**（Node 22.5+ 实验、24 起稳定），拿不到才回退 better-sqlite3：
+  - 彻底消除「原生模块 ABI 与 Node 版本绑定」这类故障；
+  - 打包目标升到 node24 时不再需要 better-sqlite3 的预编译包（Node 24 的 ABI 137 包当时还没发布）。
+- 新增 `getRequire()` 多级回退（`__filename` → `import.meta.url` → 全局 require），修复了「CJS bundle 里 `import.meta.url` 被置空 → createRequire 报 filename 必须为绝对路径」的问题。
+- 测试辅助改为**按运行时选驱动**（`makeSqliteStore` / `openRawDb` / `sqliteGet`），于是 Node 18（better-sqlite3）与 Node 25（node:sqlite）下**都能跑满 70 条测试**（此前 Node 24+ 会跳过 27 条 sqlite 用例）。
+- `SqliteStore` 句柄类型放宽为鸭子类型 `SqliteLike`（见第四节），可换任意 SQLite 驱动。
+
+**结论与重启条件**
+- 结论：**保持 pkg**。hakobu 的「自带元数据编辑、省掉 rcedit/fix-icon」正是最吸引人的点，但它恰好被自己的 payload 格式挡住了；
+  叠加静态资源未内嵌与 +36 MB 体积，迁移目前是净亏。
+- 何时值得再看：① 上游修掉「PE 元数据注入破坏 payload」；② `assets`/`hakobu` 字段在**已发布版本**里真正生效（可用 `hakobu inspect` 一行验证：`Files` 数应远大于 2）；
+  ③ 那时只需改 `package.json` 的 `pkg` → `hakobu` 字段（我们已确认 `SqliteStore` 注入与 node:sqlite 这两块地基就绪）。

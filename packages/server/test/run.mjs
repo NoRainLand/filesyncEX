@@ -14,12 +14,19 @@ import { runAll } from "./helpers/testkit.mjs";
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const filter = process.argv[2];
 
-/** 检测 better-sqlite3 是否能在当前 Node 加载（ABI 匹配） */
+/** 是否存在可用的 SQLite 驱动（node:sqlite 或 better-sqlite3）——与服务端 createStore 的优先级一致 */
 function sqliteAvailable() {
+  const require = createRequire(import.meta.url);
   try {
-    const require = createRequire(import.meta.url);
-    const Database = require("better-sqlite3");
-    new Database(":memory:").close();
+    const { DatabaseSync } = require("node:sqlite");
+    new DatabaseSync(":memory:").close();
+    return true;
+  } catch {
+    /* 继续试 better-sqlite3 */
+  }
+  try {
+    const D = require("better-sqlite3");
+    new (D.default ?? D)(":memory:").close();
     return true;
   } catch {
     return false;

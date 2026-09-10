@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
-import { startServer, uploadDirect, uploadChunked, openWs, device, sleep } from "./helpers/server.mjs";
+import { startServer, uploadDirect, uploadChunked, openWs, device, sleep, sqliteGet } from "./helpers/server.mjs";
 
 describe("上传链路与磁盘卫生", () => {
   let s;
@@ -16,12 +16,8 @@ describe("上传链路与磁盘卫生", () => {
     await s.stop();
   });
 
-  const refsOf = (key) => {
-    const db = new Database(path.join(s.dataDir, "filesync.db"), { readonly: true });
-    const row = db.prepare("SELECT refs FROM files WHERE key = ?").get(key);
-    db.close();
-    return row?.refs;
-  };
+  // 用统一的只读查询（内部按 Node 版本选 node:sqlite / better-sqlite3），避免测试受 ABI 影响
+  const refsOf = (key) => sqliteGet(path.join(s.dataDir, "filesync.db"), "SELECT refs FROM files WHERE key = ?", key)?.refs;
 
   it("同一文件直传两次：两条消息共享一个物理文件，refs=2", async () => {
     const body = Buffer.from("same content uploaded twice");
