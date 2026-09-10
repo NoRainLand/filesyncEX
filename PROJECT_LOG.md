@@ -1856,3 +1856,19 @@ es.download(p, name)。**顺带修复健壮性**：direct/chunk/cover 三个二�
   2. `run({ store })` 支持**注入 Store**（测试/非 Node 运行时可换实现）。
   这两处让「换 SQLite 驱动」从改代码变成注入；`better-sqlite3` 保持**静态 import**（pkg 要求，动态 import 会报 `Invalid host defined options`，注释已写明）。
 - **验证**：改造后服务端测试仍 **70 通过 0 失败**；`pnpm package` 重新打包成功并实测产物 —— health 正常（version 6.4.0 + limits）、`data/filesync.db` 正常写盘、**零降级告警**；Bun 侧 `_dev/bun-probe.mts` 9 项全过、`_dev/_compare_bun_pkg.mjs` 双产物 8 项全过、音频转码两者输出一致。
+
+---
+
+## [6.4.0] 打包方案横向评估：hakobu / Node SEA / Astra / deno compile（用户「继续对比下 @hakobu/hakobu、SEA、Astra、deno compile，先别实测，基于网上信息与文档简单评估」）
+
+- **只做信息评估（未实测）**，写入 `docs/NOTES.md` 第五节。评估维度锁定本项目三个硬需求：① 单文件可分发（含 web/dist 静态资源）② exe 图标/版本信息 ③ SQLite 怎么办。
+- **结论**：
+  | 方案 | 单文件含静态资源 | exe 图标/版本 | SQLite | 跨平台 | 判断 |
+  |---|---|---|---|---|---|
+  | **@hakobu/hakobu** 1.0.1 | ✅ `assets`，且**兼容旧 `pkg` 字段** | ✅ 内置（--icon/--product-name/--file-version） | better-sqlite3 照旧 | ✅ node24 全平台 | **最优先候选**：迁移≈改字段，可能省掉整套 fix-icon/rcedit |
+  | **Node SEA**（Node 25.5+ `--build-sea`） | ✅ `assets` 字典 + `sea.getAsset()` | ❌ 无 | 内嵌 .node→临时文件+dlopen，或换 `node:sqlite` | ⚠️ 自备目标 node + postject | **中期最稳官方路径**，要自写资产路由；体积 90–100 MB（内嵌完整 node.exe） |
+  | **Astra** | ✅ 号称单文件（资产细节未说明） | ✅ 内置 | 未说明 | ❌ 仅 Windows | 观望（更像 SEA 的便利封装） |
+  | **deno compile** | ⚠️ `--include-as-is ./dist`（2.1+） | ⚠️ 有 `--icon`，无版本信息 | Node-API addon 需本地 node_modules + `--allow-ffi`；或 `node:sqlite` | ✅ 任意目标交叉编译 | 交叉编译最强，但与「单文件」相斥 |
+  | Bun compile（已实测） | ⚠️ 需自建 embeddedFiles 路由 | ❌ 无 | `bun:sqlite`（已验证） | ✅ 全平台 | 功能跑通，体积/启动/元数据吃亏 |
+- **顺带核实的事实**（本机）：Node 18/22 **没有** `--build-sea`，Node **25.9.0 有**；`require('node:sqlite')` 在 25.9 通过（22.15 未通过/需 flag）；node.exe 体积 18=66.6MB、22=80.5MB、**25=91.2MB**（pkg 用的压缩运行时 40.5MB）—— 这解释了 SEA 产物为什么最大。
+- **建议动手顺序**：① hakobu PoC（半天，改字段 + `hakobu doctor`）② Node SEA PoC（1–2 天，assets 路由 + `node:sqlite` 替掉 better-sqlite3，`Store` 注入能力已就绪）③ deno/Bun 仅在都不满意时再投入。

@@ -216,3 +216,59 @@
 3. 用一个 feature flag 保留 pkg 入口一段时间（两条入口共用 `packages/server`，只是 store 与资产路由不同）；
 4. 逐项回归：`reg` 开机自启、手写 zip 导出、五个音频解码器、`child_process` 相关、WebSocket 心跳。
 
+---
+
+## 五、其它打包方案的信息评估（未实测，基于官方文档）
+
+> 面向本项目的三个硬需求来评估：**① 单文件可分发**（含 web/dist 静态资源）、**② exe 图标/版本信息**、**③ SQLite 怎么办**。
+> 触发这次调研的背景：现役 pkg 已归档（`@yao-pkg/pkg` 属维护状态、目标 node18 已 EOL）。
+
+### 5.1 结论速览
+
+| 方案 | 单文件（含静态资源） | exe 图标/版本 | SQLite 方案 | 跨平台构建 | 成熟度 | 对本项目的适配判断 |
+|---|---|---|---|---|---|---|
+| **@hakobu/hakobu** 1.0.1 | ✅ `assets` 字段，**兼容旧 `pkg` 字段** | ✅ 内置（`--icon`/`--product-name`/`--file-version`） | better-sqlite3 照旧（原生模块作为 assets） | ✅ node24 全平台 + AppImage/AppDir | ⚠️ 很新（2 个版本） | **最优先候选**：迁移成本≈改配置字段 |
+| **Node SEA**（`--build-sea`） | ✅ `assets` 字典 + `sea.getAsset()` | ❌ 无（需另接资源编辑器） | 内嵌 `.node` 到临时文件 + `process.dlopen`，或换 `node:sqlite` | ⚠️ 需自己准备目标平台 node 二进制 + postject | ✅ 官方维护（Node 25.5+ 内置 `--build-sea`） | **中期最稳的官方路径**，但要自己写一层资产路由 |
+| **Astra** | ✅ 号称单文件（未说明资产目录细节） | ✅ 内置 | 未说明 | ❌ 目前**只出 Windows** | ⚠️ 个人项目、较新 | 观望；它自己也不保证资产内嵌 |
+| **deno compile** | ⚠️ `--include-as-is ./dist` 可内嵌目录（2.1+） | ✅ Windows `--icon`（版本信息未提及） | Node-API addon 需**本地 node_modules + `--allow-ffi`**；或换 `node:sqlite` | ✅ **任意目标，官方支持交叉编译** | ✅ 成熟（Deno 2.x） | 交叉编译最强，但 Express/原生模块兼容面要逐项验证 |
+| **Bun compile**（已实测） | ⚠️ 需自建 `Bun.embeddedFiles` 资产路由 | ❌ 无 | 换 `bun:sqlite`（已验证可行） | ✅ 全平台交叉 | ⚠️ 新但迭代快 | 功能已跑通；体积/启动/元数据三项都吃亏 |
+
+### 5.2 逐项说明
+
+**① @hakobu/hakobu（最值得先试）**
+- 自我定位就是 **`@yao-pkg/pkg` 的继任者**（“The modern Node.js packager — the successor to @yao-pkg/pkg”），MIT。
+- **迁移几乎零成本**：`package.json` 里把 `"pkg"` 字段改名 `"hakobu"`（旧字段仍被接受，只打迁移警告），
+  `assets` 语义保留 —— 我们现有的 `"assets": ["../web/dist/**/*", "node_modules/better-sqlite3/**/*", …]` 可直接沿用。
+- **内置元数据编辑**（`--icon app.ico --product-name "filesyncex" --file-version 6.4.0`）→ 目前那套 `rcedit` + `fix-icon.mjs`（解析 payload 占位符再拼回）**可能整体不再需要**，这是最大吸引力。
+- 目标 **node24**（比现役 node18 新两代），支持 `--target all` 跨平台、`--bytecode`、`--compress Brotli/GZip`、`--bundle`（内部用 Rolldown，正好解决我们 ESM→CJS 的 bundle 步骤）、Linux AppDir/AppImage、macOS 签名/公证。
+- 风险：**1.0.1 且只有 2 个版本发布**，缺少大规模使用验证；原生模块（better-sqlite3）仍需按目标平台准备 `.node`（与 pkg 同样的限制）。
+- **行动建议**：值得花半天做一次 PoC（改 `href` 字段 + 去掉 fix-icon 步骤），但先别删 pkg 链路。
+
+**② Node SEA（官方，`--build-sea`）**
+- Node **25.5.0+** 内置 `node --build-sea sea-config.json`（此前是 `--experimental-sea-config` + `npx postject` 两步）；稳定性标注仍是 *Active development (1.1)*。
+- **静态资源有官方方案**：配置里 `assets: { "index.html": "./web/dist/index.html", … }`，运行时 `sea.getAsset(key)` / `getAssetAsBlob()` / `getAssetKeys()`（v22.20+/v24.8+）—— 我们要把 `express.static(webDir)` 换成一个「从 assets 取、按路径匹配」的小路由（约 30–50 行）。
+- **原生模块可行但要绕**：把 `.node` 作为 asset 内嵌，启动时写到临时文件再 `process.dlopen()`（官方文档给了示例）。或者干脆换 **`node:sqlite`**（Node 22.5+ 内置；本机实测 Node 25.9 `require('node:sqlite')` 通过）—— 后者能把 better-sqlite3 与 ABI 问题一起彻底拿掉，`Store` 抽象正好接得上。
+- **已知坑**：注入的脚本**不能 `require` 文件系统上的模块**（必须先 bundle 成单文件，我们已有 esbuild 这步）；`useCodeCache: true` 时 `import()` 不可用；跨平台生成时要关掉 `useCodeCache`/`useSnapshot`；Linux arm64 容器里 postject 产物 `process.dlopen` 会崩（官方 caveat）。
+- **体积**：内嵌的是完整 `node.exe`（本机实测 Node 18 66.6 MB / Node 22 80.5 MB / **Node 25 91.2 MB**），比 pkg 压缩后的运行时（40.5 MB）大 —— 最终 exe 大概率落在 **90–100 MB**，是本表里最大的。
+- 好处是**完全官方、无第三方归档风险**，且能顺手升级到 LTS 运行时。
+
+**③ Astra（`astra-cli`）**
+- 定位「js-to-exe 编译器」，**esbuild bundle → 生成 blob → postject 注入 node.exe → 改元数据**，本质是**把 SEA 那套流程封装好**（它自己也说「有 workaround 绕开 Node SEA 的限制」）。
+- 官方对比表写：支持 Node 24、支持 ESM、内置元数据编辑、产物 ~75 MB、用 UPX 可压到 ~30 MB。
+- 但它**目前只支持 Windows**（macOS/Linux 在计划中），且没说明「静态资源目录怎么内嵌」—— 对我们这种要靠 `web/dist` 的项目是关键未知数。
+- 个人项目、体量小；作为「SEA 的便利前端」可以观望，不作为主线。
+
+**④ deno compile**
+- **交叉编译最强**：`--target x86_64-pc-windows-msvc | x86_64-unknown-linux-gnu | aarch64-apple-darwin …`，官方说「无论宿主平台都能编到所有目标」，并且**编译时下载对应 `denort`**（启动器只含运行所需，体积更小）—— 直接解决我们「Linux 版必须在 Linux 打包」的痛点。
+- **静态资源有正规方案**：`--include-as-is ./dist`（2.1+）把已构建的前端产物原样内嵌，运行时用 `import.meta.dirname + "/…"` 读取（官方示例正是「Vite/webpack 产物」场景）。
+- **图标**：Windows 有 `--icon icon.ico`；但**没有提到版本信息（ProductName/FileVersion）**，这块大概率仍要外部工具。
+- **SQLite**：Deno 2.0+ 支持 **Node-API addon**，但要求**本地 `node_modules` + `--allow-ffi`**（`--allow-ffi` 可在编译时固化）—— 也就是说 better-sqlite3 也许能跑，但会引入「必须带 node_modules」的约束，和「单文件分发」相冲突。更干净的路是换 `node:sqlite`（Deno 也实现了 `node:` 兼容层）。
+- 其余风险：Express 是 CJS 依赖树（Deno 对 CJS 支持好，但 `.cjs` 解析需要本地 node_modules，同样与单文件相斥）；本项目还用了 `child_process` 调 `reg`、手写 zip、WASM 音频解码器，这些都要逐项回归。
+
+### 5.3 如果要动手，建议的顺序
+
+1. **hakobu PoC（半天）**：改 `"pkg"` → `"hakobu"` 字段，`hakobu doctor` 看体检结果，试着去掉 `fix-icon.mjs`；跑通就基本等于「pkg 的现代化续命」。
+2. **Node SEA PoC（1–2 天）**：把 `webDir` 改成 assets 路由 + 用 `node:sqlite` 替掉 better-sqlite3（`Store` 注入能力已经就绪），Node 25 跑 `--build-sea`；这条能顺手把运行时升级到现代 Node、并摆脱所有原生模块问题。
+3. deno compile / Bun compile：只在前两条都不满意时再投入（Bun 已验证「能做但要额外维护资产与元数据」，Deno 的 Node-API 约束对单文件分发不友好）。
+
+
