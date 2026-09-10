@@ -5,7 +5,7 @@ import ClipboardJS from "clipboard";
 import type { DeviceInfoT, MsgDataT } from "@filesyncex/protocol";
 import { getDevice, saveDevice } from "./device.js";
 import { WsClient } from "./ws.js";
-import { uploadFile, DIRECT_UPLOAD_LIMIT, apiUploadCover, apiUploadMsgCover, fetchHealth } from "./api.js";
+import { uploadFile, FALLBACK_LIMITS, apiUploadCover, apiUploadMsgCover, fetchHealth, fmtLimitBytes, type UploadLimitsT } from "./api.js";
 import type { Lang } from "./i18n.js";
 import { loadLang, saveLang, dict, dayLabel, fmtType } from "./i18n.js";
 import prismTheme from "./prism-theme.css?inline";
@@ -28,7 +28,7 @@ export class FilesyncApp extends LitElement {
     connState: { state: true }, notices: { state: true },
     text: { state: true }, codeMode: { state: true }, codeLang: { state: true }, codeText: { state: true },
     uploads: { state: true }, sheet: { state: true }, preview: { state: true }, nick: { state: true },
-    httpUrl: { state: true }, lanIps: { state: true }, appVer: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, langOpen: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, lang: { state: true },
+    httpUrl: { state: true }, lanIps: { state: true }, limits: { state: true }, appVer: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, langOpen: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, lang: { state: true },
   };
 
   msgs: MsgDataT[] = [];
@@ -58,6 +58,13 @@ export class FilesyncApp extends LitElement {
   httpUrl = "";
   /** 备选局域网地址（多网卡机器上首个地址未必可达，二维码面板列出备用） */
   lanIps: string[] = [];
+  /** 服务器下发的上传限制（设置界面显示 + 上传前预检 + 失败分支判定；来自 /api/health） */
+  limits: UploadLimitsT | null = null;
+
+  /** 直传阈值（服务器下发优先，未取到时用与服务端一致的兜底值）：全前端只此一处判定，避免硬编码漂移 */
+  private directUploadLimit(): number {
+    return this.limits?.directUpload ?? FALLBACK_LIMITS.directUpload;
+  }
   /** 应用版本（来自 /api/health，默认与当前版本一致） */
   appVer = "unknown";
   qrDataUrl = "";
@@ -128,6 +135,7 @@ export class FilesyncApp extends LitElement {
         this.lanIps = (d.lanIps ?? []).filter((ip) => ip !== d.lanIp).map((ip) => `${location.protocol}//${ip}${d.port ? `:${d.port}` : ""}`);
       }
       if (d?.version) this.appVer = d.version;
+      if (d?.limits) this.limits = d.limits;
     });
     this.ws = new WsClient(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`, {
       onConnecting: () => { this.connState = "connecting"; },
@@ -403,7 +411,8 @@ export class FilesyncApp extends LitElement {
     }
     this.ws?.send({ type: "rename", name: n });
     if (this.self) { const d = { ...this.self, deviceName: n }; this.self = d; saveDevice(d); }
-    this.sheet = null;
+    this.flash(this.t("nick_saved"));
+    // 注意：这里**不再关闭设置面板** —— 用户回车改名后应留在设置界面（此前 sheet=null 导致回车即关闭）
   }
   private toggleTheme(): void {
     this.theme = this.theme === "dark" ? "light" : "dark";
@@ -446,18 +455,23 @@ export class FilesyncApp extends LitElement {
         this.msgs = this.msgs.filter((m) => m.id !== key);
         this.uploads = this.uploads.filter((x) => x !== rec);
       } catch (e) {
-        console.error("上传失败:", e);
-        if (file.size <= DIRECT_UPLOAD_LIMIT) {
-          // 小文件（≤8MB 直接上传）：失败直接移除占位卡并提示（无断点续传价值）
+        // 预期内的拒绝（如超过单文件上限）用 warn，真正的异常才用 error —— 避免污染控制台错误面板
+        const reason = e instanceof Error ? e.message : String(e);
+        const expected = /文件过大|超过单文件上限|校验失败/.test(reason);
+        (expected ? console.warn : console.error)("上传失败:", e);
+        // 提示优先展示服务端/预检给出的**具体原因**（如「超过单文件上限 2.0 MB」），否则回退到通用文案
+        const tip = expected && reason ? reason : null;
+        if (file.size <= this.directUploadLimit()) {
+          // 直传文件（≤ 服务器下发的直传阈值）：失败直接移除占位卡并提示（无断点续传价值）
           this.msgs = this.msgs.filter((x) => x.id !== key);
           this.uploads = this.uploads.filter((x) => x !== rec);
-          this.flash(this.t("upload_fail", { name: file.name }));
+          this.flash(tip ?? this.t("upload_fail", { name: file.name }));
         } else {
           // 大文件（分片上传）：保留占位卡，标记失败 → 点击可断点续传（File 引用仍在内存）
           rec.fail = true; rec.pct = -1;
           this.uploads = [...this.uploads];
           this.msgs = [...this.msgs];
-          this.flash(this.t("upload_interrupted", { name: file.name }));
+          this.flash(tip ?? this.t("upload_interrupted", { name: file.name }));
         }
       }
     }
@@ -911,7 +925,7 @@ export class FilesyncApp extends LitElement {
     return html`
       <div class="container">
       <header class="app">
-        <div class="logo ${this.connState}" @click=${() => { if (this.debounceKey("settings", 300)) this.sheet = "settings"; }}>filesyncEX</div>
+        <div class="logo ${this.connState}" role="button" tabindex="0" title=${this.t("sheet_settings")} @click=${() => { if (this.debounceKey("settings", 300)) this.sheet = "settings"; }} @keydown=${(e: KeyboardEvent) => { if ((e.key === "Enter" || e.key === " ") && this.debounceKey("settings", 300)) { e.preventDefault(); this.sheet = "settings"; } }}>filesyncEX</div>
         <div class="spacer"></div>
         <button class="iconbtn" title=${this.t("qr")} @click=${() => { if (this.debounceKey("qr", 300)) this.openQr(); }}>${I_QR}</button>
         <button class="iconbtn" title=${this.t("theme")} @click=${() => { if (this.debounceKey("theme", 300)) this.toggleTheme(); }}>${this.theme === "dark" ? I_MOON : I_SUN}</button>
@@ -993,8 +1007,8 @@ export class FilesyncApp extends LitElement {
         <label>${this.t("my_nick")}
           <input class="field" .value=${this.nick} maxlength="10" placeholder=${this.t("nick_placeholder")} @input=${(e: Event) => (this.nick = (e.target as HTMLInputElement).value.replace(/[^A-Za-z0-9_]/g, ""))} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("rename", 600)) this.rename(); }} />
         </label>
-        <p class="muted">${this.t("device_fp")}</p>
-        <code class="fp">${this.self?.deviceId ?? ""}</code>
+        <div class="fp-row"><span class="fp-label">${this.t("device_fp")}</span><code class="fp">${this.self?.deviceId ?? ""}</code></div>
+        ${this.limits ? html`<p class="muted">${this.t("upload_limit", { size: fmtLimitBytes(this.limits.maxFileSize), chunkMin: fmtLimitBytes(this.limits.chunkSizeMin), chunkMax: fmtLimitBytes(this.limits.chunkSizeMax) })}</p>` : nothing}
         <hr />
         <!-- 语言切换 -->
         <p class="st-sec">${this.t("st_lang")}</p>

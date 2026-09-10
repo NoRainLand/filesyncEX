@@ -22,6 +22,8 @@ export async function startServer(opts = {}) {
       dataDir,
       store: opts.store ?? "sqlite",
       quiet: true,
+      // 允许用例覆盖限制项（如把 maxFileSize 调小以验证超限拒绝）
+      ...(opts.config ?? {}),
     },
     verbose: false,
   });

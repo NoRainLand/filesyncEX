@@ -1709,3 +1709,103 @@ es.download(p, name)。**顺带修复健壮性**：direct/chunk/cover 三个二�
   - 启动 exe：`/api/health` 返回 `version 6.2.0` + `lanIps`，启动 banner `filesyncEX 6.2.0`，**无 better-sqlite3 降级告警**，`release/data/filesync.db` 正常生成（Node18 ABI 匹配、sqlite 持久化生效）。
   - 对 exe 跑端到端 12 项全过（临时脚本 `_dev/_verify_exe.mjs`）：无令牌 403 / 跨站 Origin 403 / 令牌放行并查到自启状态 / 同文件两传共享物理文件 / 删一条消息后另一条仍可下载（引用计数修复在 exe 内生效）/ 删最后一条引用才回收 / 流式导出 zip 200 / 导出无令牌 403。
   - 测试套件仍 36 通过 0 失败；测试期间写入的 HKCU Run 自启项与 `release/data`、`release/*.exe.bak` 已清理。
+
+---
+
+## [6.4.0] 界面显示效果与设置面板评审（用户「有什么值得优化的？比如页面显示效果？设置界面？」）
+
+- **做法**：无头 Chrome 实拍 8 张截图（桌面浅/深、移动主界面、设置面板桌面/移动、二维码、图片预览、移动代码模式）+ 专项度量脚本（对比度/触控尺寸/焦点样式/减弱动效/布局宽度）。
+- **实测发现（待优化，尚未改动代码）**：
+  1. **浅色 muted 文字对比度 4.12**（`rgb(111,122,130)` on `rgb(246,248,250)`）：时间戳、文件副信息、日期分隔为 12–13px，WCAG AA 正文需 4.5 → 差一点，建议调到 ≈`#5f6b73`（≈5.6）。
+  2. **深色主题发送者名对比度仅 3.09**（`rgb(4,120,120)` on 卡片 `rgb(26,32,41)`）：品牌色 #047878 在深色底上明显偏暗（logo 同样偏暗），建议深色下用亮一档的 teal（≈`#2fb3ab`）做文字/强调。
+  3. **删除角标 26×26（桌面卡片右上）**：低于通用 40–44px 触控目标，鼠标也偏小；建议桌面 ≥32×32（移动端长按删除不受影响）。
+  4. **无 `prefers-reduced-motion` 支持**：toast/弹窗/预览/上传环等多处动画，建议加全局降级规则。
+  5. **焦点样式不统一**：部分控件走浏览器默认 outline（`auto 1px`），输入框用品牌色 3px shadow → 建议统一 `:focus-visible`。
+  6. **桌面布局偏窄**：容器 1000px、消息卡 620px，1280 视口下右侧大片留白，且顶部输入框被拉长到 800px。
+  7. **时间戳冗余**：已有「今天 · 2026/09/10」分隔，每条消息仍显示完整 `2026/09/10 16:14`，条头占宽且重复；建议条内只留 `16:14`（hover 显示完整）。
+  8. **设置界面可改进点**：面板高度 771px（内容 941px，必须滚动，首屏看不到「关于」）；无显式关闭按钮（靠点标题/点遮罩）；设备指纹 `9a625997` 裸串无分组/无复制；语言用原生 radio；缺「存储占用/数据导出/重置数据/上传大小限制/主题跟随系统」等本地管理能力。
+- 结论与建议清单已同步给用户（按优先级 P0–P2），等待用户选择要执行的项目。
+
+---
+
+## [6.4.0] 界面：减弱动效 + 键盘焦点统一 + 设置面板隐藏滚动条（用户「1，P0的减弱动效以及焦点修改，其他的不要动。2，不要显示设置面板的上下滚动条。」）
+
+- **范围**：只做这三项，其余（对比度/深色强调色/删除按钮尺寸/布局宽度/时间戳格式/设置面板功能）**按要求未动**。
+- **改动**：
+  1. `packages/web/src/app.css` 末尾新增 `@media (prefers-reduced-motion: reduce)` —— 关闭动画/过渡到 0.01ms（toast 淡入淡出、弹窗缩放/滑入、预览、长按浮起、频谱与连接点常驻动画），并去掉 toast 上移位移；上传进度环是真实进度反馈（非装饰）故不在降级范围。
+  2. 焦点可见性统一：新增**组件类** `:focus-visible` 规则（`.btn/.iconbtn/.bracebtn/.addbtn/.sendbtn/.att/.lang-pick/.lang-opt/.del-corner/.play/.thumb/.vthumb/.logo/[tabindex]`）→ 品牌色 2px + 2px 偏移；输入框/文本域保持自身 `:focus` 焦点环（`outline: none` 防双环）。同时给 `.logo` 加 `role="button" tabindex="0"` 与 Enter/Space 键处理（此前只能鼠标点开设置）。
+  3. `.settings-panel .panel` 滚动条隐藏（`scrollbar-width: none` + `-ms-overflow-style: none` + `::-webkit-scrollbar{width:0}`），**保留滚动能力**。
+- **踩坑（重要，别再踩）**：
+  - `*:focus-visible`（特异性 0）**不会生效**——浏览器默认焦点环压过它；实测连 `button:focus-visible`、甚至 `.btn:focus-visible{… !important}` 都被压过，最终只有**组件类选择器**版本稳定生效（`.iconbtn` 生效而 `.btn` 不生效这一现象就是特异性/默认环差异导致的）。
+  - 验证时读到 `outline-width: 3px / offset: 0px` 的「假失败」：`.btn { transition: .15s }` 会把 `outline` 一起补间，需**等过渡结束（≥260ms）再读计算值**，否则读到中间值。
+  - 我第一次改完没重新 `vite build`（命令路径写错导致构建静默失败），于是拿旧产物测出「规则不存在」的结论 —— 改 CSS 后务必确认产物 hash 变化。
+- **验证**（无头 Chrome + CDP，`_dev/_verify_motion_focus.mjs`）：15 项全过 —— 默认环境动效正常；开 `prefers-reduced-motion` 后 transition/animation 均降级为 0.01ms 且 `matchMedia` 生效；五个控件焦点环均为 `rgb(4,120,120) 2px solid` + offset 2px；鼠标路径聚焦不显示焦点环（`:focus-visible` 语义正确）；logo 键盘聚焦可见；设置面板 `overflow-y:auto` 且 `scrollbar-width:none`、`::-webkit-scrollbar` 宽 0px、`scrollTop` 可滚动（170）；界面回归 13/13 通过、控制台零错误；服务端测试 36/36 通过。
+
+---
+
+## [6.4.0] 上传大小上限（默认 16 GiB）+ 设置界面回车不再关闭（用户「1，你动手修复吧，1，2，3都做。默认设置支持最大的文件为16G。2，设置界面的输入框回车之后，不要关闭设置界面」）
+
+### ① 单文件上限：从「隐式分散」改为「一处配置 + 全链路一致」
+- **问题**：上限此前是**隐式分散**的 —— 分片/direct 的 `express.raw` 写死 64mb、直传阈值 8 MiB 在前端写死、分片大小 1 MiB 固定；用户拖 200 MB 文件进来，服务端按 1 MiB 分片，到第 64 片才突然报「请求体过大」；而 3 GB 文件更糟：**先花几十秒算完整文件 SHA-256，再被拒**。
+- **服务端（`config.ts`）**：新增两个可配置项（默认值即最终要求）——
+  `maxFileSize`：**默认 16 GiB（17179869184）**，0 = 不限制；`chunkSize`：默认 1 MiB。
+- **服务端（`upload.ts`）**：`init` 在**创建会话之前**按 `maxFileSize` 拒绝（`文件过大：3.0 MB 超过单文件上限 2.0 MB（可在 serverConfig.json 调整 maxFileSize，0 = 不限制）`）；`direct` 同样受控；`chunk` 新增单片大小校验（超过约定分片大小 → 可读的「分片过大：…请按 init 返回的 chunkSize 切分」，不再落到笼统的「请求体过大」）；新增 `limits()` 与 `fmtBytes()`。
+- **服务端（`HttpServer.ts`）**：`/api/health` 新增 `limits: { directUpload, maxFileSize, chunkSize }`；分片端点 `express.raw` 上限由 64mb 改为 `chunkSize × 2`、direct 端点改为 `DIRECT_LIMIT + 1MB`（原来写死 64mb，比真实直传上限大 8 倍，误导排查）。
+- **前端（`api.ts`）**：新增 `UploadLimitsT` / `FALLBACK_LIMITS`（服务端不可达时的兜底，与服务端默认一致）/ `fetchLimits()` / `fmtLimitBytes()`；`uploadFile()` **在算哈希之前**先按服务器下发的上限预检，超限直接抛错 —— 不白算 SHA-256、不发任何请求。
+- **前端（`app.ts` + `i18n.ts`）**：设置界面「昵称」下方显示「单个文件上限：X（超出会在上传前直接提示，不消耗流量）」；上传失败提示优先展示**具体原因**（如「文件过大：3.0 MB 超过单文件上限 2.0 MB…」），而不是笼统的「上传失败」；预期内的拒绝走 `console.warn`，不再污染控制台错误面板。
+
+### ② 设置界面回车不再关闭
+- **根因**：`rename()` 末尾有一句 `this.sheet = null` —— 在昵称输入框按回车改名成功后，直接把设置面板关掉了。
+- **修复**：去掉该行，改为 `flash("昵称已保存")`（新增 i18n `nick_saved` 中英），改完留在设置界面。
+
+### 验证
+- **服务端测试 42 通过 0 失败**（新增 6 条）：health 下发 limits（默认 16 GiB / 8 MiB / 1 MiB）；maxFileSize 调成 2 MiB 后 → 超限 `init` 400 且**不创建会话目录**、等于上限放行、direct 路径同样受控、单片超约定大小给可读错误。
+- **浏览器端到端 10/10 通过**（`_dev/_verify_limit_rename.mjs`）：选 3 MiB 文件（上限 2 MiB）→ 提示具体原因、**零上传请求**、无占位卡；选 200 KiB 文件 → 正常上传并渲染；设置面板显示「单个文件上限：2.0 MB」；昵称输入框回车 → **面板仍打开** + 提示「昵称已保存」+ localStorage 身份已更新；控制台无错误。
+- UI 回归 13/13 通过；文档（`docs/API.md` §1/§4、README 已知限制）已补充上限与 `limits` 字段说明。
+
+---
+
+## [6.4.0] 直传阈值也改为配置下发 + 前端彻底去硬编码（用户「改为统一，现在切片大小多大？」）
+
+- **答**：切片大小（`chunkSize`）**默认 1 MiB**（1048576 字节），可在 `serverConfig.json` 调整；协议字段，客户端一律按 `init` 返回值切分。
+- **统一的两处硬编码**（此前前端写死 `DIRECT_UPLOAD_LIMIT = 8 MiB`，与服务器下发的 `limits.directUpload` 可能漂移）：
+  1. `app.ts` 的上传失败分支（决定「直接取消」还是「保留占位卡供断点续传」）→ 改用新增的 `directUploadLimit()`（服务器下发优先，未取到用 `FALLBACK_LIMITS`）；
+  2. `ui/messages.ts` 的 `retryable` 判定（失败的大文件占位卡是否可点击续传）→ 同一来源（`app.limits?.directUpload ?? FALLBACK_LIMITS.directUpload`）。
+  前端常量 `DIRECT_UPLOAD_LIMIT` 已删除（仅保留 `FALLBACK_LIMITS` 作为服务器不可达时的兜底）。
+- **直传阈值也做成配置项**：`config.ts` 新增 `directUpload`（默认 8 MiB），`UploadService` 用 `directLimit`（不再直接用常量），`limits()` 下发配置值，direct 端点 `express.raw` 上限由它派生；
+  并加**一致性收敛**：`directUpload > maxFileSize` 时自动收敛到 `maxFileSize` 并告警（否则错误信息自相矛盾）。
+- **验证**：
+  - 服务端测试 **45 通过 0 失败**（新增 3 条：默认下发 8 MiB；`directUpload=64KiB` 时 health 与直传拒绝阈值同步变化；`directUpload > maxFileSize` 自动收敛）。
+  - 浏览器端到端（`_dev/_verify_direct_unify.mjs`，把 `directUpload` 配成 64 KiB 故意与旧硬编码不同）：32 KiB → 走 `/api/upload/direct` 且**不碰分片接口**；**128 KiB → 改走分片**（若还硬编码 8 MiB 就会走直传，此条直接证明前端跟随服务器配置）；2 MiB（> maxFileSize 1 MiB）→ 上传前拒绝、**零请求**。7/7 通过。
+
+---
+
+## [6.4.0] 动态切片大小（按文件大小自动取 1–8 MiB）+ 设置界面指纹行并排（用户「全部做吧。设置里边有个设备指纹，值和描述放大同一行里边吧」）
+
+### 依据：先做了实测基准（256 MiB 数据、本地回环）
+| 配置 | 实际切片 | 分片数 | 总耗时 | 吞吐 | 单片 p95 | 服务端 RSS 峰值 |
+|---|---|---|---|---|---|---|
+| 固定 1 MiB | 1 MiB | 256 | 3.49s | 73.3 MB/s | 10.8ms | 397 MB |
+| 固定 4 MiB | 4 MiB | 64 | 2.46s | 103.9 MB/s | 31.4ms | 381 MB |
+| 固定 8 MiB | 8 MiB | 32 | 3.87s | 66.1 MB/s | 53.8ms | 397 MB |
+| 动态 1–8 MiB | 1 MiB | 256 | 2.56s | 100.0 MB/s | 10.3ms | 377 MB |
+
+结论：**切片越大越快（省每请求开销），但服务端内存几乎不变**（落盘逐片处理，任意时刻只有一片在内存里；RSS 380–400 MB 是底座）。
+瓶颈是**分片数**，而单片过大受 WiFi 抖动重传粒度变差 —— 故按「分片数 ≈ 4096」动态取，区间收敛在 1–8 MiB。
+
+### 实现（`serverConfig.json` 由「固定 chunkSize」改为区间；服务端权威 + 客户端跟随不变）
+- **算法**（`config.ts`）：`computeChunkSize(fileSize)` = 「`文件大小/4096` 取最近 2 的幂」再收敛到 `[chunkSizeMin, chunkSizeMax]`；
+  `computeChunkPlan()` 另加**分片数硬上限** `MAX_CHUNK_COUNT=32768` 兜底（上限被调得极大又锁死小切片时自动放大，防止分片数爆炸）。
+  抽样：1 GiB→1 MiB/1024 片，4 GiB→1 MiB/4096 片，**8 GiB→2 MiB/4096**，**16 GiB→4 MiB/4096**，32 GiB→8 MiB/4096，64 GiB→8 MiB/8192。
+- **配置**：`chunkSizeMin`（默认 1 MiB）/ `chunkSizeMax`（默认 8 MiB）；**旧配置 `chunkSize` 自动迁移**为等值 min=max（保持「固定切片」语义，行为不变）并告警；
+  `chunkSizeMin > chunkSizeMax` 自动收敛并告警。分片端点 `express.raw` 上限改由 `chunkSizeMax × 2` 派生。
+- **接口**：`/api/health` 的 `limits` 改为下发 `chunkSizeMin/chunkSizeMax`（**不再下发单一 chunkSize**）；具体某文件的切片由 `init` 返回的 `chunkSize` 决定；断点续传复用会话时返回**会话记录的那个切片**（同一文件必然算出同一值）。
+- **前端**：`UploadLimitsT` 同步改为 min/max（删除已无用的 `DIRECT_UPLOAD_LIMIT` 之后，`FALLBACK_LIMITS` 也补上新区间）；上传仍严格按 `init.chunkSize` 切分；
+  设置界面文案改为「单个文件上限：16.00 GB · 切片 1.0 MB–8.0 MB（按文件大小自动取…）」。
+- **设置界面指纹行**：描述与值**并排一行**（`.fp-row` flex：描述不换行、值可省略可选中），窄屏（≤420px）自动堆叠；截图确认同一水平线（gap 8px）。
+
+### 验证
+- 服务端测试 **70 通过 0 失败**：新增 `chunk-size.test.mjs`（19 条：算法抽样表、2 的幂/区间不变量、min=max 固定切片、min>max 防御、分片数硬上限、**init 下发与实际算法一致**、大文件切片单调不减、health 只下发区间、固定切片配置生效）+ `config.test.mjs`（6 条：在临时目录跑子进程验证 —— 默认值、旧 `chunkSize` 迁移、min/max 生效、min>max 收敛、directUpload>maxFileSize 收敛）。
+  另修掉 1 条旧断言（health 不再下发单一 `chunkSize`）。
+- UI 回归 13/13 通过、控制台零错误；指纹行并排经 CDP 量测（中心线差 <3px）并截图留档（`_dev/_shots/14-fp-row.png`）。
+- 基准脚本 `_dev/_bench_chunk.mjs` 可复用（改 min/max 即可对比策略）。

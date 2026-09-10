@@ -74,6 +74,8 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
       /** 全部可用局域网地址（多网卡机器上首个未必可达，前端可提示备用地址） */
       lanIps: lanAddresses(),
       port: req.socket.localPort ?? cfg.httpPort,
+      /** 上传限制：客户端启动时据此做**上传前预检**（避免大文件先算完 SHA-256 才被拒） */
+      limits: uploads.limits(),
     })
   );
 
@@ -97,10 +99,11 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     res.json(r.res);
   });
 
-  /* 上传：分片（binary body） */
+  /* 上传：分片（binary body）。limit 按「分片大小上限 × 2」给足余量（实际切片由 init 下发，可能更小）：
+     单片超过约定大小的请求由 uploads.chunk() 给出可读错误（而不是笼统的「请求体过大」） */
   app.post(
     "/api/upload/chunk/:uploadId/:index",
-    express.raw({ type: ["application/octet-stream", "application/x-www-form-urlencoded", "*/*"], limit: "64mb" }),
+    express.raw({ type: ["application/octet-stream", "application/x-www-form-urlencoded", "*/*"], limit: cfg.chunkSizeMax * 2 }),
     async (req, res) => {
       const uploadId = String(req.params.uploadId);
       const index = Number(req.params.index);
@@ -155,10 +158,11 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     }
   );
 
-  /* 上传：小文件直接上传（body 为整个文件，query 携带 name/mime/device；≤ DIRECT_LIMIT 跳过哈希/分片） */
+  /* 上传：小文件直接上传（body 为整个文件，query 携带 name/mime/device；≤ DIRECT_LIMIT 跳过哈希/分片）。
+     limit 由直传阈值派生（原来写死 64mb，比真正的直传上限大 8 倍，容易误导排查） */
   app.post(
     "/api/upload/direct",
-    express.raw({ type: ["application/octet-stream", "*/*"], limit: "64mb" }),
+    express.raw({ type: ["application/octet-stream", "*/*"], limit: uploads.limits().directUpload + 1024 * 1024 }),
     async (req, res) => {
       const buf = toBuffer(req.body);
       if (!buf) return res.status(400).json({ error: "请求体必须是二进制" });

@@ -13,6 +13,7 @@
 | 默认端口 | **4100**（`serverConfig.json` 的 `httpPort` 可改；开发环境常用 4197/4199） |
 | 端口冲突 | 端口被占用时**自动向后切换**，实际端口以 `GET /api/health` 返回的 `port` 为准 |
 | 地址 | 局域网 IP（`health.lanIp`）+ 实际端口 |
+| 单文件上限 | 默认 **16 GiB**（`serverConfig.json` 的 `maxFileSize` 可改，0 = 不限制）；≤ 直传阈值（默认 8 MiB）整块上传，更大走分片（切片按文件大小动态取 1–8 MiB） |
 | 数据 | 上传文件落盘在服务器 `data/uploads/`（`uploadDir`），消息/索引持久化 |
 | 字符集 | 文件名/消息支持 UTF-8；下载响应按文件原始字节 |
 | WebSocket | 实时消息走 `ws://<host>:<port>/ws`（可选，见 §8） |
@@ -76,13 +77,30 @@
   "version": "6.2.0",
   "lanIp": "192.168.1.100",
   "lanIps": ["192.168.1.100", "10.0.0.5"],
-  "port": 4100
+  "port": 4100,
+  "limits": { "directUpload": 8388608, "maxFileSize": 17179869184, "chunkSizeMin": 1048576, "chunkSizeMax": 8388608 }
 }
 ```
 
 > QuickSendTool 用法：先连本机 `127.0.0.1:<端口>`，用返回的 `lanIp:port` 作为局域网内发送目标。
 > `lanIps` 是**全部**可用局域网地址（已按「物理网卡 + 私网段」优先排序）：装了 VMware/Hyper-V/WSL/VPN 的机器上，
 > 首个地址未必是手机能连上的那个，可依次尝试。
+
+**上传限制（`limits` 字段，客户端应据此做上传前预检）：**
+
+| 字段 | 含义 | 默认值 |
+|---|---|---|
+| `limits.directUpload` | ≤ 该字节数走 `POST /api/upload/direct`（跳过哈希/分片） | 8 MiB |
+| `limits.maxFileSize` | **单文件上限**（0 = 不限制）；超过时 `init` 直接返回 400 | **16 GiB** |
+| `limits.chunkSizeMin` / `chunkSizeMax` | 切片大小**区间**（按文件大小自动取；两者相等即固定切片） | 1 MiB – 8 MiB |
+
+> 建议客户端在**计算 SHA-256 之前**就比对 `maxFileSize`，避免大文件白算哈希再被拒；
+> 并用 `directUpload` 判断走直传还是分片（不要自行硬编码阈值）。
+> 服务端权威兜底：`POST /api/upload/init` 超限返回
+> `400 { "error": "文件过大：3.0 MB 超过单文件上限 2.0 MB（可在 serverConfig.json 调整 maxFileSize，0 = 不限制）" }`；
+> 单片超过约定大小返回 `400 { "error": "分片过大：…（应为 1.0 MB/片，请按 init 返回的 chunkSize 切分）" }`。
+> 各项均可在 `serverConfig.json` 配置：`{ "maxFileSize": 17179869184, "chunkSizeMin": 1048576, "chunkSizeMax": 8388608, "directUpload": 8388608 }`
+> （`directUpload > maxFileSize`、`chunkSizeMin > chunkSizeMax` 都会被自动收敛并告警；旧版配置的 `chunkSize` 会自动迁移为等值的 min=max，行为不变）。
 
 ### 4.1 管理接口鉴权（`GET /api/auth`）
 
@@ -138,7 +156,7 @@ X-FSEX-Token: <token>
 | > 8 MiB | 分片上传：`init → chunk×N → complete` |
 | 任意（想秒传） | 分片 `init` 带 `sha256`，命中则秒传不传文件 |
 
-分片大小固定 **1 MiB**（服务器 `chunkSize`），以 `init` 返回为准。
+分片大小**按文件大小动态取**（默认 1–8 MiB：4 GiB 内 1 MiB、16 GiB 4 MiB、32 GiB 以上 8 MiB，目标分片数 ~4096），**一律以 `init` 返回的 `chunkSize` 为准**。
 
 ### 6.2 POST /api/upload/direct（小文件）
 
@@ -192,7 +210,7 @@ Content-Type: application/octet-stream
 ```json
 {
   "uploadId": "0e1f2a3b-...",
-  "chunkSize": 1048576,     // 每片字节数
+  "chunkSize": 1048576,     // 每片字节数（按文件大小动态计算，客户端必须用这个值切分）
   "chunkCount": 100,
   "done": [0, 1, 2],        // 已传分片下标（断点续传时跳过）
   "existed": false          // true = 秒传命中，无需再传
@@ -204,7 +222,7 @@ Content-Type: application/octet-stream
 
 #### ② POST /api/upload/chunk/:uploadId/:index
 
-请求体 = **第 index 个分片的原始二进制**（每片 ≤ `chunkSize`，最后一片可不足）。
+请求体 = **第 index 个分片的原始二进制**（每片 ≤ `init` 返回的 `chunkSize`，最后一片可不足）。
 
 ```
 POST /api/upload/chunk/0e1f2a3b-.../3
@@ -305,6 +323,6 @@ POST /api/upload/complete/0e1f2a3b-...
 2. **构造设备身份**：稳定 `deviceId` + `deviceName="QuickSendTool"` + `platform="windows"`。
 3. **上传文件**：
    - ≤8 MiB → `POST /api/upload/direct`（body=文件，query 带 name/mime/device）。
-   - >8 MiB → `init` → 按 `chunkSize` 分片逐个 `chunk` → `complete`。
+   - >8 MiB → `init`（返回本文件的 `chunkSize`/`chunkCount`）→ 按 `chunkSize` 分片逐个 `chunk` → `complete`。
 4. **完成提示**：`msg` 已广播，所有在线设备收到文件消息；用 `url` 可下载。
 5. 可选：上传失败重试时复用 `uploadId` 实现断点续传。

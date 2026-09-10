@@ -3,7 +3,7 @@ import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import type { MsgDataT } from "@filesyncex/protocol";
 import type { Lang } from "../i18n.js";
 import { dayLabel, fmtType } from "../i18n.js";
-import { DIRECT_UPLOAD_LIMIT } from "../api.js";
+import { FALLBACK_LIMITS, type UploadLimitsT } from "../api.js";
 import { fmtTime, fmtSize, ellipsizeFileName, fileKind, waveBars } from "./helpers.js";
 import { highlightCode } from "./prism.js";
 import { I_FILE, I_IMG, I_COPY, I_DOWN, I_PLAY, I_PAUSE, I_TRASH } from "./icons.js";
@@ -44,6 +44,8 @@ export interface AppCtx {
   toasts: { id: number; text: string; leaving: boolean; show: boolean }[];
   sheet: "attach" | "progress" | "settings" | "qr" | null;
   videoCovers: Map<string, string>;
+  /** 服务器下发的上传限制（判定「失败后是否值得断点续传」时用直传阈值） */
+  limits: UploadLimitsT | null;
   t: (key: string, vars?: Record<string, string>) => string;
   debounceKey: (key: string, wait: number) => boolean;
   deleteMsg: (id: string) => void;
@@ -138,7 +140,9 @@ export function renderMsg(app: AppCtx, m: MsgDataT): unknown {
       const pct = rec ? Math.max(0, Math.min(100, rec.pct)) : 0;
       const failed = !!rec?.fail;
       // 大文件（分片）上传失败 → 可点击断点续传（File 引用仍在内存）
-      const retryable = failed && !!rec?.file && rec.file.size > DIRECT_UPLOAD_LIMIT;
+      // 直传阈值以服务器下发为准（与 app.ts 的 directUploadLimit() 同一来源），否则大文件分片上传失败后无法续传
+      const directLimit = app.limits?.directUpload ?? FALLBACK_LIMITS.directUpload;
+      const retryable = failed && !!rec?.file && rec.file.size > directLimit;
       // 按文件类型决定占位卡结构与尺寸（匹配真实消息）：image/video=16:9，audio=播放条，file=图标行
       const uk = (rec?.kind ?? m.kind) as string;
       const media = uk === "image" || uk === "video";

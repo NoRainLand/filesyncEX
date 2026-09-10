@@ -11,7 +11,32 @@ export interface HealthT {
   /** 全部可用局域网地址（多网卡机器上首个未必可达） */
   lanIps?: string[];
   port?: number;
+  /** 服务器下发的上传限制（用于上传前预检） */
+  limits?: UploadLimitsT;
 }
+
+/** 服务器上传限制（/api/health 的 limits 字段） */
+export interface UploadLimitsT {
+  /** 直传阈值：≤ 此值走 /api/upload/direct */
+  directUpload: number;
+  /** 单文件上限（字节；0 = 不限制） */
+  maxFileSize: number;
+  /** 切片大小下限（字节）：小文件用这个粒度 */
+  chunkSizeMin: number;
+  /** 切片大小上限（字节）：超大文件最多放大到这里；等于 min 即固定切片 */
+  chunkSizeMax: number;
+}
+
+/**
+ * 服务器不可达时的兜底限制（与服务端默认值一致；权威值来自 /api/health）。
+ * 注意：**具体切片大小不在这里** —— 它按文件大小动态取，权威值由 `init` 返回的 `chunkSize` 决定。
+ */
+export const FALLBACK_LIMITS: UploadLimitsT = {
+  directUpload: 8 * 1024 * 1024,
+  maxFileSize: 16 * 1024 * 1024 * 1024,
+  chunkSizeMin: 1024 * 1024,
+  chunkSizeMax: 8 * 1024 * 1024,
+};
 
 let healthPromise: Promise<HealthT> | null = null;
 /** 获取服务器健康信息（真实局域网 IP/端口/版本）。共享 Promise：多次调用只发一次请求，失败回退空对象 */
@@ -22,6 +47,21 @@ export function fetchHealth(): Promise<HealthT> {
       .catch(() => ({} as HealthT));
   }
   return healthPromise;
+}
+
+/** 取服务器上传限制（失败回退默认值；界面显示上限与上传前预检都用它） */
+export async function fetchLimits(): Promise<UploadLimitsT> {
+  const h = await fetchHealth();
+  return { ...FALLBACK_LIMITS, ...(h.limits ?? {}) };
+}
+
+/** 人类可读体积（与消息卡片的大小格式一致，供设置界面显示上限用） */
+export function fmtLimitBytes(n: number): string {
+  if (n <= 0) return "∞";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 interface InitUploadInput {
@@ -224,7 +264,7 @@ function rotr32(x: number, n: number): number {
 const SHA_CHUNK = 4 * 1024 * 1024; // 4MB，避免大文件整块读入内存
 const CHUNK_TIMEOUT_MS = 30_000; // 单个分片请求超时（WiFi 抖动时避免永久挂起）
 const CHUNK_MAX_RETRIES = 4; // 单个分片最大重试次数（网络瞬时断连自动恢复）
-export const DIRECT_UPLOAD_LIMIT = 8 * 1024 * 1024; // ≤ 该大小直接上传（跳过哈希/分片，消除上传前等待）
+// 直传阈值不再硬编码：统一由服务器下发（/api/health 的 limits.directUpload），未取到时用 FALLBACK_LIMITS。
 
 /** 计算文件 SHA-256（分块增量，用于秒传/断点续传；兼容局域网 HTTP 非安全上下文） */
 export async function fileSha256(file: Blob): Promise<string> {
@@ -236,10 +276,18 @@ export async function fileSha256(file: Blob): Promise<string> {
   return hasher.digestHex();
 }
 
-/** 上传文件：≤ DIRECT_UPLOAD_LIMIT 直接整块上传（跳过哈希/分片）；更大走分片（断点续传 + 秒传）。coverKey 为视频封面（可空） */
+/**
+ * 上传文件：≤ 直传阈值直接整块上传（跳过哈希/分片）；更大走分片（断点续传 + 秒传）。
+ * 上传前先按服务器下发的 limits 做**本地预检**：超大文件直接报错，
+ * 不再「先花几十秒算完整文件 SHA-256 才被服务器拒绝」。
+ */
 export async function uploadFile(file: File, onProgress?: (sent: number, total: number) => void, coverKey?: string): Promise<UploadCompleteResT> {
+  const limits = await fetchLimits();
+  if (limits.maxFileSize > 0 && file.size > limits.maxFileSize) {
+    throw new Error(`文件过大：${fmtLimitBytes(file.size)} 超过单文件上限 ${fmtLimitBytes(limits.maxFileSize)}（可在 serverConfig.json 调整 maxFileSize）`);
+  }
   // 小文件直接上传：跳过整文件 SHA-256 与分片，消除「上传前等待」
-  if (file.size <= DIRECT_UPLOAD_LIMIT) {
+  if (file.size <= limits.directUpload) {
     onProgress?.(file.size, file.size);
     return await apiUploadDirect(file, getDevice(), coverKey);
   }

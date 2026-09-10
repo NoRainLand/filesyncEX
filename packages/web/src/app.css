@@ -212,8 +212,35 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
   from { opacity: 0; }
   to { opacity: 1; }
 }
-/* 设置面板：内容过长时允许上下滚动（手机屏幕矮 / 设置项多时显示不全，此前 overflow:visible 导致超长不可滚） */
-.settings-panel .panel { max-height: 88vh; overflow-y: auto; -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: rgba(0,0,0,.25) transparent; }
+/* ---------- 键盘焦点可见性（统一）----------
+   为什么需要：原先只有两个输入框有品牌色焦点环（:focus），其余控件走浏览器默认焦点环 ——
+   默认环的宽度/颜色随元素文字色变化（深色下按钮取到白/灰），同一界面两套样式且不明显。
+   用 :focus-visible 只在**键盘导航**时显形（鼠标点击不出现），统一为品牌色 2px + 2px 偏移。
+   注意：`*:focus-visible`（零特异性）与 `button:focus-visible` 都会被浏览器默认焦点环盖过，
+   必须写成**组件类选择器**（.btn / .iconbtn …）才能稳定生效。 */
+.btn:focus-visible,
+.iconbtn:focus-visible,
+.bracebtn:focus-visible,
+.addbtn:focus-visible,
+.sendbtn:focus-visible,
+.att:focus-visible,
+.lang-pick:focus-visible,
+.lang-opt:focus-visible,
+.del-corner:focus-visible,
+.play:focus-visible,
+.thumb:focus-visible,
+.vthumb:focus-visible,
+.logo:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+input:focus-visible, textarea:focus-visible { outline: none; }
+
+/* 设置面板：内容过长时允许上下滚动（手机屏幕矮 / 设置项多时显示不全，此前 overflow:visible 导致超长不可滚）。
+   滚动条按用户要求隐藏（仍可滚动）：Firefox scrollbar-width:none、旧 Edge -ms-overflow-style、WebKit ::-webkit-scrollbar */
+.settings-panel .panel { max-height: 88vh; overflow-y: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none; }
+.settings-panel .panel::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .panel .handle { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 8px auto 4px; }
 .panel .ptitle { font-size: 24px; font-weight: 700; color: var(--primary); text-align: center; padding: 8px 0 12px; cursor: pointer; }
 .attach-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 8px 16px 12px; }
@@ -246,6 +273,14 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
 .settings hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
 .settings .field { margin-bottom: 8px; }
 .settings code.fp { display: inline-block; padding: 4px 8px; background: var(--surface-2); border-radius: 6px; color: var(--primary); font-size: 12px; word-break: break-all; }
+/* 设备指纹行：描述与值同一行（描述不换行、值可选中/可省略）；窄屏自动堆叠避免挤压 */
+.settings .fp-row { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+.settings .fp-row .fp-label { flex: none; margin: 0; font-size: 13px; color: var(--muted); }
+.settings .fp-row code.fp { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 420px) {
+  .settings .fp-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .settings .fp-row code.fp { width: 100%; }
+}
 .settings .btn.tool { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; justify-content: center; margin-bottom: 2px; font-size: 15px; }
 .settings .btn.tool.secondary { background: transparent; border: 1px solid var(--line); color: var(--ink); }
 .qrbox { width: 200px; height: 200px; margin: 0 auto 12px; background: #fff; border-radius: 8px; padding: 10px; display: flex; align-items: center; justify-content: center; }
@@ -380,4 +415,16 @@ footer.composer { flex: none; display: none; border-top: 1px solid var(--line); 
   .viewer .vtop { padding: calc(14px + env(safe-area-inset-top, 0px)) 14px 8px; }
   .viewer .vfoot { padding: 12px 16px calc(14px + env(safe-area-inset-bottom, 0px)); }
   .toasts { bottom: calc(120px + env(safe-area-inset-bottom, 0px)); }
+}
+
+/* ---------- 减弱动效（prefers-reduced-motion）----------
+   无障碍：系统开启「减少动态效果」时，把界面动效降到最低（toast 淡入淡出、弹窗缩放、预览、长按浮起、
+   频谱/连接点常驻动画等），只保留极短的过渡以维持状态变化可见。上传进度环是真实进度反馈（非装饰），故不在此列。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+  .toast.leaving { transform: none; }
 }

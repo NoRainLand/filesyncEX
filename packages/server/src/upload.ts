@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { SyncEngine, type Store } from "@filesyncex/core";
 import { parse, UploadInitReq, UploadInitRes, UploadChunkRes, UploadCompleteRes } from "@filesyncex/protocol";
+import { computeChunkPlan, DEFAULT_CHUNK_SIZE_MAX, DEFAULT_CHUNK_SIZE_MIN } from "./config.js";
 
 /** 小于该大小（字节）的文件走「直接上传」，跳过整文件 SHA-256 与分片（小文件哈希/分片开销大于收益） */
 export const DIRECT_LIMIT = 8 * 1024 * 1024; // 8 MiB
@@ -11,11 +12,25 @@ const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 /** 未被任何消息引用的封面图超过该时长视为孤儿，清理物理文件 */
 const COVER_TTL_MS = 24 * 60 * 60 * 1000;
 
+/** 人类可读体积（用于错误提示，避免用户看到 17179869184 这种裸数字） */
+export function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
 export interface UploadServiceOptions {
   store: Store;
   engine: SyncEngine;
   uploadDir: string;
-  chunkSize?: number;
+  /** 分片大小下限/上限（字节）：按文件大小动态取，缺省 1 MiB / 8 MiB */
+  chunkSizeMin?: number;
+  chunkSizeMax?: number;
+  /** 单文件大小上限（字节；0 / undefined = 不限制） */
+  maxFileSize?: number;
+  /** 直传阈值（字节；≤ 该值走整块直传，默认 8 MiB） */
+  directUpload?: number;
 }
 
 /** 比较两个 sha256 十六进制串（恒定时间，长度不等直接 false） */
@@ -35,7 +50,13 @@ export class UploadService {
   private store: Store;
   private engine: SyncEngine;
   private uploadDir: string;
-  chunkSize: number;
+  /** 分片大小上下限（实际切片按文件大小在区间内动态取） */
+  chunkSizeMin: number;
+  chunkSizeMax: number;
+  /** 单文件大小上限（字节；0 = 不限制） */
+  maxFileSize: number;
+  /** 直传阈值（字节）：≤ 该值走整块直传（跳过哈希/分片） */
+  directLimit: number;
   /** 物理文件 key → 最后一次被引用/保护的时刻（孤儿清理依据：未进索引又超时的封面才会删） */
   private touched = new Map<string, number>();
   /** uploadId → 关联的封面 key（内存表；服务器重启后客户端断点续传会重新携带 coverKey） */
@@ -46,8 +67,24 @@ export class UploadService {
     this.store = opts.store;
     this.engine = opts.engine;
     this.uploadDir = opts.uploadDir;
-    this.chunkSize = opts.chunkSize ?? 1024 * 1024; // 1 MiB
+    this.chunkSizeMin = opts.chunkSizeMin ?? DEFAULT_CHUNK_SIZE_MIN;
+    this.chunkSizeMax = opts.chunkSizeMax ?? DEFAULT_CHUNK_SIZE_MAX;
+    this.maxFileSize = opts.maxFileSize ?? 0;
+    this.directLimit = opts.directUpload ?? DIRECT_LIMIT;
     fs.mkdirSync(this.uploadDir, { recursive: true });
+  }
+
+  /** 超出单文件上限时的统一错误文案（客户端会先本地预检，这里是权威兜底） */
+  private overLimitError(size: number): string {
+    return `文件过大：${fmtBytes(size)} 超过单文件上限 ${fmtBytes(this.maxFileSize)}（可在 serverConfig.json 调整 maxFileSize，0 = 不限制）`;
+  }
+
+  /**
+   * 供 /api/health 下发的限制信息（客户端启动时据此做上传前预检）。
+   * 注意：不再下发单个 `chunkSize` —— 切片大小按文件大小动态取，权威值由 `init` 返回。
+   */
+  limits(): { directUpload: number; maxFileSize: number; chunkSizeMin: number; chunkSizeMax: number } {
+    return { directUpload: this.directLimit, maxFileSize: this.maxFileSize, chunkSizeMin: this.chunkSizeMin, chunkSizeMax: this.chunkSizeMax };
   }
 
   private sessionDir(uploadId: string): string {
@@ -62,19 +99,25 @@ export class UploadService {
     } catch (e) {
       return { ok: false, error: "参数不合法: " + String((e as Error).message) };
     }
+    // 单文件上限：在创建会话**之前**拒绝，避免客户端白传分片（客户端也会先本地预检，这里兜底）
+    if (this.maxFileSize > 0 && req.size > this.maxFileSize) {
+      return { ok: false, error: this.overLimitError(req.size) };
+    }
     // 断点续传：客户端携带上次 uploadId 且 name/size 匹配 → 复用会话，返回已传分片
+    // 切片一律用**会话里记录的那一个**（同一文件每次 init 都会算出同样的值，见 computeChunkPlan）
     if (req.uploadId) {
       const prev = await this.store.getUpload(req.uploadId);
       if (prev && prev.name === req.name && prev.size === req.size) {
         const done = await this.store.listUploadChunks(prev.uploadId);
         return {
           ok: true,
-          res: { uploadId: prev.uploadId, chunkSize: this.chunkSize, chunkCount: prev.chunkCount, done, existed: false } as import("@filesyncex/protocol").UploadInitResT,
+          res: { uploadId: prev.uploadId, chunkSize: prev.chunkSize, chunkCount: prev.chunkCount, done, existed: false } as import("@filesyncex/protocol").UploadInitResT,
         };
       }
     }
 
-    const chunkCount = Math.max(1, Math.ceil(req.size / this.chunkSize));
+    // 动态切片：按文件大小在 [chunkSizeMin, chunkSizeMax] 内取（大文件用大切片，压住分片数与请求开销）
+    const { chunkSize, chunkCount } = computeChunkPlan(req.size, this.chunkSizeMin, this.chunkSizeMax);
     const uploadId = randomUUID();
 
     // 秒传：按 sha256 命中已有文件 → 用「新上传的名字」构造一条新消息（文件内容指向旧文件），广播后返回
@@ -87,7 +130,7 @@ export class UploadService {
         const msg = this.fileMessage(req.device, meta, randomUUID());
         await this.engine.addMessage(msg);
         await this.store.addFileRef(existing.key, msg.id);
-        return { ok: true, res: { uploadId, chunkSize: this.chunkSize, chunkCount, done: [], existed: true, file: existing, msg } as import("@filesyncex/protocol").UploadInitResT };
+        return { ok: true, res: { uploadId, chunkSize, chunkCount, done: [], existed: true, file: existing, msg } as import("@filesyncex/protocol").UploadInitResT };
       }
     }
 
@@ -97,7 +140,7 @@ export class UploadService {
       size: req.size,
       mime: req.mime,
       sha256: req.sha256,
-      chunkSize: this.chunkSize,
+      chunkSize,
       chunkCount,
       createdAt: Date.now(),
       device: req.device,
@@ -105,15 +148,23 @@ export class UploadService {
     if (req.coverKey) this.setSessionCover(uploadId, req.coverKey);
     fs.mkdirSync(this.sessionDir(uploadId), { recursive: true });
     const done = await this.store.listUploadChunks(uploadId);
-    const res = UploadInitRes.parse({ uploadId, chunkSize: this.chunkSize, chunkCount, done, existed: false });
+    const res = UploadInitRes.parse({ uploadId, chunkSize, chunkCount, done, existed: false });
     return { ok: true, res };
   }
 
-  /** 保存一个分片（异步写盘，单片 ≤ 1MiB 不阻塞事件循环） */
+  /**
+   * 保存一个分片（异步写盘，单片 ≤ chunkSize 不阻塞事件循环）。
+   * 额外校验单片大小：超过约定分片大小的请求直接给出**可读错误**，
+   * 否则会被 express.raw 的 64MB 上限拦成笼统的「请求体过大」，用户无法判断原因。
+   */
   async chunk(uploadId: string, index: number, buf: Buffer): Promise<{ ok: true; res: UploadChunkRes } | { ok: false; error: string }> {
     const s = await this.store.getUpload(uploadId);
     if (!s) return { ok: false, error: "上传会话不存在" };
     if (index < 0 || index >= s.chunkCount) return { ok: false, error: "分片下标越界" };
+    // 最后一片允许小于等于分片大小；其余分片必须不超过约定大小（留 4KB 余量容忍编码差异）
+    if (buf.length > s.chunkSize + 4096) {
+      return { ok: false, error: `分片过大：${fmtBytes(buf.length)}（应为 ${fmtBytes(s.chunkSize)}/片，请按 init 返回的 chunkSize 切分）` };
+    }
     fs.mkdirSync(this.sessionDir(uploadId), { recursive: true });
     await fs.promises.writeFile(path.join(this.sessionDir(uploadId), index + ".part"), buf);
     await this.store.addUploadChunk(uploadId, index);
@@ -214,9 +265,10 @@ export class UploadService {
     return { ok: true, coverKey };
   }
 
-  /** 小文件直接上传：整块落盘并广播（前端保证 ≤ DIRECT_LIMIT，跳过哈希/分片） */
+  /** 小文件直接上传：整块落盘并广播（前端保证 ≤ 直传阈值，跳过哈希/分片） */
   async direct(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer, coverKey?: string): Promise<{ ok: true; res: UploadCompleteRes } | { ok: false; error: string }> {
-    if (size > DIRECT_LIMIT) return { ok: false, error: "文件过大，请用分片上传" };
+    if (size > this.directLimit) return { ok: false, error: `文件过大，请用分片上传（直传上限 ${fmtBytes(this.directLimit)}）` };
+    if (this.maxFileSize > 0 && size > this.maxFileSize) return { ok: false, error: this.overLimitError(size) };
     if (data.length !== size) return { ok: false, error: `文件大小不符：声明 ${size} 字节，实际 ${data.length} 字节` };
     return this.finalize(name, size, mime, device, data, coverKey);
   }

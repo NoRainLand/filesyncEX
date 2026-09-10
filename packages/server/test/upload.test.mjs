@@ -167,4 +167,118 @@ describe("上传链路与磁盘卫生", () => {
     expect(r.status).toBe(400);
     expect((await r.json()).error).toContain("JSON");
   });
+
+  it("/api/health 下发上传限制（客户端据此预检）", async () => {
+    const health = await (await fetch(s.base + "/api/health")).json();
+    expect(health.limits.directUpload).toBe(8 * 1024 * 1024);
+    // 切片改为「按文件大小动态取」：health 只下发上下限，具体切片由 init 返回
+    expect(health.limits.chunkSizeMin).toBe(1024 * 1024);
+    expect(health.limits.chunkSizeMax).toBe(8 * 1024 * 1024);
+    expect(health.limits.chunkSize).toBeUndefined();
+    expect(health.limits.maxFileSize).toBe(16 * 1024 * 1024 * 1024); // 默认 16 GiB
+  });
+});
+
+/** 单文件上限（maxFileSize）：配置调小以便测试；默认 16 GiB */
+describe("单文件上限（maxFileSize）", () => {
+  let s;
+
+  before(async () => {
+    s = await startServer({ store: "sqlite", label: "limit", config: { maxFileSize: 2 * 1024 * 1024 } }); // 2 MiB
+  });
+
+  after(async () => {
+    await s.stop();
+  });
+
+  const init = (name, size) =>
+    fetch(s.base + "/api/upload/init", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, size, mime: "application/octet-stream", device: device() }),
+    });
+
+  it("health.limits.maxFileSize 反映配置值", async () => {
+    const health = await (await fetch(s.base + "/api/health")).json();
+    expect(health.limits.maxFileSize).toBe(2 * 1024 * 1024);
+  });
+
+  it("超过上限 → init 400 且不创建上传会话（客户端不会被白传分片）", async () => {
+    const r = await init("too-big.bin", 8 * 1024 * 1024);
+    expect(r.status).toBe(400);
+    const err = (await r.json()).error;
+    expect(err).toContain("超过单文件上限");
+    expect(err).toContain("maxFileSize"); // 提示如何调整
+    expect(fs.existsSync(path.join(s.uploadDir, "too-big"))).toBe(false);
+  });
+
+  it("等于上限 → 允许", async () => {
+    expect((await init("exact.bin", 2 * 1024 * 1024)).status).toBe(200);
+  });
+
+  it("直传超过上限 → 400（direct 路径同样受控）", async () => {
+    const big = Buffer.alloc(3 * 1024 * 1024, 1); // 3 MiB > 2 MiB 上限
+    const r = await uploadDirect(s, "direct-big.bin", big, "application/octet-stream");
+    expect(r.status).toBe(400);
+    // 直传阈值已被收敛到 maxFileSize（2 MiB），故先撞到「直传上限」提示；两种情况都是被拒且文案可读
+    expect(/直传上限|超过单文件上限/.test(r.json.error), r.json.error).toBe(true);
+  });
+
+  it("分片超过约定大小 → 可读错误（而不是笼统的「请求体过大」）", async () => {
+    const initRes = await (
+      await fetch(s.base + "/api/upload/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "chunk-big.bin", size: 2 * 1024 * 1024, device: device() }),
+      })
+    ).json();
+    const r = await fetch(`${s.base}/api/upload/chunk/${initRes.uploadId}/0`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: Buffer.alloc(initRes.chunkSize + 8192, 2),
+    });
+    expect(r.status).toBe(400);
+    expect((await r.json()).error).toContain("分片过大");
+  });
+});
+
+/** 直传阈值（directUpload）可配置 + 与 maxFileSize 的一致性收敛 */
+describe("直传阈值（directUpload）", () => {
+  it("默认下发 8 MiB", async () => {
+    const s = await startServer({ store: "sqlite", label: "direct-default" });
+    try {
+      const health = await (await fetch(s.base + "/api/health")).json();
+      expect(health.limits.directUpload).toBe(8 * 1024 * 1024);
+    } finally {
+      await s.stop();
+    }
+  });
+
+  it("可配置：directUpload=64KiB 时 health 与直传拒绝阈值同步变化", async () => {
+    const s = await startServer({ store: "sqlite", label: "direct-64k", config: { directUpload: 64 * 1024 } });
+    try {
+      const health = await (await fetch(s.base + "/api/health")).json();
+      expect(health.limits.directUpload).toBe(64 * 1024);
+      // ≤ 64 KiB 直传成功
+      const ok = await uploadDirect(s, "tiny.bin", Buffer.alloc(32 * 1024, 1), "application/octet-stream");
+      expect(ok.status).toBe(200);
+      // > 64 KiB 但 ≤ 直传阈值×? —— 直传被拒（须走分片）
+      const tooBig = await uploadDirect(s, "mid.bin", Buffer.alloc(128 * 1024, 1), "application/octet-stream");
+      expect(tooBig.status).toBe(400);
+      expect(tooBig.json.error).toContain("直传上限");
+    } finally {
+      await s.stop();
+    }
+  });
+
+  it("directUpload > maxFileSize 时收敛到 maxFileSize（避免错误信息自相矛盾）", async () => {
+    const s = await startServer({ store: "sqlite", label: "direct-clamp", config: { maxFileSize: 1024 * 1024, directUpload: 10 * 1024 * 1024 } });
+    try {
+      const health = await (await fetch(s.base + "/api/health")).json();
+      expect(health.limits.maxFileSize).toBe(1024 * 1024);
+      expect(health.limits.directUpload).toBe(1024 * 1024);
+    } finally {
+      await s.stop();
+    }
+  });
 });

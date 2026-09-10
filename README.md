@@ -302,6 +302,10 @@ release/       # 打包产物（filesyncex.exe）
 
 - **本机管理接口已加令牌 + 来源校验**（`/api/sys/*`、`/api/data/export`、`/api/app/download`）：防止局域网内任意网页跨站关服/清库。
   但**业务面仍然无鉴权**（上传/下载/消息/删除都开放，设计如此）——同网段任何人可收发、下载、删除消息。**不要暴露到公网**。
+- **单文件上限默认 16 GiB**：`serverConfig.json` 的 `maxFileSize` 可改（0 = 不限制）；≤ `directUpload`（默认 8 MiB）走整块直传，
+  更大的走分片 —— **切片大小按文件大小动态取**（`chunkSizeMin`/`chunkSizeMax`，默认 1–8 MiB：4 GiB 内 1 MiB、16 GiB 4 MiB、
+  32 GiB 以上 8 MiB，目标分片数约 4096；两者设成相同值即固定切片）。三项都由 `/api/health` 的 `limits` 下发，前端**不硬编码**这些阈值。
+  超限文件在**上传前**就被拒（预检：不白算 SHA-256、不消耗流量），设置界面会显示当前上限与切片区间。
 - **Node 版本敏感**：原生模块 `better-sqlite3` 的 ABI 与 Node 版本绑定，Node ≥ 22 且未 rebuild 时服务会**拒绝启动**（详见「开发环境要求」）。
 - **思源宋体 6MB**：`SourceHanSerifCN-Medium.woff2` 是单个体积最大的资源（可子集化或换字体优化）。
 - **大文件上传前等待**：>8MB 需先算整文件 SHA-256（纯 JS），大文件在真正开始上传前有明显等待。

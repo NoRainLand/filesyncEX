@@ -49,6 +49,8 @@ const zh: Dict = {
   /* 提示（toast / flash） */
   msg_deleted: () => "消息已删除",
   nick_invalid: () => "昵称仅允许大小写字母、下划线和数字，最长 10 位",
+  nick_saved: () => "昵称已保存",
+  upload_limit: (v) => `单个文件上限：${v?.size} · 切片 ${v?.chunkMin}–${v?.chunkMax}（按文件大小自动取，超出上限会在上传前直接提示）`,
   qr_failed: () => "二维码生成失败",
   qr_alt: (v) => `若打不开，可改用：${v?.ips}`,
   upload_fail: (v) => `「${v?.name}」上传失败`,
@@ -165,6 +167,8 @@ const en: Dict = {
   ft_file: () => "File",
   msg_deleted: () => "Message deleted",
   nick_invalid: () => "Nickname: only letters, digits and underscore, max 10 chars",
+  nick_saved: () => "Nickname saved",
+  upload_limit: (v) => `Max file size: ${v?.size} · chunks ${v?.chunkMin}-${v?.chunkMax} (auto-sized by file size; oversized files rejected before upload)`,
   qr_failed: () => "Failed to generate QR code",
   qr_alt: (v) => `If it does not open, try: ${v?.ips}`,
   upload_fail: (v) => `Upload failed: ${v?.name}`,

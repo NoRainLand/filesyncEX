@@ -177,7 +177,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
     console.warn("[welcome] 插入欢迎消息失败:", (e as Error).message);
   }
 
-  const uploads = new UploadService({ store, engine, uploadDir: cfg.uploadDir });
+  const uploads = new UploadService({ store, engine, uploadDir: cfg.uploadDir, chunkSizeMin: cfg.chunkSizeMin, chunkSizeMax: cfg.chunkSizeMax, maxFileSize: cfg.maxFileSize, directUpload: cfg.directUpload });
   uploads.startSweeper(); // 启动时 + 每 6h 回收废弃分片会话目录 / 孤儿封面 / 组装临时文件
   // 系统操作（关闭/重置）：close 在下方定义，用占位引用，运行时端点调用时已就绪
   let shutdownImpl: (() => Promise<void>) | undefined;
