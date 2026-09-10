@@ -1891,3 +1891,145 @@ es.download(p, name)。**顺带修复健壮性**：direct/chunk/cover 三个二�
   4. `better-sqlite3` 由静态 import 改为惰性 require（打包目标 node24 下它无法加载），并在注释里写明 pkg 时代的约束由来。
 - **过程失误与修复（记录以免重犯）**：实验期间我把 `packages/shell/package.json` 的 `pkg` 字段删掉了（为验证 `hakobu` 字段是否被读取），导致随后 `pnpm package` 打出的 exe **丢失全部前端资源**（payload 从 31.5MB 掉到 24.2MB、首页显示「前端未构建」）。已恢复 `pkg` 字段并重新打包：**payload 31.55MB、产物 71.18MB、验收 16/16 通过**。
 - **验证**：Node 18 与 Node 25 下测试均 **70 通过 0 失败**；5 个包 `tsc` 全过；pkg 产物 16/16 验收通过（`_dev/_accept.mjs` 可复用）。
+
+---
+
+## [6.4.0] 大文件上传 0% 停顿优化 + 占位卡阶段文字提示（用户「我测试上传一个 500M 的文件，切片需要 3S，感觉非常慢。1，你需要优化这个速度，2，占位消息上面需要有个文本提示，让用户知道 0% 的时候正在切片」）
+
+### 1. 先量化：瓶颈是纯 JS SHA-256，不是磁盘、也不是并行度不够
+
+真实 Chrome + 局域网 `http://192.168.x.x`（非安全上下文，`crypto.subtle` 为 undefined）+ 真实文件放机械硬盘 `G:\`，
+拆开「读盘」与「算哈希」两项成本（新增 `_dev/_hash_bench3.mjs`，6 核）：
+
+| 环节（500 MB） | 耗时 | 吞吐 |
+|---|---|---|
+| 纯读 1 并发 4 MiB | 706 ms | 708 MB/s |
+| 纯读 12 并发 32 MiB | 278 ms | 1799 MB/s |
+| **单 Worker 顺序 SHA-256** | **5320 ms** | **94 MB/s** |
+| 6 Worker × 32 MiB 并行 | 4875 ms | 103 MB/s |
+| 6 Worker × 8 MiB 并行 | 4776 ms | 105 MB/s |
+
+- 读盘比哈希快 7~19 倍 → **瓶颈是 CPU，不是 I/O**。
+- 多 Worker 并行只快 1.1 倍：Web Crypto 不可用时纯 JS 无 SIMD/原生，6 个 Worker 抢同一批核心也摊不开单核上限。
+- 曾观察到「6×32 MiB 快 5 倍（1.39s）」的测值**不可复现**：那次文件是 fetch 得到的**内存 Blob**（不是磁盘文件），且未计入其它进程竞争。
+
+### 2. 修复：浏览器不再算整文件摘要（这是 0% 停顿的根因）
+
+- 新增 `packages/web/src/fingerprint.ts`：`fileFingerprint()` **只读文件前 1 MiB**（`FINGERPRINT_BYTES`）算标准 SHA-256，
+  纯 JS 实现（HTTP 非安全上下文无法用 `crypto.subtle`），支持增量喂数据与空文件。
+- `packages/web/src/api.ts`：删除 `fileSha256`（整文件增量哈希）与 `IncrementalSha256` 的引用，改调 `fileFingerprint`；
+  `uploadFile` 不再传 `sha256`，只传 `firstChunkSha256`（= 前 1 MiB 特征值）；续传 cacheKey 改为 `fsex_upload_v2_{name}_{size}_{fp前16}`（不再依赖整文件摘要）。
+- **删除文件**：`packages/web/src/hash.ts`（多 Worker 并行哈希，收益仅 1.1 倍但峰值内存 384 MB）、`packages/web/src/sha256.ts`（`IncrementalSha256`，只被 `fileSha256` 使用）。
+- 服务端 `packages/server/src/upload.ts`：新增 `createPrefixSha256(limit, onDigest)` —— 流式 SHA-256 但**只累积前 1 MiB**，到点即 `digest()` 并停止喂数据（后续 `update` 直接返回，不额外计算）。
+  - `complete()`：组装分片时用同一遍数据同时算出**整文件 sha256**（作文件 key 与元数据）与**特征值 fp**；
+  - `finalize()`（直传路径）：从内存 buffer 算出前 1 MiB 特征值（直传文件 ≤ 8 MiB，仅多一次短哈希）；整文件 sha256 仍照旧作为 key。
+- `packages/server/src/HttpServer.ts`：`POST /api/upload/direct` 接受 `fp` 查询参数（秒传声明，服务端仍会独立重算）。
+
+### 3. 秒传判定改为「文件名 + 大小 + 前 1 MiB 特征值」（客户端零额外成本）
+
+> 先只做了「文件名 + 大小」，随后发现漏洞并补上特征值：同名同大小但内容不同会被判成同一文件、直接复用已有物理文件（用户拿到错文件）。
+> 特征值由内容决定，这类误判即消失，而客户端本来就要读这 1 MiB 算特征值，成本不变。
+
+- `Store` 接口：`getFileByFingerprint(fp, size)` → `getFileByNameSize(name, size, fp?)`；新增导出 `nameSizeKey(name, size, fp?)`（`name\u0001size\u0001fp`）供两个实现共用。
+- `SqliteStore`：`files` 表 `fingerprint` 列 → `name_size`（含旧库迁移与 `idx_files_name_size` 索引）；
+  旧库按 `json_extract(data,'$.name'||'$.size'||'$.fp')` **回填**（否则升级后已有文件全部无法秒传，用户要把相同文件再传一遍）。
+- `MemoryStore`：`byFp` → `byNameSize`（同样用 `nameSizeKey`）。
+- `server/upload.ts` `init()`：优先 `getFileByNameSize(req.name, req.size, req.firstChunkSha256)`，保留 `sha256` 兼容分支（旧客户端/脚本）。
+- `packages/protocol/src/schema.ts`：`UploadInitReq.firstChunkSha256` 注释改写为「文件特征值 = 前 1 MiB 的标准 SHA-256，与分片大小无关」。
+
+### 4. 占位消息 0% 阶段的文字提示
+
+- `packages/web/src/ui/messages.ts`：`UploadRec` 增加 `phase?: "preparing" | "uploading"`；占位卡进度环由「单层」改为 `.ph-ring-box` + 下方 `.ph-hint`，
+  **仅在 `pct === 0` 时**显示 `t("ph_hashing")`（正在准备上传…）或 `t("ph_uploading")`（正在上传…），进度一动自动隐藏。
+- `packages/web/src/app.ts`：`handleFiles` 与 `retryUpload` 的 `uploadFile` 调用补上第四个参数 `onPhase`，
+  并把进度回调里的 `pct` 做 `Math.max(0, Math.min(100, …))` 兜底；首个非 0% 时清掉 `phase`。
+- `packages/web/src/i18n.ts`：新增 `ph_hashing` / `ph_uploading`（中英）。
+- `packages/web/src/app.css`：`.ph-ring` 改纵向布局；新增 `.ph-ring .ph-hint`（12px、`--muted`、带描边阴影保证在磨砂层上可读）。**未改动任何字体相关规则。**
+
+### 5. 踩到的坑：`node:sqlite` 绑定含 NUL 的字符串会截断
+
+`nameSizeKey` 最初用 `\u0000` 作分隔符。实测（`node --version` = 25.9.0）：
+
+```
+node:sqlite     写入 "name\0 123"（len 8）→ 读回 len 4（只剩 "name"）
+better-sqlite3  无此问题（Node 18 下路径）
+```
+
+后果是**秒传静默失效**（索引列与查找键对不上，不报错、永远不命中）。修复：分隔符改为 `\u0001`（文件名里不可能出现），
+回填 SQL 同步改为 `char(1)`；并在测试里断言索引列的**分隔符码位**（`charCodeAt(name.length) === 1`）以防再犯。
+
+### 6. 验证
+
+- **纯算法**：`_dev/_verify_fingerprint.mjs` —— 用 TS 转译真实 `fingerprint.ts`，与 Node 标准 SHA-256 逐例对比：
+  空文件 / 16 B / 1 MiB 整 / 1 MiB+7 B（两个仅尾部不同）/ 3 MiB 随机，**6/6 一致**，且「仅尾部不同 → 指纹相同」证明只读前 1 MiB。
+- **端到端**：`_dev/_e2e_upload.mjs`（真实浏览器 + 真实服务端 + 直传阈值压到 1 MiB 强制走分片，300 MB，服务端经代理保持页面同源）：
+  - 占位卡 **27 ms** 出现「正在上传…」，首个非 0% 进度 **106~182 ms**（修复前这一步要等整文件哈希，500 MB 约 3~7 s）；
+  - 上传完成后服务端落库 `sha256` 与本地独立计算的整文件 SHA-256 **完全一致**；
+  - `name_size` 列实测为 `"big-300m.bin\u0001314572800\u0001653186269c00c056…"`（两处分隔符码位均为 1），且其中的特征值与本地独立算出的前 1 MiB SHA-256 一致；物理文件大小 314572800 字节一致。
+- **服务端测试**：新增 5 条用例（不传 sha256 也能落库 / 文件名+大小+特征值秒传并 refs 递增 / **同名同大小但特征值不同 → 不命中** / 同名不同大小不命中 / 直传也建索引且索引列与 `nameSizeKey` 完全一致；另有「仅尾部不同的两个 >1 MiB 文件特征值相同但 sha256 与 key 不同」）。
+  Node 25（`node:sqlite`）与 Node 18（`better-sqlite3`）均 **76 通过 0 失败**。
+- **类型检查**：protocol / core / server / web 四个包 `tsc` 全过。
+- **打包验收**：`pnpm package` → `release/filesyncex-6.4.0.exe`（payload 31.555 MB、产物 71.18 MB），`_dev/_accept.mjs` **16/16 通过**（含分片上传 + 流式 SHA 校验、动态切片、SQLite 落盘、管理接口鉴权、跨站拦截）。
+- **文档**：`README.md`（上传流程图与「已知限制」改为「秒传判定用文件名+大小」并说明取舍）、`docs/NOTES.md`（新增 §3.1 完整实测数据与取舍、新增坑 9.1 记录 `node:sqlite` NUL 截断）。
+
+### 7. 已知取舍（后续可选）
+
+秒传判定键是「文件名 + 大小 + 前 1 MiB 特征值」，因此**同名同大小且首 1 MiB 相同、仅其后内容不同**的文件会被判为同一文件
+（直接复用已有物理文件）。整文件 SHA-256 仍由服务端算出并作为文件 key 与 `sha256` 元数据，服务端侧不会内容错乱。
+要做到零误判，只能让客户端算整文件 SHA-256 —— 那正是本次要去掉的 3~7 秒停顿，故按现状取舍。
+
+---
+
+## [6.5.0] 上传进度反馈（100% 不再像卡住）+ 占位卡切真实消息不闪烁（用户「1，文件上传到100%的时候，要提示用户正在完成上传并且添加一些小动画，而不是让人感觉卡住了，2，从占位消息切换到真实消息的时候，会闪烁一下，能否优化一下」）
+
+### 1. 现象拆解（先量化再改）
+
+- **100% 卡顿**：客户端传完最后一个分片就停在 100%，但服务端还要 `complete` —— **组装分片 + 流式 SHA-256 校验 + 改名落盘**。
+  大文件在机械盘上要 1~5 秒（实测把 `UploadService.complete` 延迟 2.5s 后该窗口稳定可复现）。此时进度环 `stroke-dashoffset` 恒为 0，看起来就是「卡死」。
+- **闪烁**：不是「先删占位卡、等广播再插入」（这两步在同一帧完成，实测逐帧采样**从无空档帧**），
+  而是**占位卡与真实卡的高度不一致**，切换瞬间整列消息被顶动 —— 逐帧测出三种跳变：图片/视频 **72px**、音频 **29px**、文件 **29px**。
+
+### 2. 修复：新增「正在完成上传」阶段 + 旋转弧
+
+- `packages/web/src/api.ts`：`uploadFile` 的 `onPhase` 增加 `"finishing"`，在 `apiUploadComplete` **之前**上报（分片传完 ≠ 上传结束）。
+- `packages/web/src/ui/messages.ts`：`UploadRec.phase` 增加 `finishing` / `saved`；`finishing` 时进度环换成**旋转缺口弧** `.ph-spin` + 主色文案「正在完成上传…」。
+- `packages/web/src/app.ts`：`onPhase("finishing")` 时把 `pct` 置 100；WS 迟迟不回推消息时 12 秒兜底改为 `saved`（文案「已上传完成」）。
+- `packages/web/src/i18n.ts`：新增 `ph_finishing` / `ph_saved`（中英）。
+- `packages/web/src/app.css`：`.ph-spin` 用「仅上/右边框有色」的缺口弧（整圈会像「停止」按钮）；`prefers-reduced-motion` 下仍保留真实进度反馈。
+
+### 3. 修复：占位卡与真实卡几何严格对齐（消除高度跳变）
+
+| 类型 | 修复前 占位/真实 | 跳变 | 修复后 | 跳变 |
+|---|---|---|---|---|
+| 图片 | 423 / 351 | 72px | 351 / 351 | **0** |
+| 视频 | 423 / 351 | 72px | 351 / 351 | **0** |
+| 音频 | 117 / 146 | 29px | 146 / 146 | **0** |
+| 文件 | 150 / 121 | 29px | 121 / 121 | **0** |
+
+三处根因：
+1. **多一行高度**：占位卡把「信息行 + 操作行」放在流内，真实卡却是「图片/视频：绝对定位的 .ovl」「文件/音频：主体 + .ops」。
+   改为照抄真实卡排布 —— 图片/视频的 `.ph-mm`/`.ph-ops` 绝对定位到底部，文件/音频**不再渲染信息行**（文件名在主体里）。
+2. **按钮差 2px**：占位按钮用了 `.btn.secondary`（含 1px 边框 → 33px），真实卡是 `.btn`（31px）。统一为 `.btn`，并显式 `height: 31px`。
+3. **两层图标**：图片/视频真实卡的 `::after`（放大镜/播放键）与占位卡的图标骨架会重叠可见 —— 新增 `.ph-cover`（与 `.ph-body` 同 z-index 且后渲染，可靠盖住真实卡内容）并在这两个阶段隐藏装饰图标。
+
+### 4. 修复：就地替换 + 揭层过渡
+
+- `app.ts` 新增 `finishUpload()` / `settleUpload()` / `markThumbReady()`：上传成功后**不删占位卡**，记下真实消息 id（`UploadRec.realId`），
+  WS 广播到达时把占位卡的 id 换成真实 id（**原地替换**，只重绘内容不重建节点）；HTTP 响应比广播先到也不会重复插入。
+- `ui/messages.ts` 与 `app.ts` 的 `readyThumbs`：真实缩略图**解码完成前**继续显示占位外观，完成后 `.ph-blur` / `.ph-cover` 在 220ms 内淡出（揭开而非硬切），3 秒兜底防挂。
+- 失败分支（文件/音频）改为在主体底部叠一行 `.ph-fail`，保持卡片高度不变，仍显示「上传中断 · 点击续传」且整卡可点。
+
+### 5. 验证
+
+- **逐帧采样**（新增 `_dev/_e2e_swap.mjs`，真实浏览器 + 真实服务端 + 真机局域网 HTTP + 服务端组装延时放大观察窗口）：
+  四种类型各 300+ 帧，`gapFrames === 0`（没有任何一帧卡片消失/高度塌陷）、`maxHeightJump === 0`（卡片高度零跳变），
+  且「正在完成上传…」+ 旋转弧按预期出现。修法上用「卡片自身高度」而非「消息行高度」做指标，避免被头像/头部高度掩盖问题。
+- **失败续传**（新增 `_dev/_e2e_fail.mjs`，代理让第 2 个分片固定 500）：仍显示「上传中断 · 点击续传」、`retry` 类存在、卡片高度 121（与真实卡一致）。
+- **截图人工确认**（`_dev/_shot_finishing.mjs`）：100% 阶段为「旋转弧 + 正在完成上传…」，无两层图标；完成后与真实卡完全一致。
+- **服务端测试**：Node 25（`node:sqlite`）与 Node 18（`better-sqlite3`）均 **76 通过 0 失败**；web `tsc` 通过。
+- **打包验收**：`pnpm package` → `release/filesyncex-6.5.0.exe`（71.18 MB），`_dev/_accept.mjs` **16/16 通过**（含分片上传 + 流式 SHA 校验、动态切片、直传、引用计数、鉴权、导出 zip）。
+
+### 6. 备注
+
+- `package.json` 版本在本次会话期间为 **6.5.0**（工作区改动，未提交），产物名与 `/api/health` 版本一致。
+- 临时验证脚本（`_dev/_e2e_swap.mjs`、`_dev/_e2e_fail.mjs`、`_dev/_shot_finishing.mjs`、`_dev/_server_boot.mjs` 的组装延时参数）都在 `_dev/`（已 gitignore），不进产物。

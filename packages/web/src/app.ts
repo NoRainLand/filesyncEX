@@ -60,6 +60,11 @@ export class FilesyncApp extends LitElement {
   lanIps: string[] = [];
   /** 服务器下发的上传限制（设置界面显示 + 上传前预检 + 失败分支判定；来自 /api/health） */
   limits: UploadLimitsT | null = null;
+  /**
+   * 已解码完成的缩略图 URL（图片 / 视频封面）。
+   * 「占位卡 → 真实消息」切换时，真实缩略图往往还要解码一帧；用这个集合决定何时揭掉占位层，避免闪白。
+   */
+  readyThumbs = new Set<string>();
 
   /** 直传阈值（服务器下发优先，未取到时用与服务端一致的兜底值）：全前端只此一处判定，避免硬编码漂移 */
   private directUploadLimit(): number {
@@ -164,7 +169,18 @@ export class FilesyncApp extends LitElement {
         if (level === "maintenance") this.ws?.close();
       },
       onWelcome: (_s, msgs, peers) => { this.msgs = msgs; this.peers = peers; this.scrollToLatest(); },
-      onAdd: (msg) => { if (!this.msgs.some((m) => m.id === msg.id)) { this.msgs = [...this.msgs, msg]; this.scrollToLatest(); } },
+      onAdd: (msg) => {
+        if (this.msgs.some((m) => m.id === msg.id)) return;
+        // 本机刚上传完的文件：把「占位卡」原地换成真实消息（而不是删掉再插入），避免闪一下
+        const rec = this.uploads.find((u) => u.realId === msg.id);
+        if (rec) {
+          this.msgs = this.msgs.map((m) => (m.id === rec.key ? { ...msg, ts: m.ts, id: rec.key, sender: m.sender } : m));
+          this.settleUpload(rec, msg);
+        } else {
+          this.msgs = [...this.msgs, msg];
+          this.scrollToLatest();
+        }
+      },
       onUpdate: (msg) => { this.msgs = this.msgs.map((m) => (m.id === msg.id ? msg : m)); },
       onDel: (id) => { this.msgs = this.msgs.filter((m) => m.id !== id); },
       onPeers: (peers) => { this.peers = peers; },
@@ -450,10 +466,22 @@ export class FilesyncApp extends LitElement {
         if (kind === "video" && !rec.coverKey) {
           rec.coverKey = await this.extractVideoCover(file);
         }
-        await uploadFile(file, (sent, total) => { rec.pct = Math.round((sent / total) * 100); this.uploads = [...this.uploads]; }, rec.coverKey);
-        // 上传成功：移除占位卡（真实消息由 WS onAdd 广播，同 id 去重不冲突）
-        this.msgs = this.msgs.filter((m) => m.id !== key);
-        this.uploads = this.uploads.filter((x) => x !== rec);
+        const res = await uploadFile(
+          file,
+          (sent, total) => {
+            // 哈希阶段与上传阶段的字节数都会回调（哈希进度先跑到 100%），这里统一折算成百分比
+            rec.pct = Math.max(0, Math.min(100, Math.round((sent / total) * 100)));
+            // 首个非 0 百分比出现时清掉阶段标记 —— 进度环动起来就不需要文字提示了
+            if (rec.phase && rec.pct > 0) rec.phase = undefined;
+            this.uploads = [...this.uploads];
+          },
+          rec.coverKey,
+          // 阶段提示：0% 时告知「正在准备/上传」，分片传完后告知「正在完成上传」，避免看起来卡死
+          (phase) => { rec.phase = phase; if (phase === "finishing") rec.pct = 100; this.uploads = [...this.uploads]; }
+        );
+        // 上传成功：**不删**占位卡 —— 记下真实消息 id，等 WS 广播到达时原地替换（避免「删掉再插入」闪一下）。
+        // 直传路径服务端不广播（res.msg 直接返回），这里立即就地落成真实消息。
+        this.finishUpload(rec, res.msg?.id, res.msg);
       } catch (e) {
         // 预期内的拒绝（如超过单文件上限）用 warn，真正的异常才用 error —— 避免污染控制台错误面板
         const reason = e instanceof Error ? e.message : String(e);
@@ -468,7 +496,7 @@ export class FilesyncApp extends LitElement {
           this.flash(tip ?? this.t("upload_fail", { name: file.name }));
         } else {
           // 大文件（分片上传）：保留占位卡，标记失败 → 点击可断点续传（File 引用仍在内存）
-          rec.fail = true; rec.pct = -1;
+          rec.fail = true; rec.pct = -1; rec.phase = undefined;
           this.uploads = [...this.uploads];
           this.msgs = [...this.msgs];
           this.flash(tip ?? this.t("upload_interrupted", { name: file.name }));
@@ -478,6 +506,68 @@ export class FilesyncApp extends LitElement {
     this.scrollToLatest();
   }
   private onDrop(e: DragEvent): void { e.preventDefault(); void this.handleFiles(e.dataTransfer?.files ?? null); }
+
+  /**
+   * 上传收尾：把占位卡原地换成真实消息。
+   *
+   * 关键点是**不要**「先删占位卡、等广播再插入」—— 那是两次独立渲染，中间会有一帧空档（表现为闪一下）。
+   * 这里保留占位元素（id 仍是 upload-<key>），只把内容换成真实消息，id 留到动画结束后再改，
+   * 于是整个切换只有一次重绘、没有空档。
+   *
+   * @param realId 真实消息 id；WS 广播尚未到达（或已到达）时都能正确收敛
+   * @param msg    直传路径服务端不广播，直接把响应里的消息就地落成真实消息
+   */
+  private finishUpload(rec: UploadRec, realId: string | undefined, msg?: MsgDataT): void {
+    const key = rec.key; // 占位卡 id（先存下来，下面要把 rec.key 换成真实 id）
+    // 响应里带回真实消息（直传路径服务端不广播）→ 原地落成真实消息，不留第二次重绘
+    if (msg) {
+      this.msgs = this.msgs.map((m) => (m.id === key ? { ...msg, ts: m.ts, sender: m.sender } : m));
+      rec.key = msg.id;
+      this.settleUpload(rec, msg);
+      return;
+    }
+    if (!realId) return; // 服务端没给出 id（极端情况）：留在「正在完成上传」，等广播接管
+    // WS 广播可能比 HTTP 响应先到：先把 id 记到记录上，广播到达时 onAdd 即可原地替换
+    rec.realId = realId;
+    window.setTimeout(() => {
+      // 广播已先到并完成了替换（该 id 已在消息列表里）→ 这里什么都不做
+      if (this.msgs.some((m) => m.id === realId)) return;
+      this.msgs = this.msgs.map((m) => (m.id === key ? { ...m, id: realId, sender: this.self ?? m.sender } : m));
+      rec.key = realId;
+      const real = this.msgs.find((m) => m.id === realId);
+      if (real) this.settleUpload(rec, real);
+      // WS 一直没把消息推回来：占位卡先停在「正在完成上传」，再给一句兜底文案，避免误以为失败
+      window.setTimeout(() => {
+        if (!this.uploads.includes(rec)) return;
+        rec.phase = "saved";
+        rec.settling = false;
+        this.uploads = [...this.uploads];
+      }, 12000);
+    }, 340);
+  }
+
+  /** 记账：标记「不再展示占位外观」，然后等缩略图解码（或兜底超时）后从上传队列移除 */
+  private settleUpload(rec: UploadRec, msg: MsgDataT): void {
+    rec.settling = true;
+    rec.phase = undefined;
+    rec.realId = msg.id;
+    this.uploads = [...this.uploads];
+    const url = msg.kind === "image" ? (msg.file?.url ?? "") : msg.kind === "video" ? (msg.file?.cover ?? "") : "";
+    if (!url) {
+      // 音频/普通文件没有缩略图要等，直接揭层（渲染结构本来就与真实卡片一致）
+      setTimeout(() => this.markThumbReady(""), 340);
+      return;
+    }
+    // 兜底：图片解码失败 / 网速极慢时不能一直挂着占位卡
+    window.setTimeout(() => this.markThumbReady(url), 3000);
+  }
+
+  /** 缩略图解码完成（img onload/onerror，兜底定时器也会调用）→ 揭掉占位层并收掉已完成的上传记录 */
+  private markThumbReady(url: string): void {
+    if (url && this.readyThumbs.has(url)) return;
+    if (url) this.readyThumbs = new Set(this.readyThumbs).add(url);
+    if (this.uploads.some((u) => u.settling)) this.uploads = this.uploads.filter((u) => !u.settling);
+  }
 
   /** 视频首帧封面：本地取帧（ObjectURL + video + canvas）→ 上传到服务器 → 返回 coverKey；失败返回 undefined */
   private async extractVideoCover(file: File): Promise<string | undefined> {
@@ -571,18 +661,27 @@ export class FilesyncApp extends LitElement {
     }
   }
 
-  /** 断点续传：点击失败的大文件占位卡，用内存里的 File 重新上传（同 sha → 服务端自动续传） */
+  /** 断点续传：点击失败的大文件占位卡，用内存里的 File 重新上传（同特征值 → 服务端自动续传） */
   private async retryUpload(rec: UploadRec): Promise<void> {
     if (!rec.file) return;
     if (!this.debounceKey("retry-" + rec.key, 800)) return;
-    rec.fail = false; rec.pct = 0;
+    rec.fail = false; rec.pct = 0; rec.phase = undefined;
     this.uploads = [...this.uploads];
     this.msgs = [...this.msgs];
     try {
-      await uploadFile(rec.file, (sent, total) => { rec.pct = Math.round((sent / total) * 100); this.uploads = [...this.uploads]; }, rec.coverKey);
-      // 续传成功：移除占位卡（真实消息由 WS onAdd 广播，同 id 去重）
-      this.msgs = this.msgs.filter((m) => m.id !== rec.key);
-      this.uploads = this.uploads.filter((x) => x !== rec);
+      const res = await uploadFile(
+        rec.file,
+        (sent, total) => {
+          rec.pct = Math.max(0, Math.min(100, Math.round((sent / total) * 100)));
+          if (rec.phase && rec.pct > 0) rec.phase = undefined;
+          this.uploads = [...this.uploads];
+        },
+        rec.coverKey,
+        // 阶段提示：0% 告知「正在准备/上传」，分片传完后告知「正在完成上传」
+        (phase) => { rec.phase = phase; if (phase === "finishing") rec.pct = 100; this.uploads = [...this.uploads]; }
+      );
+      // 续传成功：同样走「原地替换」，避免占位卡消失与真实消息插入之间的空档
+      this.finishUpload(rec, res.msg?.id);
       this.flash(this.t("resume_ok", { name: rec.name }));
     } catch (e) {
       console.error("续传失败:", e);

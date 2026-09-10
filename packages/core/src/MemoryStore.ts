@@ -1,5 +1,5 @@
 import type { FileMetaT, MsgDataT } from "@filesyncex/protocol";
-import type { Store, UploadSession } from "./Store.js";
+import { nameSizeKey, type Store, type UploadSession } from "./Store.js";
 
 /**
  * 内存版 Store：跑通业务与测试用。
@@ -11,6 +11,8 @@ export class MemoryStore implements Store {
   private chunks = new Map<string, Set<number>>();
   private files = new Map<string, FileMetaT>();
   private bySha = new Map<string, FileMetaT>();
+  /** name + size → 文件（秒传快速判定，见 Store.getFileByNameSize） */
+  private byNameSize = new Map<string, FileMetaT>();
   private fileRefs = new Map<string, number>();
   /** 文件 key → 引用它的消息 id 集合（decrFileRef 幂等依据） */
   private fileRefMsgs = new Map<string, Set<string>>();
@@ -70,10 +72,15 @@ export class MemoryStore implements Store {
     this.files.set(key, meta);
     this.fileRefs.set(key, 0);
     if (meta.sha256) this.bySha.set(meta.sha256, meta);
+    this.byNameSize.set(nameSizeKey(meta.name, meta.size ?? 0, meta.fp), meta);
     return true;
   }
   async getFileBySha(sha: string): Promise<FileMetaT | undefined> {
     return this.bySha.get(sha);
+  }
+  /** 按「文件名 + 大小 + 特征值」找已有文件（与 SqliteStore.getFileByNameSize 语义一致） */
+  async getFileByNameSize(name: string, size: number, fp?: string): Promise<FileMetaT | undefined> {
+    return this.byNameSize.get(nameSizeKey(name, size, fp));
   }
   async getFile(key: string): Promise<FileMetaT | undefined> {
     return this.files.get(key);
@@ -97,6 +104,7 @@ export class MemoryStore implements Store {
   async removeFile(key: string): Promise<void> {
     const meta = this.files.get(key);
     if (meta?.sha256) this.bySha.delete(meta.sha256);
+    if (meta) this.byNameSize.delete(nameSizeKey(meta.name, meta.size ?? 0, meta.fp));
     this.files.delete(key);
     this.fileRefs.delete(key);
     this.fileRefMsgs.delete(key);

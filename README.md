@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| 版本 | `6.4.0` |
+| 版本 | `6.6.0` |
 | 语言 / 运行环境 | TypeScript；**开发请用 Node 18**（见[开发环境要求](#开发环境要求重要)），打包产物为 Windows x64 单文件 exe |
 | 包管理 | pnpm workspace（5 包 monorepo） |
 | 授权 | GPL-2.0-or-later |
@@ -46,7 +46,7 @@
 - **文字 / 代码消息**：WebSocket 实时同步，代码语法高亮，URL 自动转链接
 - **文件传输**：图片 / 视频 / 音频 / 任意文件
   - ≤ 直传阈值（默认 8 MiB）：整块一次上传，跳过哈希与分片，几乎无等待
-  - 更大的文件：分片上传（**切片按文件大小动态取** 1–8 MiB），支持**断点续传**与**秒传**（SHA-256 查重）
+  - 更大的文件：分片上传（**切片按文件大小动态取** 1–8 MiB），支持**断点续传**与**秒传**（文件名 + 大小查重，客户端零哈希成本）
   - 单文件上限默认 **16 GiB**（可配置），超限文件在**上传前**就被拒（不白算哈希、不消耗流量）
 - **音频播放**：服务端 WASM 解码为 16-bit PCM WAV 流，浏览器原生播放（支持拖动 seek），频谱图由前端渲染
 - **设备身份**：浏览器指纹生成设备 ID，可自定义昵称，按指纹分配彩色头像
@@ -202,17 +202,22 @@ shell main()
 flowchart LR
     F[选择文件] --> A{大小?}
     A -- 超过 maxFileSize --> X[本地上传前拒绝<br/>提示上限，不发请求]
-    A -- ≤ directUpload --> D[POST /api/upload/direct<br/>整块一次上传]
-    A -- 更大 --> H[fileSha256 纯 JS 增量哈希<br/>秒传 / 续传 cacheKey]
-    H --> I[POST /api/upload/init<br/>服务端算切片：chunkSize / chunkCount / done]
-    I -- sha256 命中 --> S[秒传：直接生成消息]
+    A -- ≤ directUpload --> FP[读文件前 1 MiB<br/>算特征值 ~20ms]
+    A -- 更大 --> FP
+    FP -- ≤ directUpload --> D[POST /api/upload/direct<br/>整块一次上传]
+    FP -- 更大 --> I[POST /api/upload/init<br/>服务端算切片：chunkSize / chunkCount / done]
+    I -- 文件名+大小+特征值 命中 --> S[秒传：直接生成消息]
     I --> C[逐片 POST /api/upload/chunk<br/>30s 超时 + 退避重试 4 次]
-    C --> CP[POST /api/upload/complete<br/>流式组装 + 校验 sha256 + 广播]
+    C --> CP[POST /api/upload/complete<br/>正在完成上传…<br/>流式组装 + 服务端算 SHA-256 + 广播]
 ```
 
-- **秒传**：`init` 携带 sha256，服务端查重命中则直接生成一条新消息（复用同一物理文件）
-- **断点续传**：中断时 localStorage 保存 `uploadId`，下次同 sha 复用会话，跳过已完成分片
-- **完整性**：`complete` 时服务端重算 SHA-256 并与客户端声明比对，不一致直接拒绝（否则续传 key 会永久对不上）
+- **秒传**：`init` 携带文件名 + 大小 + 前 1 MiB 特征值（客户端只读 1 MiB，无需整文件哈希），服务端命中则直接生成一条新消息（复用同一物理文件）
+- **断点续传**：中断时 localStorage 保存 `uploadId`（key = 文件名 + 大小 + 特征值），下次复用会话，跳过已完成分片
+- **进度反馈**：0% 提示「正在准备上传…」；分片传完后（服务端组装校验，大文件 1~5 秒）提示「正在完成上传…」并显示旋转弧。
+  消息由 WS 广播回来时**原地替换占位卡**（占位卡与真实卡的尺寸/间距严格对齐），全程无空档闪烁
+- **完整性与 key**：整文件 SHA-256 由**服务端**在组装分片时流式算出，作为文件 key 与 `sha256` 元数据。
+  客户端**不再**计算整文件摘要 —— 浏览器无原生流式 SHA-256（局域网 HTTP 非安全上下文），
+  纯 JS 单核仅 ~100 MB/s，500 MB 要 5~7 秒，且这段等待正好显示为「上传进度 0%」（详见 [docs/NOTES.md](docs/NOTES.md) §3.1）
 - 下载：`GET /api/file/:key`（引用计数归零自动删除物理文件；下载文件名回退为原始文件名）
 
 接口细节（含管理接口鉴权、`limits` 字段、错误码）见 **[docs/API.md](docs/API.md)**。
@@ -275,7 +280,8 @@ packages/
   web/         # lit 前端（Vite）
     src/
       app.ts / app.css   # 主组件（状态 + 生命周期 + 输入/上传/预览交互）
-      api.ts             # HTTP 客户端（分片上传、SHA-256、limits 预检）
+      api.ts             # HTTP 客户端（分片上传、文件特征值、limits 预检）
+      fingerprint.ts     # 文件特征值：只读前 1 MiB 算 SHA-256（秒传 / 续传判定）
       auth.ts            # 管理接口令牌（authFetch）
       device.ts / i18n.ts / ws.ts
       ui/                # 展示层：helpers / icons / prism / lang / messages
@@ -327,7 +333,7 @@ pnpm --filter @filesyncex/server test security   # 只跑文件名含 security �
 ### 改版本号
 
 ```bash
-pnpm run set-version 6.5.0     # 例：6.4.0 → 6.5.0pnpm test                      # 可选：版本号唯一来源用例会校验一致性
+pnpm run set-version 6.6.0     # 例：6.6.0 → 6.6.0pnpm test                      # 可选：版本号唯一来源用例会校验一致性
 ```
 
 版本号是**单一来源**（根 `package.json`），脚本只改这 7 处：根 + 5 个子包 `package.json` 的 `version`、README 顶部版本行。
@@ -375,8 +381,9 @@ pnpm run set-version 6.5.0     # 例：6.4.0 → 6.5.0pnpm test                 
 ## 已知限制
 
 - **Node 版本敏感**：原生模块 `better-sqlite3` 的 ABI 与 Node 版本绑定，Node ≥ 22 且未 rebuild 时服务会**拒绝启动**（见[开发环境要求](#开发环境要求重要)）。
-- **大文件上传前等待**：> 直传阈值（8 MiB）的文件需先算整文件 SHA-256（纯 JS 增量实现，因为局域网 HTTP 非安全上下文没有 `crypto.subtle`），
-  大文件在真正开始上传前有明显等待（超限文件不会走到这一步，预检即拒）。
+- **秒传判定键含「前 1 MiB 特征值」**：整文件 SHA-256 在浏览器里太慢（详见 [docs/NOTES.md](docs/NOTES.md) §3.1），
+  因此客户端只读前 1 MiB 算特征值参与判定。代价是**首 1 MiB 相同、仅其后内容不同**的两个同名同大小文件会被判为同一文件
+  （直接复用已有物理文件）；整文件 SHA-256 仍由服务端算出并作为文件 key 与 `sha256` 元数据，服务端侧不存在内容错乱。
 - **音频转码内存**：转码缓存已用 LRU（上限 8 个）限制，但单文件解码过程仍会一次性占用该文件大小的内存（解码出的 WAV Buffer）。
 - **思源宋体约 6 MB**：`SourceHanSerifCN-Medium.woff2` 是单个体积最大的资源（可子集化或换字体优化）。
 - **pkg 首次打包需联网**：需从 pkg-cache 下载 Node 基础二进制（约 40 MB），离线环境首次打包会失败。

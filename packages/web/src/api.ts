@@ -1,5 +1,6 @@
 import type { UploadInitResT, UploadCompleteResT } from "@filesyncex/protocol";
 import { getDevice } from "./device.js";
+import { fileFingerprint } from "./fingerprint.js";
 
 /** HTTP API 客户端（相对路径，走 Vite 代理或同源静态服务） */
 
@@ -68,7 +69,8 @@ interface InitUploadInput {
   name: string;
   size: number;
   mime?: string;
-  sha256?: string;
+  /** 文件特征值（前 1 MiB 的 SHA-256）：服务端据此 + 文件名 + 大小做秒传判定 */
+  firstChunkSha256?: string;
   device: import("@filesyncex/protocol").DeviceInfoT;
   uploadId?: string;
   coverKey?: string;
@@ -136,10 +138,12 @@ export async function apiUploadComplete(uploadId: string): Promise<UploadComplet
   throw lastErr instanceof Error ? lastErr : new Error("上传完成失败");
 }
 
-/** 小文件直接上传：一次 POST 整个文件，跳过 SHA-256 哈希与分片（消除「上传前等待」） */
-export async function apiUploadDirect(file: File, device: import("@filesyncex/protocol").DeviceInfoT, coverKey?: string): Promise<UploadCompleteResT> {
+/** 小文件直接上传：一次 POST 整个文件，跳过分片（消除「上传前等待」） */
+export async function apiUploadDirect(file: File, device: import("@filesyncex/protocol").DeviceInfoT, coverKey?: string, fingerprint?: string): Promise<UploadCompleteResT> {
   const q = new URLSearchParams({ name: file.name, mime: file.type || "", device: JSON.stringify(device) });
   if (coverKey) q.set("coverKey", coverKey);
+  // 特征值由客户端算好传入（服务端也会从数据里独立算一遍并比对），用于秒传判定
+  if (fingerprint) q.set("fp", fingerprint);
   const r = await fetch(`/api/upload/direct?${q.toString()}`, {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
@@ -174,125 +178,44 @@ export async function apiUploadMsgCover(id: string, blob: Blob): Promise<void> {
   }
 }
 
-/** 纯 JS 增量 SHA-256（不依赖 crypto.subtle，兼容局域网 HTTP 非安全上下文） */
-class IncrementalSha256 {
-  private static readonly K = new Uint32Array([
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-  ]);
-  private h = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
-  private w = new Uint32Array(64);
-  private buf = new Uint8Array(64);
-  private bufLen = 0;
-  private len = 0;
-
-  update(data: Uint8Array): this {
-    this.len += data.length;
-    let off = 0;
-    if (this.bufLen > 0) {
-      const need = 64 - this.bufLen;
-      const take = Math.min(need, data.length);
-      this.buf.set(data.subarray(0, take), this.bufLen);
-      this.bufLen += take;
-      off += take;
-      if (this.bufLen === 64) {
-        this.compress(this.buf, 0);
-        this.bufLen = 0;
-      }
-    }
-    while (off + 64 <= data.length) {
-      this.compress(data, off);
-      off += 64;
-    }
-    if (off < data.length) {
-      this.buf.set(data.subarray(off), 0);
-      this.bufLen = data.length - off;
-    }
-    return this;
-  }
-
-  private compress(block: Uint8Array, start: number): void {
-    const w = this.w;
-    for (let i = 0; i < 16; i++) {
-      const o = start + i * 4;
-      w[i] = ((block[o]! << 24) | (block[o + 1]! << 16) | (block[o + 2]! << 8) | block[o + 3]!) >>> 0;
-    }
-    for (let i = 16; i < 64; i++) {
-      const s0 = rotr32(w[i - 15]!, 7) ^ rotr32(w[i - 15]!, 18) ^ (w[i - 15]! >>> 3);
-      const s1 = rotr32(w[i - 2]!, 17) ^ rotr32(w[i - 2]!, 19) ^ (w[i - 2]! >>> 10);
-      w[i] = (w[i - 16]! + s0 + w[i - 7]! + s1) >>> 0;
-    }
-    let a = this.h[0]!, b = this.h[1]!, c = this.h[2]!, d = this.h[3]!, e = this.h[4]!, f = this.h[5]!, g = this.h[6]!, h = this.h[7]!;
-    for (let i = 0; i < 64; i++) {
-      const S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
-      const ch = (e & f) ^ (~e & g);
-      const t1 = (h + S1 + ch + IncrementalSha256.K[i]! + w[i]!) >>> 0;
-      const S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
-      const maj = (a & b) ^ (a & c) ^ (b & c);
-      const t2 = (S0 + maj) >>> 0;
-      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
-    }
-    this.h[0] = (this.h[0]! + a) >>> 0; this.h[1] = (this.h[1]! + b) >>> 0; this.h[2] = (this.h[2]! + c) >>> 0; this.h[3] = (this.h[3]! + d) >>> 0;
-    this.h[4] = (this.h[4]! + e) >>> 0; this.h[5] = (this.h[5]! + f) >>> 0; this.h[6] = (this.h[6]! + g) >>> 0; this.h[7] = (this.h[7]! + h) >>> 0;
-  }
-
-  digestHex(): string {
-    const bitHi = Math.floor(this.len / 0x20000000) >>> 0;
-    const bitLo = (this.len * 8) >>> 0;
-    this.update(new Uint8Array([0x80]));
-    while (this.bufLen !== 56) this.update(new Uint8Array([0]));
-    const lenBytes = new Uint8Array(8);
-    lenBytes[0] = (bitHi >>> 24) & 0xff; lenBytes[1] = (bitHi >>> 16) & 0xff; lenBytes[2] = (bitHi >>> 8) & 0xff; lenBytes[3] = bitHi & 0xff;
-    lenBytes[4] = (bitLo >>> 24) & 0xff; lenBytes[5] = (bitLo >>> 16) & 0xff; lenBytes[6] = (bitLo >>> 8) & 0xff; lenBytes[7] = bitLo & 0xff;
-    this.update(lenBytes);
-    let hex = "";
-    for (let i = 0; i < 8; i++) hex += this.h[i]!.toString(16).padStart(8, "0");
-    return hex;
-  }
-}
-
-function rotr32(x: number, n: number): number {
-  return ((x >>> n) | (x << (32 - n))) >>> 0;
-}
-
-const SHA_CHUNK = 4 * 1024 * 1024; // 4MB，避免大文件整块读入内存
 const CHUNK_TIMEOUT_MS = 30_000; // 单个分片请求超时（WiFi 抖动时避免永久挂起）
 const CHUNK_MAX_RETRIES = 4; // 单个分片最大重试次数（网络瞬时断连自动恢复）
 // 直传阈值不再硬编码：统一由服务器下发（/api/health 的 limits.directUpload），未取到时用 FALLBACK_LIMITS。
 
-/** 计算文件 SHA-256（分块增量，用于秒传/断点续传；兼容局域网 HTTP 非安全上下文） */
-export async function fileSha256(file: Blob): Promise<string> {
-  const hasher = new IncrementalSha256();
-  for (let start = 0; start < file.size; start += SHA_CHUNK) {
-    const buf = await file.slice(start, Math.min(start + SHA_CHUNK, file.size)).arrayBuffer();
-    hasher.update(new Uint8Array(buf));
-  }
-  return hasher.digestHex();
-}
-
 /**
- * 上传文件：≤ 直传阈值直接整块上传（跳过哈希/分片）；更大走分片（断点续传 + 秒传）。
- * 上传前先按服务器下发的 limits 做**本地预检**：超大文件直接报错，
- * 不再「先花几十秒算完整文件 SHA-256 才被服务器拒绝」。
+ * 上传文件：≤ 直传阈值直接整块上传；更大走分片（断点续传 + 秒传）。
+ *
+ * **不再在客户端算整文件 SHA-256**（这是「0% 停顿 3 秒」的根因）：
+ * 浏览器里没有原生流式 SHA-256（局域网 HTTP 非安全上下文，`crypto.subtle` 为 undefined），
+ * 纯 JS 单核 ~100 MB/s，500 MB 要 5~7 秒；多 Worker 并行也只有 1.4 倍收益（实测）。
+ * 现在客户端只读前 1 MiB 算特征值（~20 ms）用于秒传/续传判定，
+ * 整文件摘要由服务端组装分片时流式算出（它本来就要读一遍全部数据），作为文件 key 与 `sha256` 元数据。
  */
-export async function uploadFile(file: File, onProgress?: (sent: number, total: number) => void, coverKey?: string): Promise<UploadCompleteResT> {
+export async function uploadFile(
+  file: File,
+  onProgress?: (sent: number, total: number) => void,
+  coverKey?: string,
+  onPhase?: (phase: "preparing" | "uploading" | "finishing") => void
+): Promise<UploadCompleteResT> {
   const limits = await fetchLimits();
   if (limits.maxFileSize > 0 && file.size > limits.maxFileSize) {
     throw new Error(`文件过大：${fmtLimitBytes(file.size)} 超过单文件上限 ${fmtLimitBytes(limits.maxFileSize)}（可在 serverConfig.json 调整 maxFileSize）`);
   }
-  // 小文件直接上传：跳过整文件 SHA-256 与分片，消除「上传前等待」
+
+  // 只读前 1 MiB（~20 ms）：用于秒传判定与断点续传 key
+  onPhase?.("preparing");
+  const fp = await fileFingerprint(file);
+
+  // 小文件直接上传：跳过整文件哈希与分片，消除「上传前等待」
   if (file.size <= limits.directUpload) {
     onProgress?.(file.size, file.size);
-    return await apiUploadDirect(file, getDevice(), coverKey);
+    return await apiUploadDirect(file, getDevice(), coverKey, fp);
   }
-  const sha = await fileSha256(file);
-  const cacheKey = "fsex_upload_" + sha;
+
+  // 大文件：分片上传（服务端组装时流式算整文件 sha256 作为最终 key 与校验）
+  onPhase?.("uploading");
+  // 续传 key：文件名 + 大小 + 前 1 MiB 特征值 —— 不需要整文件摘要即可稳定复现
+  const cacheKey = `fsex_upload_v2_${file.name}_${file.size}_${fp.slice(0, 16)}`;
   let savedUploadId: string | undefined;
   try {
     savedUploadId = localStorage.getItem(cacheKey) ?? undefined;
@@ -303,7 +226,7 @@ export async function uploadFile(file: File, onProgress?: (sent: number, total: 
     name: file.name,
     size: file.size,
     mime: file.type || undefined,
-    sha256: sha,
+    firstChunkSha256: fp,
     device: getDevice(),
     uploadId: savedUploadId,
     coverKey,
@@ -328,6 +251,9 @@ export async function uploadFile(file: File, onProgress?: (sent: number, total: 
       sent += chunk.size;
       onProgress?.(Math.min(sent, file.size), file.size);
     }
+    // 分片全部传完 ≠ 上传结束：服务端还要**组装 + 校验**（流式 SHA-256、改名落盘）。
+    // 大文件这一步在机械盘上要 1~5 秒，客户端却停在 100% 不动 —— 会让人以为卡死，故单独上报一个阶段。
+    onPhase?.("finishing");
     const res = await apiUploadComplete(init.uploadId);
     try {
       localStorage.removeItem(cacheKey);

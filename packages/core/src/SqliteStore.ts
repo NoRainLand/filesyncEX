@@ -1,5 +1,5 @@
 import type { FileMetaT, MsgDataT } from "@filesyncex/protocol";
-import type { Store, UploadSession } from "./Store.js";
+import { nameSizeKey, type Store, type UploadSession } from "./Store.js";
 
 type DB = import("better-sqlite3").Database;
 
@@ -104,6 +104,8 @@ export class SqliteStore implements Store {
         key TEXT PRIMARY KEY,
         data TEXT NOT NULL,
         sha256 TEXT,
+        name_size TEXT,
+        size INTEGER,
         refs INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS file_refs(
@@ -114,12 +116,28 @@ export class SqliteStore implements Store {
       CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts);
       CREATE INDEX IF NOT EXISTS idx_files_sha ON files(sha256);
     `);
-    // 旧库迁移：files 表可能没有 refs 列（早期版本），补列
-    try {
-      this.db.exec("ALTER TABLE files ADD COLUMN refs INTEGER NOT NULL DEFAULT 0");
-    } catch {
-      /* 列已存在，忽略 */
+    // 旧库迁移：补列（早期版本没有 refs / name_size / size —— 后两者用于「文件名+大小」秒传判定）
+    for (const ddl of [
+      "ALTER TABLE files ADD COLUMN refs INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE files ADD COLUMN name_size TEXT",
+      "ALTER TABLE files ADD COLUMN size INTEGER",
+      "CREATE INDEX IF NOT EXISTS idx_files_name_size ON files(name_size)",
+    ]) {
+      try {
+        this.db.exec(ddl);
+      } catch {
+        /* 已存在，忽略 */
+      }
     }
+    // 秒传索引回填：老库的 files 行没有 name_size（当时用 fingerprint），按 data 里的 name/size 补上，
+    // 否则升级后已存在的文件全都无法秒传，用户会把相同文件再传一遍。
+    // 分隔符必须是 char(1)（不是 char(0)）：node:sqlite 绑定含 NUL 的字符串会截断，索引列会丢大小。
+    this.db.exec(`
+      UPDATE files
+        SET name_size = json_extract(data, '$.name') || char(1) || COALESCE(json_extract(data, '$.size'), 0) || char(1) || COALESCE(json_extract(data, '$.fp'), ''),
+            size = COALESCE(size, json_extract(data, '$.size'))
+        WHERE name_size IS NULL;
+    `);
     // 引用计数修复 + 一致性重建：
     // 早期版本在 insert ... ON CONFLICT 时不增加 refs（同一文件重复上传 → refs 卡在 1），
     // 删掉一条引用它的消息就会把其他消息仍在引用的文件物理删除。启动时按 messages 表全量重算
@@ -198,8 +216,8 @@ export class SqliteStore implements Store {
       const exists = this.db.prepare("SELECT 1 FROM files WHERE key = ?").get(key);
       if (exists) return false;
       this.db
-        .prepare("INSERT INTO files(key, data, sha256, refs) VALUES (?, ?, ?, 0)")
-        .run(key, JSON.stringify(meta), meta.sha256 ?? null);
+        .prepare("INSERT INTO files(key, data, sha256, name_size, size, refs) VALUES (?, ?, ?, ?, ?, 0)")
+        .run(key, JSON.stringify(meta), meta.sha256 ?? null, nameSizeKey(meta.name, meta.size ?? 0, meta.fp), meta.size ?? null);
       return true;
     });
   }
@@ -211,6 +229,11 @@ export class SqliteStore implements Store {
       this.db.prepare("INSERT INTO file_refs(key, msg_id) VALUES (?, ?)").run(key, msgId);
       this.db.prepare("UPDATE files SET refs = refs + 1 WHERE key = ?").run(key);
     });
+  }
+  /** 按「文件名 + 大小 + 特征值」找已有文件（秒传快速判定；无需客户端算完整文件哈希） */
+  async getFileByNameSize(name: string, size: number, fp?: string): Promise<FileMetaT | undefined> {
+    const r = this.db.prepare("SELECT data FROM files WHERE name_size = ? AND size = ? LIMIT 1").get(nameSizeKey(name, size, fp), size) as { data: string } | undefined;
+    return r ? (JSON.parse(r.data) as FileMetaT) : undefined;
   }
   async getFileBySha(sha: string): Promise<FileMetaT | undefined> {
     const r = this.db.prepare("SELECT data FROM files WHERE sha256 = ?").get(sha) as { data: string } | undefined;

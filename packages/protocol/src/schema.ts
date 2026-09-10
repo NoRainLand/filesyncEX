@@ -44,6 +44,8 @@ export const FileMeta = z.object({
   cover: z.string().optional(),
   /** 文件 SHA-256（秒传去重用） */
   sha256: z.string().optional(),
+  /** 首片摘要（与 size 一起用于秒传快速判定；服务端落库时写入） */
+  fp: z.string().optional(),
 });
 export type FileMeta = z.infer<typeof FileMeta>;
 
@@ -80,7 +82,20 @@ export const UploadInitReq = z.object({
   name: z.string().min(1),
   size: z.number().int().nonnegative(),
   mime: z.string().optional(),
-  sha256: z.string().optional(), // 用于秒传校验
+  /**
+   * 整文件 sha256（可选）。
+   * 客户端**不再计算**整文件摘要 —— 纯 JS 的 SHA-256 在浏览器里单核只有 ~100 MB/s，
+   * 500 MB 文件要 5~7 秒，而这段等待正好落在「上传进度 0%」上，是体感卡顿的主因。
+   * 真正的整文件摘要由服务端在组装分片时流式算出（它本来就要读一遍全部数据），并作为文件 key 与 sha256 元数据。
+   * 该字段仅保留给旧客户端/脚本调用；服务端**不再**用它校验内容。
+   */
+  sha256: z.string().optional(),
+  /**
+   * 文件特征值：**文件前 1 MiB 的标准 SHA-256**（客户端与服务端算法完全一致）。
+   * 服务端用「特征值 + 文件大小 + 文件名」判定秒传，因此客户端只需读 1 MiB 就能命中秒传。
+   * 前 1 MiB 是固定的，与分片大小（directUpload / chunkSize）无关，两条上传路径都能对上。
+   */
+  firstChunkSha256: z.string().optional(),
   device: DeviceInfo, // 上传者设备身份（用于文件消息的 sender）
   /** 断点续传：客户端持久化的上次 uploadId，匹配 name/size 则复用会话并返回已传分片 */
   uploadId: z.string().optional(),

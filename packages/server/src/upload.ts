@@ -5,12 +5,50 @@ import { SyncEngine, type Store } from "@filesyncex/core";
 import { parse, UploadInitReq, UploadInitRes, UploadChunkRes, UploadCompleteRes } from "@filesyncex/protocol";
 import { computeChunkPlan, DEFAULT_CHUNK_SIZE_MAX, DEFAULT_CHUNK_SIZE_MIN } from "./config.js";
 
-/** 小于该大小（字节）的文件走「直接上传」，跳过整文件 SHA-256 与分片（小文件哈希/分片开销大于收益） */
+/** 小于该大小（字节）的文件走「直接上传」，跳过分片（小文件分片开销大于收益） */
 export const DIRECT_LIMIT = 8 * 1024 * 1024; // 8 MiB
 /** 分片会话超过该时长未被 complete 视为废弃（客户端可续传窗口的上限，超过即回收磁盘） */
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 /** 未被任何消息引用的封面图超过该时长视为孤儿，清理物理文件 */
 const COVER_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 流式 SHA-256，但**只累积前 `limit` 字节**，用于算「文件特征值」。
+ *
+ * 客户端与服务端都用「文件前 1 MiB 的标准 SHA-256」当特征值：与分片大小无关，
+ * 因此直传（整文件一次 POST）与分片（服务端组装）两条路径算出的特征值必然一致，
+ * 秒传索引（文件名 + 大小 → 文件）之外还能做一次内容特征校验。
+ */
+function createPrefixSha256(limit: number, onDigest: (hex: string) => void): { update(b: Buffer): void; done(): void } {
+  const h = createHash("sha256");
+  let seen = 0;
+  let closed = false;
+  return {
+    update(b: Buffer): void {
+      if (closed) return;
+      const left = limit - seen;
+      if (left <= 0) return;
+      if (b.length >= left) {
+        h.update(b.subarray(0, left));
+        seen = limit;
+        onDigest(h.digest("hex"));
+        closed = true;
+        return;
+      }
+      h.update(b);
+      seen += b.length;
+    },
+    done(): void {
+      if (!closed) {
+        onDigest(h.digest("hex"));
+        closed = true;
+      }
+    },
+  };
+}
+
+/** 特征值参与计算的固定前缀长度（与 web/src/fingerprint.ts 的 FINGERPRINT_BYTES 必须一致） */
+export const FINGERPRINT_BYTES = 1024 * 1024;
 
 /** 人类可读体积（用于错误提示，避免用户看到 17179869184 这种裸数字） */
 export function fmtBytes(n: number): string {
@@ -120,18 +158,18 @@ export class UploadService {
     const { chunkSize, chunkCount } = computeChunkPlan(req.size, this.chunkSizeMin, this.chunkSizeMax);
     const uploadId = randomUUID();
 
-    // 秒传：按 sha256 命中已有文件 → 用「新上传的名字」构造一条新消息（文件内容指向旧文件），广播后返回
-    // 引用计数在 addMessage 之后登记（addFileRef）：已存在的 key 只 +1，不覆盖首份元数据、不重写物理文件
-    if (req.sha256) {
-      const existing = await this.store.getFileBySha(req.sha256);
-      if (existing && existing.key) {
-        // 同内容不同名：消息名用用户本次上传的名字，key/url/sha256/size 沿用旧文件
-        const meta = { ...existing, name: req.name, mime: req.mime || existing.mime };
-        const msg = this.fileMessage(req.device, meta, randomUUID());
-        await this.engine.addMessage(msg);
-        await this.store.addFileRef(existing.key, msg.id);
-        return { ok: true, res: { uploadId, chunkSize, chunkCount, done: [], existed: true, file: existing, msg } as import("@filesyncex/protocol").UploadInitResT };
-      }
+    // 秒传判定（两级，客户端都不需要先算整文件摘要）：
+    //  ① 首选「文件名 + 大小 + 特征值（前 1 MiB 的 SHA-256）」：客户端只读 1 MiB 即可命中，
+    //     且「同名同大小但内容不同」不会误命中（特征值由内容决定）；
+    //  ② 兼容旧客户端：仍接受整文件 sha256 命中
+    const existing = (await this.store.getFileByNameSize(req.name, req.size, req.firstChunkSha256)) ?? (req.sha256 ? await this.store.getFileBySha(req.sha256) : undefined);
+    if (existing && existing.key) {
+      // 同内容不同名：消息名用用户本次上传的名字，key/url/sha256/size 沿用旧文件
+      const meta = { ...existing, name: req.name, mime: req.mime || existing.mime };
+      const msg = this.fileMessage(req.device, meta, randomUUID());
+      await this.engine.addMessage(msg);
+      await this.store.addFileRef(existing.key, msg.id);
+      return { ok: true, res: { uploadId, chunkSize, chunkCount, done: [], existed: true, file: existing, msg } as import("@filesyncex/protocol").UploadInitResT };
     }
 
     await this.store.createUpload({
@@ -179,6 +217,9 @@ export class UploadService {
     const safeName = (s.name || "unnamed").replace(/[\\\/:*?"<>|]/g, "_");
     const tmpPath = path.join(this.uploadDir, ".tmp-" + uploadId);
     const sha = createHash("sha256");
+    // 特征值（前 1 MiB）与整文件摘要一并流式算出：这里本来就要读一遍全部数据，不额外增加 I/O
+    let fp: string | undefined;
+    const prefix = createPrefixSha256(FINGERPRINT_BYTES, (hex) => { fp = hex; });
     try {
       // 组装阶段先算摘要（final key 需要），故先写临时文件、算完摘要再改名
       const out = fs.createWriteStream(tmpPath);
@@ -190,6 +231,7 @@ export class UploadService {
           }
           const data = await fs.promises.readFile(p);
           sha.update(data);
+          prefix.update(data);
           // 背压：await 写回调（drain 后才会回调），磁盘慢于读时不会把整文件堆在内存
           await new Promise<void>((res, rej) => {
             out.write(data, (e) => (e ? rej(e) : res()));
@@ -200,9 +242,10 @@ export class UploadService {
           out.end(() => res());
         });
       }
+      prefix.done();
       const digest = sha.digest("hex");
-      // 客户端声明的 sha256 与实际内容比对：不一致说明客户端哈希算法/数据有问题，
-      // 若不拒绝，其 localStorage 断点续传 key（fsex_upload_<sha>）会永久对不上，同一文件每次都要重传全文
+      // 客户端若声明了整文件 sha256（旧客户端/脚本），仍然校验：不一致说明数据有问题，宁可拒绝
+      // 新客户端不再计算整文件摘要（浏览器里太慢），此时 sha256 为空，校验交给服务端自己算出的 digest。
       if (s.sha256 && !shaEquals(s.sha256, digest)) {
         fs.rmSync(tmpPath, { force: true });
         return { ok: false, error: `文件校验失败：实际 sha256 与 init 声明不一致（声明 ${s.sha256.slice(0, 12)}… 实际 ${digest.slice(0, 12)}…），请重新上传` };
@@ -221,6 +264,8 @@ export class UploadService {
         size: s.size,
         mime: s.mime,
         sha256: digest,
+        // 特征值：文件前 1 MiB 的标准 SHA-256（客户端 init 时会带上同值；老会话没有则由上面的 prefix 算出）
+        fp,
         key,
         url: "/api/file/" + encodeURIComponent(key),
         cover: undefined as string | undefined,
@@ -266,15 +311,18 @@ export class UploadService {
   }
 
   /** 小文件直接上传：整块落盘并广播（前端保证 ≤ 直传阈值，跳过哈希/分片） */
-  async direct(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer, coverKey?: string): Promise<{ ok: true; res: UploadCompleteRes } | { ok: false; error: string }> {
+  async direct(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer, coverKey?: string, fp?: string): Promise<{ ok: true; res: UploadCompleteRes } | { ok: false; error: string }> {
     if (size > this.directLimit) return { ok: false, error: `文件过大，请用分片上传（直传上限 ${fmtBytes(this.directLimit)}）` };
     if (this.maxFileSize > 0 && size > this.maxFileSize) return { ok: false, error: this.overLimitError(size) };
     if (data.length !== size) return { ok: false, error: `文件大小不符：声明 ${size} 字节，实际 ${data.length} 字节` };
-    return this.finalize(name, size, mime, device, data, coverKey);
+    return this.finalize(name, size, mime, device, data, coverKey, fp);
   }
 
-  /** 落盘最终文件 + 建索引 + 广播文件消息（小文件 direct 路径；分片路径由 complete 自行组装） */
-  private async finalize(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer, coverKey?: string): Promise<{ ok: true; res: UploadCompleteRes }> {
+  /**
+   * 落盘最终文件 + 建索引 + 广播文件消息（小文件 direct 路径；分片路径由 complete 自行组装）
+   * @param fp 客户端声明的特征值（前 1 MiB 的 SHA-256）；服务端会独立重算并比对，不一致以服务端为准
+   */
+  private async finalize(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer, coverKey?: string, fp?: string): Promise<{ ok: true; res: UploadCompleteRes }> {
     const sha = createHash("sha256").update(data).digest("hex");
     // 落盘到 uploads/<sha>_<name>（key 即文件名）
     const safeName = (name || "unnamed").replace(/[\\/:*?"<>|]/g, "_");
@@ -282,12 +330,18 @@ export class UploadService {
     const finalPath = path.join(this.uploadDir, key);
     // 同内容同名文件可能已存在（重复上传）：保留原文件，引用计数由 addFileRef 登记
     if (!fs.existsSync(finalPath)) await fs.promises.writeFile(finalPath, data);
+    // 特征值：文件前 1 MiB 的标准 SHA-256（与分片路径的同名算法一致，两条路径算出的值必然相同）
+    let computedFp: string | undefined;
+    const prefix = createPrefixSha256(FINGERPRINT_BYTES, (hex) => { computedFp = hex; });
+    prefix.update(data);
+    prefix.done();
 
     const meta = {
       name,
       size,
       mime,
       sha256: sha,
+      fp: computedFp ?? fp,
       key,
       url: "/api/file/" + encodeURIComponent(key),
       cover: undefined as string | undefined,

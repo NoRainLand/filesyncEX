@@ -173,7 +173,9 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
         device = undefined;
       }
       const coverKey = String(req.query.coverKey || "") || undefined;
-      const r = await uploads.direct(String(req.query.name ?? ""), buf.length, String(req.query.mime || "") || undefined, device, buf, coverKey);
+      // fp：客户端算的文件特征值（前 1 MiB 的 SHA-256）。服务端会独立重算，此处仅作声明记录
+      const fp = String(req.query.fp || "") || undefined;
+      const r = await uploads.direct(String(req.query.name ?? ""), buf.length, String(req.query.mime || "") || undefined, device, buf, coverKey, fp);
       if (!r.ok) return res.status(400).json({ error: r.error });
       res.json(r.res);
     }

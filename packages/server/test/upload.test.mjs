@@ -27,6 +27,21 @@ describe("上传链路与磁盘卫生", () => {
     expect(b.status).toBe(200);
     expect(a.json.msg.file.key).toBe(b.json.msg.file.key);
     expect(refsOf(a.json.msg.file.key)).toBe(2);
+    // 直传也写特征值（前 1 MiB 的 sha256；文件不足 1 MiB → 等于整文件摘要），且两条路径算法一致
+    expect(a.json.msg.file.fp).toBe(createHash("sha256").update(body).digest("hex"));
+  });
+
+  it("特征值 = 前 1 MiB：仅尾部不同的两个文件（>1 MiB）特征值相同，但 sha256/物理文件不同", async () => {
+    const head = Buffer.alloc(1024 * 1024, 3); // 恰好 1 MiB 相同前缀
+    const f1 = Buffer.concat([head, Buffer.from("tail-A")]);
+    const f2 = Buffer.concat([head, Buffer.from("tail-B")]);
+    const r1 = await uploadChunked(s, "head-a.bin", f1);
+    const r2 = await uploadChunked(s, "head-b.bin", f2);
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    expect(r1.json.msg.file.fp).toBe(r2.json.msg.file.fp); // 前 1 MiB 相同
+    expect(r1.json.msg.file.sha256 === r2.json.msg.file.sha256).toBe(false); // 内容不同 → 各自独立（testkit 无 .not）
+    expect(r1.json.msg.file.key === r2.json.msg.file.key).toBe(false);
   });
 
   it("删掉其中一条消息后，另一条消息的文件仍可下载（修复前会被误删 404）", async () => {
@@ -67,6 +82,100 @@ describe("上传链路与磁盘卫生", () => {
     const res = await uploadChunked(s, "match.bin", data, "application/octet-stream", good);
     expect(res.status).toBe(200);
     expect(res.json.msg.file.sha256).toBe(good);
+  });
+
+  it("客户端不算整文件摘要（不传 sha256）→ 服务端组装时自算并作为 key/元数据", async () => {
+    const data = Buffer.from("no client side full file hash at all");
+    const expectSha = createHash("sha256").update(data).digest("hex");
+    const res = await uploadChunked(s, "nohash.bin", data); // 不传 sha256
+    expect(res.status).toBe(200);
+    expect(res.json.msg.file.sha256).toBe(expectSha);
+    expect(res.json.msg.file.key.startsWith(expectSha.slice(0, 12))).toBe(true);
+    // 特征值 = 前 1 MiB 的标准 sha256（此处文件不足 1 MiB → 等于整文件摘要）
+    expect(res.json.msg.file.fp).toBe(expectSha);
+  });
+
+  it("秒传：同文件名+大小+特征值（客户端零整文件哈希）→ existed=true 复用物理文件，refs 递增", async () => {
+    const data = Buffer.from("dedupe by name and size without any hash");
+    const fp = createHash("sha256").update(data.subarray(0, 1024 * 1024)).digest("hex");
+    const init1 = await (
+      await fetch(s.base + "/api/upload/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "byname.bin", size: data.length, mime: "application/octet-stream", firstChunkSha256: fp, device: device() }),
+      })
+    ).json();
+    for (let i = 0; i < init1.chunkCount; i++) {
+      const start = i * init1.chunkSize;
+      await fetch(`${s.base}/api/upload/chunk/${init1.uploadId}/${i}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: data.subarray(start, Math.min(start + init1.chunkSize, data.length)),
+      });
+    }
+    const first = await (await fetch(`${s.base}/api/upload/complete/${init1.uploadId}`, { method: "POST" })).json();
+    const key = first.msg.file.key;
+    const before = refsOf(key);
+    expect(first.msg.file.fp).toBe(fp); // 服务端独立算出的特征值与客户端一致
+
+    const dup = await (
+      await fetch(s.base + "/api/upload/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "byname.bin", size: data.length, mime: "application/octet-stream", firstChunkSha256: fp, device: device("dev-d", "user_d") }),
+      })
+    ).json();
+    expect(dup.existed).toBe(true);
+    expect(dup.msg.file.key).toBe(key);
+    expect(refsOf(key)).toBe(before + 1);
+  });
+
+  it("秒传不误命中：同名同大小但特征值不同 → existed=false（内容不同不能复用物理文件）", async () => {
+    const head = Buffer.alloc(1024 * 1024, 9);
+    const f1 = Buffer.concat([head, Buffer.from("AAAA")]);
+    const f2 = Buffer.concat([Buffer.alloc(1024 * 1024, 8), Buffer.from("BBBB")]); // 同大小、不同内容
+    const fp1 = createHash("sha256").update(f1.subarray(0, 1024 * 1024)).digest("hex");
+    const fp2 = createHash("sha256").update(f2.subarray(0, 1024 * 1024)).digest("hex");
+    const r1 = await uploadChunked(s, "same-size-diff-content.bin", f1);
+    expect(r1.status).toBe(200);
+    const dup = await (
+      await fetch(s.base + "/api/upload/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "same-size-diff-content.bin", size: f2.length, firstChunkSha256: fp2, device: device() }),
+      })
+    ).json();
+    expect(dup.existed).toBe(false);
+    expect(fp1 === fp2).toBe(false);
+  });
+
+  it("同名但大小不同 → 不命中秒传（避免张冠李戴）", async () => {
+    const data = Buffer.from("size matters for dedupe");
+    const fp = createHash("sha256").update(data.subarray(0, 1024 * 1024)).digest("hex");
+    await uploadChunked(s, "samesize.bin", data);
+    const dup = await (
+      await fetch(s.base + "/api/upload/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "samesize.bin", size: data.length + 1, firstChunkSha256: fp, device: device() }),
+      })
+    ).json();
+    expect(dup.existed).toBe(false);
+  });
+
+  it("直传路径也建秒传索引：同名同大小同特征值 → 复用物理文件；索引列格式与 nameSizeKey 一致", async () => {
+    const data = Buffer.from("direct dedupe payload");
+    const fp = createHash("sha256").update(data.subarray(0, 1024 * 1024)).digest("hex");
+    const a = await uploadDirect(s, "direct-dup.bin", data, "application/octet-stream", undefined, fp);
+    expect(a.status).toBe(200);
+    // 索引列格式必须与 nameSizeKey() 完全一致（\u0001 分隔），否则秒传查不到
+    const row = sqliteGet(path.join(s.dataDir, "filesync.db"), "SELECT name_size FROM files WHERE key = ?", a.json.msg.file.key);
+    const expectKey = `direct-dup.bin\u0001${data.length}\u0001${fp}`;
+    expect(row.name_size).toBe(expectKey);
+    expect(row.name_size.charCodeAt("direct-dup.bin".length)).toBe(1);
+
+    const dup = await uploadDirect(s, "direct-dup.bin", data, "application/octet-stream", undefined, fp);
+    expect(dup.json.msg.file.key).toBe(a.json.msg.file.key);
   });
 
   it("断点续传：同名同大小复用 uploadId 并返回已完成分片", async () => {

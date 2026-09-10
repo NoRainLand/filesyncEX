@@ -118,10 +118,11 @@ export const device = (id = "dev-a", name = "user_test") => ({
   platform: "other",
 });
 
-/** 直传一个小文件（≤ 8MiB 走 direct 路径） */
-export async function uploadDirect(s, name, data, mime = "application/octet-stream", coverKey) {
+/** 直传一个小文件（≤ 8MiB 走 direct 路径）；fp = 客户端算的文件特征值（前 1 MiB 的 SHA-256） */
+export async function uploadDirect(s, name, data, mime = "application/octet-stream", coverKey, fp) {
   const q = new URLSearchParams({ name, mime, device: JSON.stringify(device()) });
   if (coverKey) q.set("coverKey", coverKey);
+  if (fp) q.set("fp", fp);
   const r = await fetch(`${s.base}/api/upload/direct?${q.toString()}`, {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
