@@ -16,13 +16,16 @@
 | 数据 | 上传文件落盘在服务器 `data/uploads/`（`uploadDir`），消息/索引持久化 |
 | 字符集 | 文件名/消息支持 UTF-8；下载响应按文件原始字节 |
 | WebSocket | 实时消息走 `ws://<host>:<port>/ws`（可选，见 §8） |
+| 管理接口 | `/api/sys/*`、`/api/data/export`、`/api/app/download` 为**本机管理能力**，需令牌（见 §4.1） |
+| 版本号 | `health.version` 来自仓库根 `package.json`（打包时内联，开发时运行时读取），不要写死版本做判断 |
 
 ---
 
 ## 2. 通用约定
 
 - 请求 `Content-Type`：普通接口 `application/json`；分片 / direct / cover 上传为**原始二进制**（`application/octet-stream`）。
-- 响应均为 JSON；失败统一返回 `HTTP 400` + `{ "error": "原因" }`。
+- 响应均为 JSON；失败统一返回 `HTTP 400` + `{ "error": "原因" }`；鉴权失败为 `403`。
+- 业务接口（health / msgs / upload / file / stream）**不需要令牌**，第三方客户端（如 QuickSendTool）行为与旧版完全一致。
 - `device`（设备身份）是所有上传接口必需的字段，QuickSendTool 每次启动生成一个稳定身份即可：
 
 ```jsonc
@@ -49,6 +52,14 @@
 | POST | `/api/upload/cover` | 视频封面图上传 |
 | GET | `/api/file/:key` | 下载文件 / 封面 |
 | GET | `/api/stream/:key` | 音频转码为 WAV 流（支持 Range） |
+| GET | `/api/auth` | 取本机管理令牌（同源可读，见 §4.1） |
+| POST | `/api/msg/:id/cover` | 为已存在消息补封面（已有封面返回 409） |
+| POST | `/api/sys/autostart` | 开机自启开关（仅打包 exe + Windows，**需令牌**） |
+| GET | `/api/sys/autostart` | 查询开机自启状态（**需令牌**） |
+| POST | `/api/sys/shutdown` | 关闭服务器（**需令牌**） |
+| POST | `/api/sys/reset` | 清空全部消息与文件（**需令牌**） |
+| GET | `/api/data/export` | 导出全部数据为 zip（**需令牌**，流式） |
+| GET | `/api/app/download` | 下载服务器本体 exe（仅打包模式，**需令牌**） |
 
 ---
 
@@ -62,13 +73,50 @@
 {
   "ok": true,
   "name": "filesyncEX",
-  "version": "6.0.1",
+  "version": "6.2.0",
   "lanIp": "192.168.1.100",
+  "lanIps": ["192.168.1.100", "10.0.0.5"],
   "port": 4100
 }
 ```
 
 > QuickSendTool 用法：先连本机 `127.0.0.1:<端口>`，用返回的 `lanIp:port` 作为局域网内发送目标。
+> `lanIps` 是**全部**可用局域网地址（已按「物理网卡 + 私网段」优先排序）：装了 VMware/Hyper-V/WSL/VPN 的机器上，
+> 首个地址未必是手机能连上的那个，可依次尝试。
+
+### 4.1 管理接口鉴权（`GET /api/auth`）
+
+`/api/sys/*`、`/api/data/export`、`/api/app/download` 能**关机、清空全部数据、改开机自启、导出全部聊天记录**，
+因此需要令牌 + 来源校验，防止局域网内任意网页跨站触发（CORS 只拦读取响应，不拦请求发出）。
+
+**取令牌（同源可读，跨站被 CORS 拦住）：**
+
+```http
+GET /api/auth
+→ 200 { "token": "48 位十六进制字符串" }
+```
+
+> 令牌在服务器**每次启动时随机生成**（不落盘）。服务器重启后旧令牌失效，需重新获取。
+
+**调用管理接口（二选一）：**
+
+```http
+X-FSEX-Token: <token>
+```
+
+或查询参数 `?token=<token>`（便于 `<a download>` 直接触发下载）。
+
+**来源校验规则：**
+
+| 请求来源 | 行为 |
+|---|---|
+| 无 `Origin` 且无 `Sec-Fetch-Site`（curl / QuickSendTool 等非浏览器客户端） | 仅校验令牌 |
+| 同源，或 `localhost` / `127.0.0.1` / `[::1]`（任意端口，兼容开发模式） | 放行 |
+| 其它 `Origin`，或 `Sec-Fetch-Site: cross-site` | `403`（即使令牌正确） |
+
+失败响应：`403 { "error": "缺少或无效的访问令牌（…）" }` 或 `{ "error": "拒绝跨站来源的本机管理请求（…）" }`。
+
+**注意**：业务接口（上传 / 下载 / 消息 / 音频流）**不需要**令牌 —— 这是刻意设计，保证 QuickSendTool 等已有客户端无需改造。
 
 ---
 

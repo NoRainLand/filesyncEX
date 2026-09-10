@@ -1,6 +1,6 @@
 {
   "name": "filesyncex",
-  "version": "6.2.0",
+  "version": "6.4.0",
   "private": true,
   "license": "GPL-2.0-or-later",
   "type": "module",
@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "pnpm -r --filter \"./packages/*\" run build",
+    "test": "pnpm build && pnpm --filter @filesyncex/server test",
     "dev:web": "pnpm --filter @filesyncex/web dev",
     "dev:server": "pnpm --filter @filesyncex/server dev",
     "start": "pnpm --filter @filesyncex/shell start",

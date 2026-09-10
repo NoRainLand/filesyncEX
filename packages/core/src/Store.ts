@@ -35,18 +35,24 @@ export interface Store {
   /* ----- 上传会话（断点续传） ----- */
   createUpload(s: UploadSession): Promise<void>;
   getUpload(uploadId: string): Promise<UploadSession | undefined>;
+  /** 列出全部上传会话（磁盘卫生清理用：判断会话目录是否已废弃） */
+  listUploads(): Promise<UploadSession[]>;
   addUploadChunk(uploadId: string, index: number): Promise<void>;
   listUploadChunks(uploadId: string): Promise<number[]>;
   removeUpload(uploadId: string): Promise<void>;
 
   /* ----- 文件索引（下载 / 秒传 / 引用计数） ----- */
-  saveFile(key: string, meta: FileMetaT): Promise<void>;
+  /**
+   * 登记物理文件元数据（上传落盘后调用）。**不涉及引用计数**。
+   * @returns true = 索引里原先没有这个 key（调用方刚写盘的是新文件）；false = 已存在（同内容同名的物理文件已就绪）
+   */
+  createFile(key: string, meta: FileMetaT): Promise<boolean>;
   getFileBySha(sha: string): Promise<FileMetaT | undefined>;
   getFile(key: string): Promise<FileMetaT | undefined>;
-  /** 文件引用 +1（秒传/重复引用时调用）；新文件 saveFile 后 refs=1 */
-  incrFileRef(key: string): Promise<void>;
-  /** 文件引用 -1，返回剩余引用数（0 = 可删除物理文件） */
-  decrFileRef(key: string): Promise<number>;
+  /** 登记「消息 msgId 引用了文件 key」（refs+1）；同一 msgId 重复登记不重复计数 */
+  addFileRef(key: string, msgId: string): Promise<void>;
+  /** 文件引用 -1（并清掉该消息的引用记录），返回剩余引用数（0 = 可删除物理文件） */
+  decrFileRef(key: string, msgId?: string): Promise<number>;
   /** 从文件索引删除（refs 归零后调用） */
   removeFile(key: string): Promise<void>;
 

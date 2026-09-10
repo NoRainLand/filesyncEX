@@ -4,6 +4,9 @@ filesync
 # 依赖
 node_modules/
 
+# 本地 pnpm store（仓库内 store-dir 时产生）
+.pnpm-store/
+
 # 构建产物（各包 tsc / vite / esbuild 输出）
 dist/
 **/dist/
@@ -29,10 +32,9 @@ bt.err
 
 # 附加工具（QuickSendTool 已改为 GitHub releases 分发，不再内置）
 
-# 测试临时脚本 / 临时目录
+# 测试临时脚本 / 临时目录（正式测试已迁到 packages/server/test/，随仓库提交）
 *.tmp
 tmp_log_append.md
-smoke.mjs
 .exetest/
 .bt/
 

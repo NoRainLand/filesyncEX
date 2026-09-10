@@ -1,12 +1,13 @@
 {
   "name": "@filesyncex/server",
-  "version": "6.2.0",
+  "version": "6.4.0",
   "private": true,
   "license": "GPL-2.0-or-later",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "node test/run.mjs",
     "dev": "tsx src/index.ts"
   },
   "dependencies": {

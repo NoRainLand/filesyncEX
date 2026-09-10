@@ -8,121 +8,17 @@ import { WsClient } from "./ws.js";
 import { uploadFile, DIRECT_UPLOAD_LIMIT, apiUploadCover, apiUploadMsgCover, fetchHealth } from "./api.js";
 import type { Lang } from "./i18n.js";
 import { loadLang, saveLang, dict, dayLabel, fmtType } from "./i18n.js";
-import Prism from "prismjs";
-import "prismjs/components/prism-typescript";
-import "prismjs/components/prism-python";
-import "prismjs/components/prism-ini";
-import "prismjs/components/prism-batch";
-import "prismjs/components/prism-json";
-import "prismjs/components/prism-sql";
 import prismTheme from "./prism-theme.css?inline";
 import appCss from "./app.css?inline";
 
-/* ================= helpers ================= */
-
-const p2 = (n: number) => String(n).padStart(2, "0");
-/** 消息时间：统一 YYYY/MM/DD HH:MM（年月日时分） */
-function fmtTime(ts: number): string {
-  const d = new Date(ts);
-  return `${d.getFullYear()}/${p2(d.getMonth() + 1)}/${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
-}
-/* 日期分组（dayLabel）/ 文件类型（fmtType）已迁移到 i18n.ts，按当前语言返回中/英文 */
-const fmtSize = (n: number): string => {
-  if (n < 1024) return n + " B";
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
-  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
-  return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
-};
-/** 文件名省略总长：移动端 24（前 10 字符，效果经用户确认），桌面端 36（前面保留更多，屏幕宽） */
-const fileNameMax = () => (window.innerWidth <= 640 ? 24 : 36);
-/** 文件名中间省略：超长时保留开头 + 结尾（含扩展名），如「这是一个很长…文档.pdf」；返回即最终显示（CSS 尾部省略仅作小屏宽度兑底） */
-function ellipsizeFileName(name: string, max = fileNameMax()): string {
-  if (name.length <= max) return name;
-  const dot = name.lastIndexOf(".");
-  const ext = dot > 0 ? name.slice(dot) : "";        // ".pdf" 或 ""
-  const body = dot > 0 ? name.slice(0, dot) : name;   // 主文件名（无点则整体）
-  const head = Math.min(Math.max(6, Math.floor(max * 0.45)), body.length); // 头部保留：至少 6、留足尾巴
-  const tailMax = Math.max(0, max - head - 1 - ext.length);
-  const tailBody = Math.min(4, tailMax, body.length); // 尾部主体保留：最多 4 字符
-  const keepBody = tailBody > 0 ? body.slice(body.length - tailBody) : "";
-  return body.slice(0, head) + "…" + keepBody + ext;
-}
-/* fmtType 已迁移到 i18n.ts */
-/** 文件类型 → 消息 kind（与服务器 kindOf 一致）：用于上传占位卡匹配真实消息尺寸 */
-function fileKind(name: string, mime?: string): "image" | "audio" | "video" | "file" {
-  if (mime) {
-    if (mime.startsWith("image/")) return "image";
-    if (mime.startsWith("audio/")) return "audio";
-    if (mime.startsWith("video/")) return "video";
-  }
-  const ext = name.split(".").pop()?.toLowerCase();
-  if (ext && ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"].includes(ext)) return "image";
-  if (ext && ["mp3", "wav", "ogg", "m4a", "flac", "aac"].includes(ext)) return "audio";
-  if (ext && ["mp4", "webm", "mov", "mkv", "avi"].includes(ext)) return "video";
-  return "file";
-}
-
-/** 音频频谱条：模拟波形柱（中间密集高振幅、两侧渐低、相邻平滑）；移动端由 CSS 每 3 根显示 1 根（指示器方式）保证可见 */
-const waveBars = () => {
-  const N = 96;
-  const bars: unknown[] = [];
-  let prev = 0.4;
-  for (let i = 0; i < N; i++) {
-    const t = i / (N - 1);
-    const env = 0.12 + 0.88 * Math.exp(-Math.pow((t - 0.55) / 0.22, 2));
-    const noise = Math.abs(((Math.sin(i * 12.9898) * 43758.5453) % 1) - 0.5) * 0.9;
-    const smooth = 0.3 * noise + 0.7 * prev;
-    prev = smooth;
-    const h = Math.max(10, Math.min(100, env * (40 + smooth * 60)));
-    bars.push(html`<i class="bar" style="height:${h.toFixed(1)}%"></i>`);
-  }
-  return bars;
-};
-
-/* ================= Prism 语法高亮 ================= */
-const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-/** 代码语言 → Prism 语法名（html 用 markup，bat 用 batch） */
-const PRISM_LANG: Record<string, string> = { ts: "typescript", js: "javascript", python: "python", ini: "ini", bat: "batch", json: "json", sql: "sql", html: "markup", css: "css" };
-/** Prism 高亮：无对应语法时原样转义返回 */
-function highlightCode(code: string, lang: string): string {
-  const pl = PRISM_LANG[lang] || "typescript";
-  const grammar = Prism.languages[pl];
-  if (!grammar) return esc(code);
-  return Prism.highlight(code, grammar, pl);
-}
-
-
-
-/* ================= 图标（Heroicons） ================= */
-const I_QR = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0 1 3.75 9.375v-4.5ZM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 0 1-1.125-1.125v-4.5ZM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0 1 13.5 9.375v-4.5Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 6.75h.75v.75h-.75v-.75ZM6.75 16.5h.75v.75h-.75v-.75ZM16.5 6.75h.75v.75h-.75v-.75ZM13.5 13.5h.75v.75h-.75v-.75ZM13.5 19.5h.75v.75h-.75v-.75ZM19.5 13.5h.75v.75h-.75v-.75ZM19.5 19.5h.75v.75h-.75v-.75ZM16.5 16.5h.75v.75h-.75v-.75Z"/></svg>`;
-const I_SUN = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z"/></svg>`;
-const I_MOON = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z"/></svg>`;
-const I_PLUS = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="22" height="22"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>`;
-const I_SEND = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"/></svg>`;
-const I_FILE = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>`;
-const I_IMG = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>`;
-const I_COPY = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75"/></svg>`;
-const I_DOWN = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>`;
-const I_LINK = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"/></svg>`;
-const I_UP = html`<svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" width="15" height="15"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>`;
-const I_PLAY = html`<svg fill="currentColor" viewBox="0 0 24 24" width="16" height="16"><path d="M8 5.5v13l11-6.5z"/></svg>`;
-const I_PAUSE = html`<svg fill="currentColor" viewBox="0 0 24 24" width="16" height="16"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>`;
-const I_TRASH = html`<svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="14" height="14"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>`;
+import { fmtTime, fmtSize, ellipsizeFileName, fileKind, waveBars } from "./ui/helpers.js";
+import { highlightCode } from "./ui/prism.js";
+import { I_QR, I_SUN, I_MOON, I_PLUS, I_SEND, I_FILE, I_IMG, I_COPY, I_DOWN, I_LINK, I_UP, I_PLAY, I_PAUSE, I_TRASH } from "./ui/icons.js";
+import { renderMessages, renderNotice, renderLangBar, ctx, type UploadRec } from "./ui/messages.js";
+import { LANG_LIST, langLabel } from "./ui/lang.js";
 
 /* ================= 主组件 ================= */
 
-/** 上传任务（占位卡）记录；file 保留 File 引用，用于断点续传（点击失败的大文件占位卡） */
-interface UploadRec {
-  key: string;
-  name: string;
-  pct: number;
-  size: number;
-  kind: string;
-  fail?: boolean;
-  file?: File;
-  /** 视频封面 key（上传前本地取帧生成并上传到服务器，随视频关联） */
-  coverKey?: string;
-}
 
 export class FilesyncApp extends LitElement {
   static styles = [unsafeCSS(appCss), unsafeCSS(prismTheme)];
@@ -132,7 +28,7 @@ export class FilesyncApp extends LitElement {
     connState: { state: true }, notices: { state: true },
     text: { state: true }, codeMode: { state: true }, codeLang: { state: true }, codeText: { state: true },
     uploads: { state: true }, sheet: { state: true }, preview: { state: true }, nick: { state: true },
-    httpUrl: { state: true }, appVer: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, langOpen: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, lang: { state: true },
+    httpUrl: { state: true }, lanIps: { state: true }, appVer: { state: true }, theme: { state: true }, toasts: { state: true }, delBubble: { state: true }, langOpen: { state: true }, playingId: { state: true }, qrDataUrl: { state: true }, lang: { state: true },
   };
 
   msgs: MsgDataT[] = [];
@@ -156,11 +52,14 @@ export class FilesyncApp extends LitElement {
   sheet: "attach" | "progress" | "settings" | "qr" | null = null;
   preview: { kind: string; msg: MsgDataT } | null = null;
   /** 视频首帧封面（canvas 取帧 dataURL，key=消息 id；iOS/移动端不依赖 video 自动显示首帧） */
-  private videoCovers = new Map<string, string>();
+  /** 视频首帧封面（canvas 取帧 dataURL，key=消息 id）；ui/messages.ts 渲染时读取 */
+  videoCovers = new Map<string, string>();
   nick = "";
   httpUrl = "";
+  /** 备选局域网地址（多网卡机器上首个地址未必可达，二维码面板列出备用） */
+  lanIps: string[] = [];
   /** 应用版本（来自 /api/health，默认与当前版本一致） */
-  appVer = "6.0.0-beta2";
+  appVer = "unknown";
   qrDataUrl = "";
   theme: "light" | "dark" = "light";
   /** 提示弹窗池：可同时存在多个 toast，各自独立淡入/停留/上移淡出/移除（垂直堆叠） */
@@ -225,6 +124,8 @@ export class FilesyncApp extends LitElement {
     void fetchHealth().then((d) => {
       if (d && d.lanIp && d.lanIp !== "127.0.0.1") {
         this.httpUrl = `${location.protocol}//${d.lanIp}${d.port ? `:${d.port}` : ""}`;
+        // 备选地址：排除当前使用的主地址（多网卡/虚拟网卡时提示用户可改用哪个）
+        this.lanIps = (d.lanIps ?? []).filter((ip) => ip !== d.lanIp).map((ip) => `${location.protocol}//${ip}${d.port ? `:${d.port}` : ""}`);
       }
       if (d?.version) this.appVer = d.version;
     });
@@ -964,19 +865,6 @@ export class FilesyncApp extends LitElement {
     this.reconnectTimer = window.setTimeout(() => { this.ws?.connect(); }, 1000);
   }
 
-  private renderNotice() {
-    if (this.notices.length === 0) return nothing;
-    return html`<div class="notice-mask">${this.notices.map((n) => {
-      const isReconnecting = n.level === "reconnecting";
-      const locked = isReconnecting || n.level === "shutdown" || n.level === "maintenance" || n.level === "disconnected";
-      return html`<div class="notice-panel ${n.level}">
-        ${locked ? nothing : html`<button class="nclose" title=${this.t("close")} @click=${() => { if (this.debounceKey("notice-close-" + n.id, 300)) this.dismissNotice(n.id); }}>✕</button>`}
-        <div class="ntitle">${this.noticeLevelLabel(n.level)}</div>
-        <div class="nbody">${n.message}${isReconnecting ? html`<span class="dots"></span>` : ""}</div>
-        ${isReconnecting ? nothing : html`<button class="btn" @click=${() => this.confirmNotice(n.id)}>${this.t("reconnect_confirm")}</button>`}
-      </div>`;
-    })}</div>`;
-  }
   private copyText(t: string): void {
     void this.copyToClipboard(t).then((ok) => this.flash(ok ? this.t("copied") : this.t("copy_failed")));
   }
@@ -1004,175 +892,6 @@ export class FilesyncApp extends LitElement {
       el.click();
       window.setTimeout(() => finish(false), 2000); // 兜底：异常时判定失败
     });
-  }
-
-  /* ---------- 消息渲染（按天分组；桌面端从新到旧，最新在上） ---------- */
-  private renderMessages() {
-    if (this.msgs.length === 0) return html`<div class="empty">${this.t("empty_list")}</div>`;
-    const mobile = window.innerWidth <= 640;
-    const ordered = mobile ? this.msgs : [...this.msgs].reverse();
-    const out: unknown[] = [];
-    let lastDay = "";
-    for (const m of ordered) {
-      const day = dayLabel(this.lang, m.ts, mobile);
-      if (day !== lastDay) { out.push(html`<div class="day">${day}</div>`); lastDay = day; }
-      out.push(this.renderMsg(m));
-    }
-    return out;
-  }
-
-  /** 文字消息渲染：将 http/https URL 转为可点击链接（点击新窗口打开）；非 URL 原样显示 */
-  private renderText(text: string): unknown {
-    const urlRe = /(https?:\/\/[^\s<]+)/g;
-    const parts: unknown[] = [];
-    let last = 0;
-    let m: RegExpExecArray | null;
-    let i = 0;
-    while ((m = urlRe.exec(text)) !== null) {
-      if (m.index > last) parts.push(text.slice(last, m.index));
-      const url = m[0];
-      parts.push(html`<a class="bubble-link" href="${url}" target="_blank" rel="noopener" @click=${(e: MouseEvent) => this.openTextLink(e, url)}>${url}</a>`);
-      last = m.index + url.length;
-      i++;
-      if (i > 50) break; // 极端情况防死循环
-    }
-    if (last < text.length) parts.push(text.slice(last));
-    return parts.length ? parts : text;
-  }
-
-  private openTextLink(e: MouseEvent, url: string): void {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!this.debounceKey("link-" + url, 500)) return;
-    window.open(url, "_blank", "noopener");
-  }
-
-  private renderMsg(m: MsgDataT) {
-    const f = m.file;
-    const mobile = window.innerWidth <= 640;
-    // 上传占位卡：结构与真实消息完全一致（对应类型主体 + mm 信息行 + ops 操作行），主体叠磨砂层 + 中心圆形进度环
-    if (m.id.startsWith("upload-")) {
-      const rec = this.uploads.find((u) => u.key === m.id);
-      const pct = rec ? Math.max(0, Math.min(100, rec.pct)) : 0;
-      const failed = !!rec?.fail;
-      // 大文件（分片）上传失败 → 可点击断点续传（File 引用仍在内存）
-      const retryable = failed && !!rec?.file && rec.file.size > DIRECT_UPLOAD_LIMIT;
-      // 按文件类型决定占位卡结构与尺寸（匹配真实消息）：image/video=16:9，audio=播放条，file=图标行
-      const uk = (rec?.kind ?? m.kind) as string;
-      const media = uk === "image" || uk === "video";
-      const R = media ? 30 : uk === "audio" ? 20 : 16;
-      const C = 2 * Math.PI * R;
-      const ringSize = media ? 68 : uk === "audio" ? 48 : 40;
-      const ring = html`<div class="ph-ring ${failed ? "fail" : ""}">
-        <svg viewBox="0 0 ${ringSize} ${ringSize}" width="${ringSize}" height="${ringSize}">
-          <circle cx="${ringSize / 2}" cy="${ringSize / 2}" r="${R}" fill="none" stroke="var(--line)" stroke-width="5"/>
-          <circle cx="${ringSize / 2}" cy="${ringSize / 2}" r="${R}" fill="none" stroke="${failed ? "var(--pink)" : "var(--primary)"}" stroke-width="5" stroke-linecap="round"
-            stroke-dasharray="${C}" stroke-dashoffset="${failed ? 0 : C * (1 - pct / 100)}" transform="rotate(-90 ${ringSize / 2} ${ringSize / 2})"/>
-        </svg>
-        <span class="ph-pct">${failed ? "!" : pct + "%"}</span>
-      </div>`;
-      // 磨砂层（盖主体区）——由 CSS .ph-blur 提供
-      const blur = html`<div class="ph-blur"></div>`;
-      // 主体内容（对应真实消息的缩略图 / 播放条 / 图标行骨架）
-      let phBody: unknown;
-      if (media) {
-        phBody = html`<div class="ph-body">${blur}<span class="ph-icon-bg">${uk === "video" ? html`<span class="ph-vplay">▶</span>` : I_IMG}</span>${ring}</div>`;
-      } else if (uk === "audio") {
-        phBody = html`<div class="ph-body audio">${blur}<div class="ph-ap"><span class="ph-play">${I_PLAY}</span><div class="ph-wave">${waveBars()}<i class="fill"></i><i class="ind"></i></div></div>${ring}</div>`;
-      } else {
-        phBody = html`<div class="ph-body file">${blur}<span class="ph-ic">${I_FILE}</span>${ring}</div>`;
-      }
-      // 信息行（同真实消息 .mm：文件名 + 大小；失败的大文件提示可点击续传）
-      const mm = html`<div class="ph-mm"><span class="name ${retryable ? "retry" : ""}">${failed ? (retryable ? this.t("resume_click") : this.t("upload_failed_ph")) : f?.name ? ellipsizeFileName(f.name) : this.t("upload_ph")}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>`;
-      // 操作行（同真实消息 .ops：下载占位按钮）
-      const ops = html`<div class="ph-ops"><span class="btn secondary ph-down">${I_DOWN}${this.t("download")}</span></div>`;
-      return html`<div class="msg">
-        <div class="avatar">${(m.sender.deviceName[0] ?? "?").toUpperCase()}</div>
-        <div class="body">
-          <div class="head"><span class="who">${m.sender.deviceName}</span><time>${fmtTime(m.ts)}</time></div>
-          <div class="card upload-ph ${uk} ${retryable ? "retry" : ""}" @click=${retryable ? () => { void this.retryUpload(rec!); } : undefined}>
-            ${phBody}
-            ${mm}
-            ${ops}
-          </div>
-        </div>
-      </div>`;
-    }
-    const delBtn = html`<button class="del-corner" title=${this.t("delete")} @click=${() => { if (this.debounceKey("del-" + m.id, 500)) this.deleteMsg(m.id); }}>${I_TRASH}</button>`;
-    const copyBtn = html`<button class="btn" @click=${() => { if (this.debounceKey("copy-" + m.id, 800)) this.copyText(m.text ?? ""); }}>${I_COPY}${this.t("copy")}</button>`;
-    const copyCodeBtn = html`<button class="btn" @click=${() => { if (this.debounceKey("copy-" + m.id, 800)) this.copyCode(m); }}>${I_COPY}${this.t("copy")}</button>`;
-    const downBtn = html`<a class="btn" href="${f?.url ?? "#"}" download @click=${(e: Event) => { if (!this.debounceKey("down-" + m.id, 800)) e.preventDefault(); }}>${I_DOWN}${this.t("download")}</a>`;
-    const head = html`<span class="who">${m.sender.deviceName}</span>${this.self && m.sender.deviceId === this.self.deviceId ? html`<span class="me">${this.t("me")}</span>` : ""}<time>${fmtTime(m.ts)}</time>`;
-
-    let content: unknown;
-    switch (m.kind) {
-      case "text":
-        content = mobile
-          ? html`<div class="card text"><div class="bubble" @click=${(e: MouseEvent) => this.copyBubble(e, m)}>${this.renderText(m.text ?? "")}</div>${delBtn}</div>`
-          : html`<div class="card text"><div class="bubble">${this.renderText(m.text ?? "")}</div><div class="ops">${copyBtn}</div>${delBtn}</div>`;
-        break;
-      case "code":
-        content = html`<div class="card code"><div class="code-head"><span class="lang">${m.code?.lang ?? "code"}</span></div><pre @click=${() => { if (this.debounceKey("pv-" + m.id, 400)) this.openPreview("code", m); }}>${unsafeHTML(highlightCode(m.code?.content ?? "", m.code?.lang ?? "ts"))}</pre><div class="ops">${copyCodeBtn}</div>${delBtn}</div>`;
-        break;
-      case "image":
-        content = html`<div class="card img">
-            <div class="thumb" @click=${() => { if (this.debounceKey("pv-" + m.id, 400)) this.openPreview("image", m); }}><img src="${f?.url ?? ""}" alt="" /></div>
-            <div class="ovl" @click=${(e: Event) => e.stopPropagation()}><span class="mm"><span class="name">${f?.name ? ellipsizeFileName(f.name) : ""}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></span><span class="ops">${downBtn}</span></div>${delBtn}
-          </div>`;
-        break;
-      case "video": {
-        const cover = m.file?.cover ?? this.videoCovers.get(m.id);
-        content = html`<div class="card video">
-            <div class="vthumb" @click=${() => { if (this.debounceKey("pv-" + m.id, 400)) this.openPreview("video", m); }}>
-              ${cover
-                ? html`<img class="vcover" src="${cover}" alt="" />`
-                : html`<video src="${f?.url ?? ""}" muted playsinline webkit-playsinline preload="metadata" @loadeddata=${() => this.captureVideoCover(m)}></video>`}
-            </div>
-            <div class="ovl" @click=${(e: Event) => e.stopPropagation()}><span class="mm"><span class="name">${f?.name ? ellipsizeFileName(f.name) : ""}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></span><span class="ops">${downBtn}</span></div>${delBtn}
-          </div>`;
-        break;
-      }
-      case "audio":
-        content = html`<div class="card audio ${this.playingId === m.id ? "playing" : ""}" data-id="${m.id}">
-            <div class="ap">
-              <button class="play" @click=${() => { if (this.debounceKey("play-" + m.id, 400)) this.toggleAudio(m); }}>${this.playingId === m.id ? I_PAUSE : I_PLAY}</button>
-              <div class="wave" @click=${(e: MouseEvent) => this.seekAudio(m, e)}>${waveBars()}<i class="fill"></i><i class="ind"></i></div>
-              <audio src="${this.audioSrc(m) ?? ""}" preload="none"></audio>
-            </div>
-            <div class="mm"><span class="name">${f?.name ? ellipsizeFileName(f.name) : this.t("audio_name")}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>
-            <div class="ops">${downBtn}</div>${delBtn}
-          </div>`;
-        break;
-      case "file":
-      default:
-        content = html`<div class="card file">
-            <div class="file">
-              <span class="ic">${I_FILE}</span>
-              <div class="meta"><span class="name">${f?.name ? ellipsizeFileName(f.name) : this.t("file_name")}</span><span class="sub">${f ? `${fmtSize(f.size)} · ${fmtType(this.lang, f.name, f.mime)}` : ""}</span></div>
-            </div>
-            <div class="ops">${downBtn}</div>${delBtn}
-          </div>`;
-        break;
-    }
-
-    return html`<div class="msg ${this.delBubble?.id === m.id ? "del-selected" : ""}" data-id="${m.id}" @touchend=${this.msgPressEnd} @mousedown=${() => this.msgPressStart(m)} @mouseup=${this.msgPressEnd} @mouseleave=${this.msgPressEnd} @contextmenu=${(e: Event) => { if (window.innerWidth <= 640) e.preventDefault(); }} @click=${(e: Event) => this.msgClickGuard(e)}>
-      <div class="avatar">${(m.sender.deviceName[0] ?? "?").toUpperCase()}</div>
-      <div class="body">
-        <div class="head">${head}</div>
-        ${content}
-      </div>
-    </div>`;
-  }
-
-  /** 自定义语言下拉栏：upward=true 列表向上弹出（移动端输入条），否则向下（桌面端代码框顶） */
-  private renderLangBar(upward: boolean): unknown {
-    return html`<div class="lang-bar ${upward ? "up" : ""}">
-      <label>${this.t("lang")}</label>
-      <div class="lang-pick" @click=${(e: Event) => { e.stopPropagation(); if (this.debounceKey("lang-toggle", 250)) this.langOpen = !this.langOpen; }}>
-        <span class="lang-cur">${langLabel(this.codeLang)}</span><span class="lang-arr">${upward ? "▴" : "▾"}</span>
-        ${this.langOpen ? html`<div class="lang-list">${LANG_LIST.map((l) => html`<div class="lang-opt ${l === this.codeLang ? "on" : ""}" @click=${(e: Event) => { e.stopPropagation(); if (this.debounceKey("lang-" + l, 300)) { this.codeLang = l; this.langOpen = false; } }}>${langLabel(l)}</div>`)}</div>` : nothing}
-      </div>
-    </div>`;
   }
 
   /** 进入代码模式后自动聚焦代码输入框（按视口选可见的：移动端 footer / 桌面端 upload） */
@@ -1204,7 +923,7 @@ export class FilesyncApp extends LitElement {
           <button class="btn btn-file" @click=${() => { if (this.debounceKey("file", 400)) this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); }}>${I_UP}${this.t("file")}</button>
           <input class="input" .value=${this.text} placeholder=${this.t("input_placeholder")} @input=${(e: Event) => (this.text = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("send", 600)) this.sendText(); }} />
           <div class="code-editor ${this.codeMode ? "open" : ""}">
-            <div class="ce-top">${this.renderLangBar(false)}</div>
+            <div class="ce-top">${renderLangBar(ctx(this), false)}</div>
             <textarea .value=${this.codeText} placeholder=${this.t("code_placeholder")} @input=${(e: Event) => (this.codeText = (e.target as HTMLTextAreaElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.ctrlKey && e.key === "Enter" && this.debounceKey("send", 600)) this.sendCode(); }}></textarea>
           </div>
           <button class="bracebtn ${this.codeMode ? "on" : ""}" title=${this.t("code_mode")} @click=${() => { if (this.debounceKey("codemode", 300)) { this.codeMode = !this.codeMode; this.focusCodeEditor(); } }}>&#123;&#125;</button>
@@ -1213,7 +932,7 @@ export class FilesyncApp extends LitElement {
         <input type="file" class="file-input" multiple hidden @change=${(e: Event) => void this.handleFiles((e.target as HTMLInputElement).files)} />
       </section>
 
-      <main class="list">${this.renderMessages()}</main>
+      <main class="list">${renderMessages(ctx(this))}</main>
 
       <!-- 移动端：底部输入条 -->
       <footer class="composer ${this.codeMode ? "code-mode" : ""}">
@@ -1221,7 +940,7 @@ export class FilesyncApp extends LitElement {
           <button class="addbtn" title=${this.t("choose_file")} @click=${() => { if (this.debounceKey("file", 400)) this.shadowRoot?.querySelector<HTMLInputElement>(".file-input")?.click(); }}>${I_PLUS}</button>
           <button class="bracebtn ${this.codeMode ? "on" : ""}" @click=${() => { if (this.debounceKey("codemode", 300)) { this.codeMode = !this.codeMode; this.focusCodeEditor(); } }}>&#123;&#125;</button>
           ${this.codeMode
-            ? this.renderLangBar(true)
+            ? renderLangBar(ctx(this), true)
             : html`<input class="input" .value=${this.text} placeholder=${this.t("input_placeholder_mobile")} @input=${(e: Event) => (this.text = (e.target as HTMLInputElement).value)} @keydown=${(e: KeyboardEvent) => { if (e.key === "Enter" && this.debounceKey("send", 600)) this.sendText(); }} />`}
           <button class="sendbtn" @click=${() => { if (this.debounceKey("send", 600)) this.codeMode ? this.sendCode() : this.sendText(); }}>${I_SEND}</button>
         </div>
@@ -1231,7 +950,7 @@ export class FilesyncApp extends LitElement {
 
       ${this.sheet ? this.renderSheet() : nothing}
       ${pv ? this.renderPreview(pv) : nothing}
-      ${this.renderNotice()}
+      ${renderNotice(ctx(this))}
       ${this.codeMode && window.innerWidth <= 640 ? html`<div class="code-mask" @wheel=${(e: WheelEvent) => { e.preventDefault(); e.stopPropagation(); }} @click=${() => { if (this.debounceKey("code-mask", 300)) this.codeMode = false; }}></div>` : nothing}
       ${this.delBubble ? html`
         <div class="del-mask" @click=${() => { if (this.debounceKey("del-mask", 300)) this.closeDelBubble(); }}></div>
@@ -1301,7 +1020,7 @@ export class FilesyncApp extends LitElement {
         <a class="btn secondary tool" href="https://github.com/NoRainLand/filesyncEX" target="_blank" rel="noopener">${I_LINK}${this.t("goto_github")}</a>
       </div>`;
     } else if (s === "qr") {
-      content = html`<div class="qrbox">${this.qrDataUrl ? html`<img src="${this.qrDataUrl}" alt=${this.t("qr")} />` : html`<div class="qr-loading">${this.t("qr_loading")}</div>`}</div><p>${this.t("qr_hint", { url: this.httpUrl })}</p>`;
+      content = html`<div class="qrbox">${this.qrDataUrl ? html`<img src="${this.qrDataUrl}" alt=${this.t("qr")} />` : html`<div class="qr-loading">${this.t("qr_loading")}</div>`}</div><p>${this.t("qr_hint", { url: this.httpUrl })}</p>${this.lanIps.length ? html`<p class="muted">${this.t("qr_alt", { ips: this.lanIps.join(" / ") })}</p>` : nothing}`;
     }
     return html`<div class="mask" @mousedown=${(e: MouseEvent) => { if (e.target === e.currentTarget) close(); }}><div class="panel-shell ${s === "qr" ? "qr" : ""} ${s === "settings" ? "settings-panel" : ""}"><div class="panel" @click=${(e: Event) => e.stopPropagation()}><div class="handle"></div><div class="ptitle" @click=${close}>${s === "attach" ? this.t("sheet_attach") : s === "progress" ? this.t("sheet_progress") : s === "settings" ? this.t("sheet_settings") : this.t("sheet_qr")}</div>${content}</div></div></div>`;
   }
@@ -1318,9 +1037,5 @@ export class FilesyncApp extends LitElement {
     return html`<div class="viewer open"><div class="vtop"><span class="vt">${title}</span><button class="close" @click=${() => { if (this.debounceKey("pv-close", 300)) this.closePreview(); }}>✕</button></div><div class="vbody ${pv.kind === "image" ? "pv-img" : ""}" @click=${(e: Event) => { if (e.target === e.currentTarget && this.debounceKey("pv-close", 300)) this.closePreview(); }}>${body}</div><div class="vfoot">${footBtn}<button class="btn pink" @click=${() => { if (this.debounceKey("pv-del", 600)) { this.deleteMsg(pv.msg.id); this.closePreview(); } }}>${this.t("delete")}</button></div></div>`;
   }
 }
-
-const LANG_LIST = ["ts", "js", "python", "ini", "bat", "json", "sql", "html", "css"];
-const LANG_LABEL: Record<string, string> = { ts: "TypeScript", js: "JavaScript", python: "Python", ini: "INI / Config", bat: "Batch (.bat)", json: "JSON", sql: "SQL", html: "HTML", css: "CSS" };
-const langLabel = (l: string): string => LANG_LABEL[l] ?? l;
 
 customElements.define("filesync-app", FilesyncApp);

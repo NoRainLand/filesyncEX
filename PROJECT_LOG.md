@@ -1615,3 +1615,97 @@ es.download(p, name)。**顺带修复健壮性**：direct/chunk/cover 三个二�
 - **夜鹭演示页放入 public + NiarApp.LU() 打开（用户「把 night-heron-ride.html 放到合适的位置并加一个打开它的方法」）**：`night-heron-ride.html`（夜鹭骑自行车 SVG 动画演示页）原在仓库根目录，移到 `packages/web/public/night-heron-ride.html`——Vite 构建自动拷入 `dist/` 根，服务器 `express.static` 直接托管到 `/night-heron-ride.html`（开发模式 Vite 同路径，SPA `*` 兜底不影响，因真实文件先命中）。实现 `NiarApp.ts` 里此前留下的空占位 `LU()`（鹭）：`window.open("/night-heron-ride.html", "_blank", "noopener")` 新标签打开（与 app.ts openTextLink 一致），带 JSDoc 说明文件位置与路径；并在 `help()` 列表登记「新标签页打开「夜骑漫游」夜鹭骑自行车演示页」（置于 reset 与 help 之间）。验证（Playwright + `_dev/_runN.mjs` 测试服务器 4197）：GET /night-heron-ride.html 200 且渲染出「夜骑漫游」标题与动画画面 ✓；主应用页 `window.NiarApp.LU` 为 function、调用 LU() 捕获到 `window.open("/night-heron-ride.html","_blank")` ✓（无类型错误）。web 构建通过（dist 含 night-heron-ride.html）。根目录旧文件已移除。未打包 exe。已登记 PROJECT_LOG.md。
 
 - **打包混淆开关 FSEX_OBFUSCATE（用户「加一个混淆加密的开关，默认打包 pkg 的时候开启，开发的时候关闭」）**：在 `packages/shell/scripts/package.mjs` 加开关——`const obfuscate = !/^(0|false|no|off)$/i.test(process.env.FSEX_OBFUSCATE ?? "1")`：打包（本脚本）**默认开启**，`FSEX_OBFUSCATE=0|false|no|off` 可关；普通开发构建（`pnpm build` / vite dev / tsc）不经本脚本，天然不混淆。实现=新增 `minifyFile(file, format)`（先用临时文件再改名，防读写冲突）用仓库**现成 esbuild `--minify`**（局部变量改名+去空白注释+语法压缩，**零新增依赖**）：初选 `javascript-obfuscator` 因 npm/pnpm 全局代理 `127.0.0.1:7890` 拒连装不上（直连 npmmirror 实测 0.9s 可达、可绕代理装），用户改选 esbuild 方案。接入点：①后端：esbuild bundle 产出 `dist/bundle.cjs` 后若开启则 `--minify --format=cjs` 原地压缩；②前端：混淆开启时**强制重建 web**（保证从干净产物处理、不被 needBuild 跳过），再对 `packages/web/dist/assets/*.js` 逐个 `--minify --format=esm`（index.html/字体等静态资源不动）。验证：前端 asset 再 minify 体积几乎不变（174→176KB——Vite 生产构建本就 esbuild minify，此步冗余但无害），浏览器回归（发消息/切主题/NiarApp.LU 夜鹭页）无 console 错误 ✓；后端 bundle.cjs 混淆 7001→6131KB（-871KB、改名压缩生效），混淆后 `node` 冒烟启动 + /api/health OK ✓；minifyFile 的 Windows 路径（JSON.stringify 双反斜杠 → esbuild 接受）复现验证 OK；`node --check` 语法通过。**说明（重要）**：esbuild minify 属弱混淆（全局名/字符串仍可读），后端另叠加 pkg V8 字节码；前端产物体积/可读性与普通 vite 构建一致——本开关的实际增量在后端 bundle 压缩改名，并作为将来换更强混淆器（如 javascript-obfuscator，需直连镜像安装）的同一开关位。未打包 exe（按惯例只做产物级验证）。已登记 PROJECT_LOG.md。
+
+- **导出当前会话对话为 Markdown（用户「把当前会话的所有对话都存到一个 MD 文档」）**：来源=VS Code Copilot Chat transcript（`%APPDATA%\Code\User\workspaceStorage\<ws>\GitHub.copilot-chat\transcripts\0040698e-....jsonl`，事件流：session.start / user.message / assistant.message / tool.execution_start|complete）。新增临时脚本 `_dev/_export_session.mjs`（_dev 已 gitignore）将 transcript 转为可读 Markdown：按 `user.message` 分轮、`assistant.message` 分段（完整助手文本）、每段附「工具调用」名单。产物 **`会话记录-2026-09-10.md`**（仓库根，约 25KB，共 8 轮）。**踩坑**：该 transcript 缺第 1 轮（夜鹭页/LU）的 `user.message` 记录（但其助手内容在文件里），该轮用户消息改由会话索引库 `turns` 表补录；且本轮（导出请求）的助手消息被 transcript 混入上一轮 → 手动拆出第 8 轮；`assistant_response` 在库里被截断（~1000 字符）故未采用库版本。另附「选项式问答」附录（`vscode_askQuestions` 表单回答不走文字消息，transcript 不含）。说明：该 MD 为导出时的快照，未改任何代码/配置。已登记 PROJECT_LOG.md。
+
+- **导出开发对话记录到 docs/CHAT_HISTORY.md（用户「把当前对话的全部记录存到项目下的 md 文件」）**：新建 `_dev/export-chat.mjs`（临时脚本，_dev 已 gitignore）——把 Copilot 会话 transcript（`workspaceStorage/<hash>/GitHub.copilot-chat/transcripts/*.jsonl`，不传参自动取最近修改的那个）流式解析为可读 Markdown：按天分组（📅）→ 每轮（## 第 N 轮，以 user.message 划轮）→ 👤 用户原文（含附件列表）/ 🤖 Copilot 回复原文 / 🧠 思考过程折叠（details）/ 🔧 工具调用列表（工具名 + 参数摘要截断 320 字符 + ✓✗ 成功标记，状态由第一遍扫描 tool.execution_complete 建立 toolCallId→success 映射回填，故需读两遍）。产物 `docs/CHAT_HISTORY.md`：6.21M 字符 / 9.2MB（UTF-8）、174906 行、324 轮、5592 条助手消息、5646 次工具调用；其中思考过程 2855 块共 4.28M 字符（占 69%，体积主因）。用法 `node _dev/export-chat.mjs [transcript.jsonl] [out.md]`。已登记 PROJECT_LOG.md。
+
+---
+
+## [6.2.0] 安全与健壮性大修（用户「修复 P0/P1/P2，P3 修复 1/2/4/5，不要动字体」）
+
+> 起因：我通读五包源码后给出建议清单，用户指定按 P0→P3 修复。全部改动均**未打包 exe**（按惯例只做构建 + 测试 + 浏览器验证），也未改字体。
+
+### P0-A 本机管理端点鉴权（新增 `packages/server/src/auth.ts`）
+- **风险**：`/api/sys/shutdown`、`/api/sys/reset`（清空全部消息+物理文件）、`/api/sys/autostart`（写 HKCU Run）、`/api/data/export`（导出全部聊天记录）、`/api/app/download` 全都**无鉴权**。CORS 只拦读取响应、不拦请求发出 → 运行 exe 的人只要浏览器打开任意恶意网页，该页就能 `fetch('http://127.0.0.1:4100/api/sys/reset',{method:'POST'})` **清空整机数据**。
+- **方案（两道防线）**：①令牌——进程启动随机生成 48 位 hex（`randomBytes(24)`，不落盘、恒定时间比较），网页首屏 `GET /api/auth` 取（同源可读、跨站被 CORS 拦），调用管理端点带 `X-FSEX-Token` 头或 `?token=`；②来源校验——带 `Origin`/`Sec-Fetch-Site` 的浏览器请求必须是同源或 localhost/127.0.0.1/[::1]（兼容开发模式 Vite 代理跨端口），无来源信息的非浏览器客户端（curl/QuickSendTool）仅验令牌。
+- **落地**：`requireAdmin` 守卫挂到这 6 个端点；`GET /api/auth` 下发令牌；web 新增 `packages/web/src/auth.ts`（`fetchToken`/`authFetch`：自动带头、403 时重取令牌重试一次），`NiarApp` 全部管理调用改走 `authFetch`。**业务接口（health/msgs/upload/file/stream）刻意不加令牌**，QuickSendTool 与旧客户端行为完全不变。
+
+### P0-B 文件引用计数 bug（会误删其他消息仍在用的文件）
+- **实证复现**（临时脚本）：同一文件直传两次 → 两条消息指向同一 key，但 `files.refs` 只记 1 → 删掉后一条消息 → `decrFileRef` 归零 → `file-gc` **物理删除文件**，前一条消息变死链（下载 404）。根因：`saveFile` 用 `INSERT ... ON CONFLICT DO UPDATE` 不增加 refs；`MemoryStore.saveFile` 更是每次都把计数**重置为 1**。
+- **重构（core）**：`saveFile` 拆成语义清晰的两步 —— `createFile(key,meta)`（建/复用索引，返回是否新建，**不涉及计数**）+ `addFileRef(key,msgId)`（refs+1，同一消息重复登记幂等）；`decrFileRef(key,msgId)` 同步清掉引用记录、未登记过不会减成负数。新增 `file_refs(key,msg_id)` 表记录「谁引用了它」，启动时按 `messages` 表**全量重算** file_refs 与 refs（旧库一次性修正）。`Store` 接口、`MemoryStore`（`fileRefMsgs`）、`SyncEngine.releaseFileRef` 同步更新；`upload.ts` 的秒传/直传/分片三条路径统一为「addMessage → addFileRef」。
+- **顺带**：视频封面也登记进文件索引（`UploadService.registerCover`），删消息时与附件同走引用计数回收——原来封面是「删消息直接 file-gc」，现在统一为引用归零才删。
+
+### P1 系列
+- **sha256 校验**：`complete()` 现在比对客户端 `init` 声明的 sha256 与实际组装摘要，不一致直接 400 拒绝（含提示）。不校验的话客户端 `localStorage` 的断点续传 key（`fsex_upload_<sha>`）会永久对不上，同一文件每次都要重传全文。
+- **磁盘卫生（`UploadService.startSweeper`）**：启动时 + 每 6h 清理 —— 超 24h TTL 的废弃分片会话目录（含会话记录）、无会话记录的孤儿分片目录、组装中断的 `.tmp-*`、无人引用的孤儿封面、历史裁剪后遗留的孤儿附件；正在上传/被消息引用的文件受 `touched` 与引用集合保护（`Store` 新增 `listUploads()`）。索引/关闭时 `stopSweeper()`。
+- **数据导出改流式**：`zip.ts` 重写为 `ZipWriter`（本地头 → 数据 → 中央目录 → EOCD，逐文件流式 + 增量 CRC32 + utf8 标志），`/api/data/export` 不再把所有文件读进内存（原来数据目录几百 MB 会 OOM）；数据库快照落临时文件后流式写入，失败/断开走 `res.destroy()` + 临时文件清理。
+- **组装背压**：`complete()` 的写盘改为 `await out.write(data, cb)`，磁盘慢于读时不再把整文件堆在内存。
+- **trim 不再删附件**：`SyncEngine.trim()` 只删超限的**消息**，物理文件交给 sweeper 按 TTL 回收 —— 原来裁剪历史会连附件一起删，用户会觉得「历史图片莫名消失」。
+- **express 错误中间件**：畸形 JSON / 超 limit 现在统一返回 `{error:"请求体不是合法 JSON"}` 等 JSON（原来走 Express 默认 HTML 错误页，含栈与源码路径）；`app.use` 放在所有路由之后。
+- 其它：`direct()` 增加 `data.length !== size` 校验；`finalize()` 落盘前查存在性，同内容同名不重写物理文件；封面保存改异步 IO。
+
+### P2 系列
+- **版本号唯一来源**：新增 `packages/server/src/version.ts`（`APP_VERSION`：打包时由 esbuild `--define:__APP_VERSION__` 内联根 package.json 版本，开发模式运行时向上查找根 package.json），`/api/health`、启动 banner 均引用它；`web/main.ts`、`app.ts` 不再写死版本；`set-version.mjs` 相应简化为只改 6 个 package.json + README（源码不再有字面量）。`scripts/set-version.mjs` 与 package.mjs 已同步。
+- **拆分 app.ts（1326 → 约 1000 行）**：新增 `packages/web/src/ui/` —— `helpers.ts`（时间/大小/文件名省略/文件类型/频谱条）、`icons.ts`（14 个 Heroicons SVG）、`prism.ts`（Prism + 语法组件 + `highlightCode`）、`lang.ts`（语言列表/显示名）、`messages.ts`（`renderNotice`/`renderMessages`/`renderText`/`renderMsg`/`renderLangBar` + `AppCtx` 结构化类型 + `ctx()` 受控断言）。**踩坑**：把 Prism 与语法组件 import 拆到 helpers 后打包出现 `Prism is not defined`（模块初始化顺序被拆散）→ 把所有 Prism 相关代码集中到单一 `ui/prism.ts` 模块（副作用 import 与使用者同模块）后解决。
+- **测试 + CI（零依赖方案）**：`packages/server/test/` 下 36 个用例（Node 内置 `assert` + 自研进程内 runner `test/run.mjs` + `helpers/testkit.mjs` 提供 `describe/it/before/after/expect`）。**为什么不用 vitest / node --test**：`node --test` 会给每个测试文件 spawn 子进程（受限沙箱/CI 直接 EPERM，Node 18 又没有隔离开关），vitest 依赖 esbuild 子进程加载配置同样会 spawn。用例覆盖：管理端点鉴权（无令牌/错令牌/跨站 Origin/Sec-Fetch-Site/同源/非浏览器客户端/导出 zip 结构）、引用计数（含旧库自动修复、幂等、封面回收）、磁盘清理、sha256 校验、断点续传/秒传、版本号唯一来源、多网卡地址。CI：`.github/workflows/ci.yml`（Node 18 + pnpm 10.15 + frozen-lockfile + build + test）。删除过期的 `packages/server/smoke.mjs`（它断言 `version === "6.0.0-beta1"`，早已失效且被 .gitignore 忽略）并移除该忽略项。
+- **多网卡地址**：`net.ts` 新增 `lanAddresses()`（排除 VMware/VirtualBox/Hyper-V/WSL/Docker/VPN 等虚拟网卡关键字 + 私网段优先排序，169.254 最后），`lanAddress()` 取首个；启动 banner 多网卡时**列出全部地址**，`/api/health` 增加 `lanIps`，二维码面板在有备选地址时提示「若打不开，可改用：…」（i18n `qr_alt` 中英）。
+- 版本号断言相关：`web/app.ts` 的 `appVer` 默认值由写死的 `"6.0.0-beta2"` 改为 `"unknown"`（真实值来自 `/api/health`）。
+
+### P3 修复项
+- **P3-1 不再静默降级**：`createStore()` 检测 ABI 不匹配（`ERR_DLOPEN_FAILED` / `NODE_MODULE_VERSION`）时**直接抛错退出**，提示「当前 Node 版本 / ABI / 三种修复办法」；显式要内存存储可设 `FSEX_ALLOW_MEMORY_STORE=1` 或 `store:"memory"`。新增 `.nvmrc`（18）、README 增加「开发环境要求」章节。已实测：默认 Node 25 启动 → 打印明确错误 + exit 1；`FSEX_ALLOW_MEMORY_STORE=1` → 正常启动（health 返回 `lanIps`）。
+- **P3-2 pkg/node18 技术债**：打包脚本新增**目标 ABI 预检**（当前 Node ABI 与 pkg 目标 node18=108 不一致时打包阶段就告警，避免打完才发现 exe 起不来）；README「已知限制」标注 `@yao-pkg/pkg` 上游停止维护、node18 已 EOL，建议中期评估 Node 22 SEA / Bun compile 替代。
+- **P3-4 开发模式 WS 代理**：`packages/web/vite.config.ts` 的 `/ws` 原来代理到 4200（服务端根本没有这个端口，WS 与 HTTP 复用同端口）→ dev 模式实时同步失效；改为与 `/api` 同端口（默认 4100，可用 `FSEX_HTTP_PORT` 覆盖）。NiarApp 与 app.ts 双入口确认**保留**（前者是刻意保留的控制台 API，非死代码）。
+- **P3-5 仓库清理**：删除 `tmp_log_append.md`（内容过期）、`release/data` 与 `release/data - 副本`、`release/*.exe.bak`、`_dev` 下临时验证脚本与测试数据；`.gitignore` 增加 `.pnpm-store/`、移除已迁移的 `smoke.mjs` 忽略项。
+
+### 验证方式
+- `node packages/server/test/run.mjs`（Node 18）：**36 通过 0 失败**。
+- 无头 Chrome + CDP 实测网页端（`_dev/_verify_ui.mjs`，用户可复用）：13 项全过 —— 页面挂载、顶部/列表/输入区/上传区结构、WS 连接、发文字并回显、文本内 URL 转链接、代码消息 Prism 高亮、文件上传并渲染文件卡、主题切换、二维码弹窗、设置面板版本号来自 health、**控制台零错误**。
+- 各包 `tsc` 全过；`vite build` 产物 176 KB。
+- 本次未打包 exe。
+
+### 测试运行的 Node 版本兼容（补记）
+- `test/run.mjs` 增加 better-sqlite3 可用性探测：ABI 不匹配时**自动跳过**两个依赖 sqlite 的用例文件（`core-store.test.mjs` / `upload.test.mjs`）并打印原因与修复提示，其余用例照常跑（实测默认 Node 25 下 18 通过 0 失败；Node 18 下 36 通过 0 失败）——这样在任意 Node 版本下 `pnpm test` 都有意义。
+
+---
+
+## [6.2.0] 会话记录同步工具（用户「以后我们对话的聊天记录麻烦你也同步到该文档」）
+
+- **需求**：`docs/CHAT_HISTORY.md` 之前是另一段 Copilot 会话导出的（324 轮，6.5M 字符）；之后本仓库的开发对话在 **DSH 会话**里，需要同步进同一文档。
+- **新增 `scripts/export-dsh-chat.mjs`**（随仓库提交，便于以后每轮复用）：把 DSH 会话事件流转成 Markdown 并**追加**到 `docs/CHAT_HISTORY.md`——
+  - 会话文件为 `<DSH_HOME>/sessions/<workspace>/<sessionId>/session.v3.jsonl.zstd`：**多帧 zstd + JSONL 事件流**（1.4MB 文件里有 1191 个 zstd 帧）。`zlib.zstdDecompressSync` 只解第一帧（只能拿到 session 头），故按魔数 `28 B5 2F FD` 定位每帧起点、**逐帧解压后拼接**再解析（实测拼出 2019 条事件）。
+  - 事件类型映射：`turn/start|end` 划轮 → `user/message` 用户原文 → `assistant/message` 的 `text`/`reasoning`/`tool-call` → `tool/result` 仅统计。工具调用列「名称 + 参数摘要（截断 200 字符）」，思考过程折叠在 `<details>` 里。
+  - **运行时注入上下文与用户手写消息分离**：`Current runtime context…` / 策略变更通知这类系统注入内容单独折叠展示（标注「非用户手写」），不再混进 👤 用户段落。
+  - **轮次连续编号**：读取文档中已有的最大轮次接着编（本次 325–327）；文档结尾的「记录结束（第 N 轮）」页脚会被替换后重建。
+  - **可重复执行（幂等）**：段落带 `<!-- fsex-session: <id> -->` 标记，重复导出会先移除上次该会话段落再重建，不会重复堆积；已验证连跑 3 次后标记数仍为 1、轮次不重复。
+  - 用法：`node scripts/export-dsh-chat.mjs`（当前会话）／`node scripts/export-dsh-chat.mjs <sessionId> [out.md]`／`--stdout` 预览。
+- **本次结果**：追加第 **325–327 轮**（用户 3 条 / 助手 401 条 / 工具 433 次），`docs/CHAT_HISTORY.md` 6.51M → 6.74M 字符，第 1–324 轮原内容完整保留（已逐段校验 1/100/200/300/324 轮均存在）。
+
+---
+
+## [6.2.0] 版本号修改流程确认与文档补记（用户「现在修改版本依旧是使用 pnpm run set-version 么？」）
+
+- **回答：是**，仍然是 `pnpm run set-version <新版本号>`（等价 `node scripts/set-version.mjs <新版本号>`）。本次**实测走了一遍**：`6.2.0 → 6.2.1` 只改动 7 个文件（根 + 5 个子包 package.json、README 版本行），构建后「版本号唯一来源」4 条用例全过（`APP_VERSION` 与根 package.json 一致、`/api/health` 跟随），随后 `6.2.1 → 6.2.0` 还原，工作区无残留。
+- **相对旧流程少了什么**：旧版脚本要按字符串替换 `HttpServer.ts` / `index.ts` / `web/main.ts`（硬编码版本）；本次 P2-I 把版本号改成**单一来源**后，源码里已无版本字面量（已用 grep 复核），脚本也随之简化为只改 package.json + README。
+- **改动**：
+  - `scripts/set-version.mjs` 文件头重写为「覆盖位置 / 不需要额外步骤 / 如何校验」，用法提示改为 `pnpm run set-version <新版本号>`；
+  - `README.md` 常用脚本表补 `pnpm run set-version <x.y.z>` 一行，并新增「改版本号」小节，说明 ①只改 7 处 ②`/api/health`、banner、网页控制台版本号、产物名、exe 版本信息全部自动跟随 ③`pnpm-lock.yaml` 记录的是 `workspace:*` 而非版本号，**改完无需重新 install**。
+
+---
+
+## [6.2.0] 打包失败修复：版本号内联参数被 shell 吃掉引号（用户「现在打包怎么失败了？」）
+
+- **现象**：`pnpm package` 在 esbuild bundle 阶段失败，`ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL @filesyncex/shell`，真实错误被 pnpm 输出截断。手动复现拿到根因：
+  `✘ [ERROR] Invalid define value (must be an entity name or valid JSON syntax): 6.2.0`。
+- **根因（本次 P2-I 引入的回归）**：我为「版本号单一来源」在 bundle 命令里加了 `--define:__APP_VERSION__=${JSON.stringify(version)}`。
+  `JSON.stringify` 生成的引号在**命令行里被 shell 剥掉**（Windows cmd / POSIX sh 都会剥外层引号、转义传递在 cmd 下同样不可靠，实测 `\\"6.2.0\\"` 变成 `\6.2.0\`），
+  于是 esbuild 收到裸 `6.2.0`（不是合法 JSON 字面量）→ 直接报错退出。**开发模式（tsx/tsc）不走这条路径，所以测试和 dev 都正常，只有打包炸**。
+- **修复**：新增 `packages/shell/scripts/bundle.mjs`，用 `child_process.spawnSync(可执行文件, 参数数组)` 调用 esbuild —— **参数数组不经过 shell，引号原样保留**，define 值始终是合法 JSON 字符串字面量；`package.mjs` 里改为 `node scripts/bundle.mjs`。
+  另外在 bundle 后**兜底校验**产物里确实含有 `"<version>"`，一旦 define 再次失效会以明确错误失败，而不是产出「版本号显示 unknown」的 exe。
+- **顺带修掉一个隐患**：`pnpm exec esbuild` 在本机解析到的是**全局安装的 esbuild 0.19.5**（`C:\Users\NoRain_C\.npm_global\...`，该版本甚至不支持 `--define`），仓库 shell 包并未声明 esbuild。
+  现在 `packages/shell` 显式声明 `esbuild@^0.21.5` devDependency，`bundle.mjs` **优先用仓库内 pnpm 安装的 esbuild**（找不到才回退 PATH），打包可复现。
+- **验证（真实打包 + 真机运行产物）**：
+  - `pnpm package` 全流程通过 → `release/filesyncex-6.2.0.exe`（71.2MB，rcedit 图标/payload 修补正常）；bundle 日志新增 `✔ 已内联版本号 6.2.0`。
+  - 启动 exe：`/api/health` 返回 `version 6.2.0` + `lanIps`，启动 banner `filesyncEX 6.2.0`，**无 better-sqlite3 降级告警**，`release/data/filesync.db` 正常生成（Node18 ABI 匹配、sqlite 持久化生效）。
+  - 对 exe 跑端到端 12 项全过（临时脚本 `_dev/_verify_exe.mjs`）：无令牌 403 / 跨站 Origin 403 / 令牌放行并查到自启状态 / 同文件两传共享物理文件 / 删一条消息后另一条仍可下载（引用计数修复在 exe 内生效）/ 删最后一条引用才回收 / 流式导出 zip 200 / 导出无令牌 403。
+  - 测试套件仍 36 通过 0 失败；测试期间写入的 HKCU Run 自启项与 `release/data`、`release/*.exe.bak` 已清理。

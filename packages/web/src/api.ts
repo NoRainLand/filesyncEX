@@ -8,6 +8,8 @@ export interface HealthT {
   name?: string;
   version?: string;
   lanIp?: string;
+  /** 全部可用局域网地址（多网卡机器上首个未必可达） */
+  lanIps?: string[];
   port?: number;
 }
 

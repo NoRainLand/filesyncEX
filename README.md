@@ -4,7 +4,7 @@
 
 > 基于 Node.js 的**局域网文件 / 文字同步工具**。桌面端开一个 exe，局域网内的任意设备（手机 / 电脑）打开网页即可互传文件与消息，无需互联网、无需安装客户端。
 
-- 版本：`6.2.0`
+- 版本：`6.4.0`
 - 语言 / 运行环境：TypeScript（Node ≥ 18，打包产物为 Windows x64 单文件 exe）
 - 包管理器：pnpm workspace（monorepo）
 
@@ -65,6 +65,28 @@ pnpm package
 ```
 
 > 服务端默认端口 `4100`，可在 `serverConfig.json`（进程 cwd）或环境变量 `FSEX_HTTP_PORT` 修改；端口被占用时**自动向后探测空闲端口**并打印提示。
+
+### 开发环境要求（重要）
+
+- **请用 Node 18 / 20 开发**（仓库根有 `.nvmrc`：`nvm use`）。`better-sqlite3` 是原生模块，其 `.node` 二进制与 Node 的 ABI 强绑定：
+  用更高版本 Node（如 22/25）运行会 `ERR_DLOPEN_FAILED`，服务会**直接报错退出并提示修复办法**（不再静默降级内存存储 —— 那会让「数据重启即丢」被当成正常现象）。
+  遇到时：`nvm use 18`，或 `pnpm rebuild better-sqlite3`；确实想用内存存储请显式设 `FSEX_ALLOW_MEMORY_STORE=1` 或 `serverConfig.json` 的 `"store": "memory"`。
+- pkg 打包目标是 **node18**，用 Node 18 开发/打包可保证运行环境与产物一致。
+
+---
+
+## 测试
+
+```bash
+pnpm test          # 构建全部包 + 跑测试（Node 内置断言 + 进程内 runner，零依赖）
+pnpm --filter @filesyncex/server test security   # 只跑文件名含 security 的用例
+```
+
+- 用例在 `packages/server/test/`，覆盖：**管理端点鉴权**（令牌/来源校验/导出）、**文件引用计数与物理回收**、
+  **磁盘卫生清理**（废弃分片会话 / 孤儿封面 / `.tmp`）、**sha256 校验**、**断点续传 / 秒传**、**版本号唯一来源**（含旧库自动修复）。
+- 运行器是自研的进程内 runner（`test/run.mjs` + `test/helpers/testkit.mjs`）：不用 `node --test`（会给每个文件 spawn 子进程，受限环境 EPERM）、
+  不用 vitest（依赖 esbuild 子进程加载配置）。用法与 vitest 接近（`describe / it / before / after / expect`）。
+- CI：`.github/workflows/ci.yml`（Node 18 + pnpm 10.15 + `pnpm install --frozen-lockfile` + 构建 + 测试）。
 
 ---
 
@@ -183,10 +205,17 @@ packages/
   protocol/    # 协议 schema + 类型（zod）
   core/        # 同步引擎 / 存储抽象 / 事件
   server/      # Express + ws + 上传 + 音频
+    src/
+      auth.ts        # 管理端点守卫（令牌 + 来源校验）
+      upload.ts      # 分片/直传/秒传 + 磁盘卫生清理
+      version.ts     # 版本号唯一来源（打包内联 / 开发读 package.json）
+    test/        # 测试（自研进程内 runner + Node 断言）
   web/         # lit 前端（Vite）
     src/
-      app.ts / app.css   # 主组件与样式
+      app.ts / app.css   # 主组件（状态 + 生命周期 + 输入/上传/预览交互）
       api.ts             # HTTP/WS 客户端（含分片上传、SHA-256）
+      auth.ts            # 管理接口令牌（authFetch）
+      ui/                # 展示层：helpers / icons / prism / messages / lang
       net/ view/ utils/  # 网络 / 视图 / 工具
   shell/       # 入口 + 打包
     scripts/
@@ -271,14 +300,17 @@ release/       # 打包产物（filesyncex.exe）
 
 ## 可能存在的问题 / 已知限制
 
-- **无鉴权**：局域网完全开放（设计如此），不建议暴露到公网。
+- **本机管理接口已加令牌 + 来源校验**（`/api/sys/*`、`/api/data/export`、`/api/app/download`）：防止局域网内任意网页跨站关服/清库。
+  但**业务面仍然无鉴权**（上传/下载/消息/删除都开放，设计如此）——同网段任何人可收发、下载、删除消息。**不要暴露到公网**。
+- **Node 版本敏感**：原生模块 `better-sqlite3` 的 ABI 与 Node 版本绑定，Node ≥ 22 且未 rebuild 时服务会**拒绝启动**（详见「开发环境要求」）。
 - **思源宋体 6MB**：`SourceHanSerifCN-Medium.woff2` 是单个体积最大的资源（可子集化或换字体优化）。
-- **QuickSendTool.exe 2.19MB**：内置在 web/dist 随包分发，可从包里移除改为外部下载。
 - **大文件上传前等待**：>8MB 需先算整文件 SHA-256（纯 JS），大文件在真正开始上传前有明显等待。
 - **音频转码内存**：转码缓存已用 LRU（上限 8 个）限制；但单文件解码过程仍会一次性占用该文件大小的内存（解码出的 WAV Buffer）。
 - **pkg 首次打包需联网**：需从 pkg-cache 下载 Node 基础二进制（fetched，约 40MB），离线环境首次打包会失败。
-- **打包链路对 pkg 内部结构敏感**：`fix-icon.mjs` 依赖 pkg 的 payload 占位符布局，升级 `@yao-pkg/pkg` 版本后需回归验证。
+- **打包链路对 pkg 内部结构敏感**：`fix-icon.mjs` 依赖 pkg 的 payload 占位符布局，升级 `@yao-pkg/pkg` 版本后需回归验证；
+  `@yao-pkg/pkg` 上游已停止维护、目标为已 EOL 的 node18，中期建议评估 Node 22 SEA 或 Bun compile 替代。
 - **压缩 payload 的启动开销**：GZip 压缩换取体积，运行时首次解压使启动略慢（局域网场景可接受）。
+- **历史裁剪不删附件**：超出 `historyLimit`(500) 的旧消息会被裁掉，但其物理文件保留，由磁盘清理（默认 24h TTL）回收。
 
 ---
 
@@ -287,6 +319,7 @@ release/       # 打包产物（filesyncex.exe）
 | 命令 | 说明 |
 |---|---|
 | `pnpm install` | 安装依赖 |
+| `pnpm test` | 构建 + 跑测试（集成测试覆盖鉴权/引用计数/清理/上传） |
 | `pnpm dev:web` | 前端开发（Vite 热更新） |
 | `pnpm dev:server` | 服务端开发（tsx） |
 | `pnpm build` | 全量构建 |
@@ -294,6 +327,21 @@ release/       # 打包产物（filesyncex.exe）
 | `pnpm package` | 打包（增量构建，Windows exe / Linux 自动识别） |
 | `pnpm package:linux` | 在 Linux 环境打包（强制 node18-linux-x64） |
 | `FSEX_FORCE_BUILD=1 pnpm package` | 强制全量构建后打包 |
+| `pnpm run set-version <x.y.z>` | 改版本号（只改 6 个 package.json + README，其余全部自动跟随，详见下） |
+
+### 改版本号
+
+```bash
+pnpm run set-version 6.3.0     # 例：6.4.0 → 6.3.0
+pnpm test                      # 可选：版本号唯一来源用例会校验一致性
+```
+
+版本号是**单一来源**（根 `package.json`），脚本只改这 7 处：根 + 5 个子包 `package.json` 的 `version`、README 顶部「版本」行。
+其余全部自动跟随，**不需要额外步骤**：
+
+- `/api/health`、启动 banner、网页控制台版本号 ← `packages/server/src/version.ts`（打包时 esbuild `--define:__APP_VERSION__` 内联根 package.json 版本；开发模式运行时向上查找根 package.json）；
+- 产物名 `release/filesyncex-<版本>.exe`、exe 图标里的版本信息 ← 打包脚本运行时读根 package.json；
+- `pnpm-lock.yaml` 记录的是 `workspace:*` 链接而非版本号，**改完不用重新 install**。
 
 ---
 

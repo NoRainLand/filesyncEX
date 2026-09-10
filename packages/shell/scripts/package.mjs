@@ -133,6 +133,21 @@ console.log("▶ 复制 better-sqlite3 + bindings + file-uri-to-path → shell/n
     }
     const nodeBin = path.join(dst, "build", "Release", "better_sqlite3.node");
     if (!fs.existsSync(nodeBin)) throw new Error("复制 better-sqlite3 后缺少 build/Release/better_sqlite3.node");
+    // 预检：原生模块是**为安装依赖时的 Node 版本**编译的（ABI 固定），而 pkg 打的是固定目标（node18=ABI 108）。
+    // 若当前 Node 与目标 ABI 不同，exe 启动时会 ERR_DLOPEN_FAILED 并拒绝启动 —— 在此提前提示，别等打包完才发现。
+    {
+      const targetAbi = { node18: 108, node20: 115, node22: 127 }[pkgTarget.split("-")[0]];
+      const currentAbi = Number(process.versions.modules);
+      if (targetAbi && currentAbi !== targetAbi) {
+        console.warn(
+          `   ⚠ 当前 Node ${process.version}（ABI ${currentAbi}）与打包目标 ${pkgTarget}（ABI ${targetAbi}）不一致：\n` +
+            "     better-sqlite3 的 .node 是安装依赖时的 Node 编译的，exe 内一旦 ABI 不符会加载失败并拒绝启动。\n" +
+            "     请在目标版本下重新安装/编译（仓库根有 .nvmrc：nvm use，然后 pnpm install --force 或 pnpm rebuild better-sqlite3）。"
+        );
+      } else {
+        console.log(`   ✔ Node ${process.version} ABI ${currentAbi} 与打包目标 ${pkgTarget} 一致`);
+      }
+    }
     console.log("   ✔ 已复制 better-sqlite3（已精简：删 deps/src/node_modules，保留 .node+lib）");
     // bindings：better-sqlite3 运行时查找 .node 的依赖（位于 .pnpm/better-sqlite3*/node_modules/bindings）
     const bindingsSrc = path.join(path.dirname(fs.realpathSync(src)), "bindings");
@@ -156,11 +171,10 @@ console.log("▶ 复制 better-sqlite3 + bindings + file-uri-to-path → shell/n
 }
 
 // ESM → 单文件 CJS bundle（pkg 无法对 import.meta/ESM 生成 bytecode，需先 bundle）
+// 具体逻辑见 scripts/bundle.mjs：用**参数数组**调用 esbuild（绕开 shell 引号），
+// 并把根 package.json 的版本号通过 `--define:__APP_VERSION__` 内联进产物（/api/health 与 banner 自动跟随）。
 console.log("▶ esbuild bundle（ESM → 单文件 CJS）");
-run(
-  "pnpm exec esbuild src/index.ts --bundle --platform=node --format=cjs --target=node18 --outfile=dist/bundle.cjs --external:better-sqlite3 --log-level=warning",
-  shellDir
-);
+run("node scripts/bundle.mjs", shellDir);
 if (obfuscate) {
   console.log("▶ 混淆后端 bundle.cjs（esbuild --minify）");
   minifyFile(path.join(shellDir, "dist", "bundle.cjs"), "cjs");

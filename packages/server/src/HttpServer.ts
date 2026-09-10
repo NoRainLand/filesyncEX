@@ -5,9 +5,11 @@ import { execFileSync, spawnSync } from "node:child_process";
 import type { ServerConfig } from "./config.js";
 import type { UploadService } from "./upload.js";
 import { SyncEngine } from "@filesyncex/core";
-import { lanAddress } from "./net.js";
+import { lanAddress, lanAddresses } from "./net.js";
 import { decodeToChannels, toWavBuffer } from "./wave.js";
-import { makeZip, type ZipEntry } from "./zip.js";
+import { ZipWriter } from "./zip.js";
+import { adminToken, requireAdmin } from "./auth.js";
+import { APP_VERSION } from "./version.js";
 
 /* 转码流缓存：key → WAV Buffer（只解码一次）；LRU 上限，防止大音频常驻内存 */
 const STREAM_CACHE_MAX = 8; // 最多同时缓存 8 个转码流
@@ -63,7 +65,21 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
   engine.events.on("file-gc", ({ key }) => uploads.deleteFile(key));
 
   /* 健康检查（返回本机局域网 IP + 实际 HTTP 端口，供前端二维码/地址使用真实地址；端口自动切换时取实际监听端口） */
-  app.get("/api/health", (req, res) => res.json({ ok: true, name: "filesyncEX", version: "6.2.0", lanIp: lanAddress(), port: req.socket.localPort ?? cfg.httpPort }));
+  app.get("/api/health", (req, res) =>
+    res.json({
+      ok: true,
+      name: "filesyncEX",
+      version: APP_VERSION,
+      lanIp: lanAddress(),
+      /** 全部可用局域网地址（多网卡机器上首个未必可达，前端可提示备用地址） */
+      lanIps: lanAddresses(),
+      port: req.socket.localPort ?? cfg.httpPort,
+    })
+  );
+
+  /* 管理令牌下发：仅前端首屏调用（同源可读；跨站读取被 CORS 拦住，无法携带自定义头）
+     配合 requireAdmin 守卫使用，详见 auth.ts */
+  app.get("/api/auth", (_req, res) => res.json({ token: adminToken() }));
 
   /* 消息历史（REST 兜底；首屏主要走 WS welcome） */
   app.get("/api/msgs", async (_req, res) => {
@@ -133,6 +149,8 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
       const cover = "/api/file/" + encodeURIComponent(r.coverKey);
       const updated: import("@filesyncex/protocol").MsgDataT = { ...msg, file: { ...msg.file!, cover } };
       await engine.updateMessage(id, updated);
+      // 封面也登记进文件索引（标记被该消息引用）：供磁盘卫生清理判断“是否孤儿”，且删消息时可回收
+      await uploads.registerCover(r.coverKey, id);
       res.json({ cover, msg: updated });
     }
   );
@@ -183,8 +201,11 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     }
   };
 
+  /* 以下 /api/sys/*、/api/data/export、/api/app/download 均为**本机管理能力**（关机/清库/改自启/导出全部数据/下载本体），
+     统一挂 requireAdmin 守卫（令牌 + 来源校验），防止局域网内任意页面跨站触发。 */
+
   /** 注册表操作当前 exe 开机自启（HKCU Run 键，无需管理员）：body.action 1=开启 0=取消；仅打包模式 + Windows 可用 */
-  app.post("/api/sys/autostart", (req, res) => {
+  app.post("/api/sys/autostart", requireAdmin, (req, res) => {
     if (!isPackaged()) return res.status(400).json({ error: "开发模式无法操作开机自启（需先打包为 exe）" });
     if (process.platform !== "win32") return res.status(501).json({ error: "当前平台不支持注册表开机自启（仅 Windows）" });
     const action = Number((req.body as { action?: number } | undefined)?.action ?? 1);
@@ -208,7 +229,7 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
   });
 
   /** 查询当前 exe 开机自启状态（读取 HKCU Run 键）。用 spawnSync：reg 失败（非 0 退出）不抛异常，避免 GBK stderr 进入任何日志；仅 Windows */
-  app.get("/api/sys/autostart", (_req, res) => {
+  app.get("/api/sys/autostart", requireAdmin, (_req, res) => {
     if (!isPackaged()) return res.status(400).json({ error: "开发模式无开机自启状态（需先打包为 exe）" });
     if (process.platform !== "win32") return res.status(501).json({ error: "当前平台不支持注册表开机自启（仅 Windows）" });
     const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -228,68 +249,80 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
   });
 
   /** 关闭服务器（优雅关闭并退出进程） */
-  app.post("/api/sys/shutdown", (req, res) => {
+  app.post("/api/sys/shutdown", requireAdmin, (req, res) => {
     console.log(`[sys] 关闭服务器（来自 ${req.ip}）`);
     res.json({ ok: true });
     setTimeout(() => { void systemOps?.shutdown(); }, 300); // 先回响应再关闭
   });
 
   /** 重置服务器：清空全部聊天记录/文件并软重启 */
-  app.post("/api/sys/reset", (req, res) => {
+  app.post("/api/sys/reset", requireAdmin, (req, res) => {
     console.log(`[sys] 重置服务器（清空全部数据并重启，来自 ${req.ip}）`);
     res.json({ ok: true });
     setTimeout(() => { void systemOps?.reset(); }, 300); // 先回响应再执行
   });
 
-  /** 打包当前所有数据（消息数据库一致快照 + uploads 全部文件）为 zip，以日期命名下载 */
-  app.get("/api/data/export", (req, res) => {
+  /** 打包当前所有数据（消息数据库一致快照 + uploads 全部文件）为 zip，以日期命名下载。
+      全程流式：数据库快照落临时文件后边读边写，uploads 逐个文件流式写入 —— 数据目录多大都不整块进内存。 */
+  app.get("/api/data/export", requireAdmin, (req, res) => {
     void (async () => {
-    try {
-      const files: ZipEntry[] = [];
-      // 数据库一致快照（WAL → backup；memory 存储无 db）
-      if (backupDb) {
-        const tmp = path.join(cfg.dataDir, `.export-${Date.now()}.db`);
+      const tmpDb = path.join(cfg.dataDir, `.export-${Date.now()}.db`);
+      const cleanupTmp = (): void => {
         try {
-          await backupDb(tmp);
-          if (fs.existsSync(tmp)) {
-            files.push({ path: "filesync.db", data: fs.readFileSync(tmp) });
-            fs.rmSync(tmp, { force: true });
-          }
-        } catch (e) {
-          fs.rmSync(tmp, { force: true });
-          console.warn("[export] 数据库备份失败:", (e as Error).message);
+          fs.rmSync(tmpDb, { force: true });
+        } catch {
+          /* noop */
         }
-      }
-      // uploads 全部文件（递归）
-      const uploadDir = cfg.uploadDir;
-      if (uploadDir && fs.existsSync(uploadDir)) {
-        const walk = (dir: string, prefix: string): void => {
+      };
+      try {
+        let count = 0;
+        // 数据库一致快照（WAL → backup 落临时文件；memory 存储无 db）
+        if (backupDb) {
+          try {
+            await backupDb(tmpDb);
+          } catch (e) {
+            console.warn("[export] 数据库备份失败:", (e as Error).message);
+          }
+        }
+        const d = new Date();
+        const p2 = (n: number): string => String(n).padStart(2, "0");
+        const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+        const name = `filesyncEX-backup-${stamp}.zip`;
+        res.setHeader("Content-Type", "application/zip");
+        res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
+
+        const zip = new ZipWriter(res);
+        if (backupDb && fs.existsSync(tmpDb)) {
+          await zip.addFile("filesync.db", tmpDb);
+          count++;
+        }
+        // uploads 全部文件（递归，逐个流式写入）
+        const uploadDir = cfg.uploadDir;
+        const walk = async (dir: string, prefix: string): Promise<void> => {
           for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
             const full = path.join(dir, e.name);
-            if (e.isDirectory()) walk(full, prefix + e.name + "/");
-            else if (e.isFile()) files.push({ path: prefix + e.name, data: fs.readFileSync(full) });
+            if (e.isDirectory()) await walk(full, prefix + e.name + "/");
+            else if (e.isFile()) {
+              await zip.addFile(prefix + e.name, full);
+              count++;
+            }
           }
         };
-        walk(uploadDir, "uploads/");
+        if (uploadDir && fs.existsSync(uploadDir)) await walk(uploadDir, "uploads/");
+        await zip.finish();
+        console.log(`[export] 数据导出：${count} 个文件 → ${name}（来自 ${req.ip}）`);
+      } catch (e) {
+        console.warn("[export] 导出失败:", (e as Error).message);
+        if (!res.headersSent) res.status(500).json({ error: "导出失败: " + String((e as Error).message) });
+        else res.destroy();
+      } finally {
+        cleanupTmp();
       }
-      const d = new Date();
-      const p2 = (n: number): string => String(n).padStart(2, "0");
-      const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-      const name = `filesyncEX-backup-${stamp}.zip`;
-      const buf = makeZip(files);
-      console.log(`[export] 数据导出：${files.length} 个文件，${buf.length} 字节 → ${name}（来自 ${req.ip}）`);
-      res.setHeader("Content-Type", "application/zip");
-      res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
-      res.send(buf);
-    } catch (e) {
-      console.warn("[export] 导出失败:", (e as Error).message);
-      res.status(500).json({ error: "导出失败: " + String((e as Error).message) });
-    }
     })();
   });
 
   /** 下载服务器本体（当前运行的 exe）；开发模式返回失败 */
-  app.get("/api/app/download", (req, res) => {
+  app.get("/api/app/download", requireAdmin, (req, res) => {
     if (!isPackaged()) return res.status(400).json({ error: "开发模式没有打包产物（当前由 node 运行）" });
     const exe = process.execPath;
     if (!fs.existsSync(exe)) return res.status(404).json({ error: "打包产物不存在" });
@@ -353,6 +386,17 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
   } else {
     app.get("/", (_req, res) => res.type("text/plain; charset=utf-8").send("filesyncEX 服务运行中（前端未构建，请先构建 packages/web）"));
   }
+
+  /* 全局错误兜底：express.json / express.raw 的 body 解析失败（畸形 JSON、超过 limit）会带 4xx status 走到这里，
+     统一返回 JSON 而不是 Express 默认 HTML 错误页（含栈与源码路径）。必须放在所有路由之后。 */
+  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const e = err as { status?: number; statusCode?: number; type?: string; message?: string };
+    const status = e?.status ?? e?.statusCode ?? 500;
+    const msg = e?.type === "entity.too.large" ? "请求体过大" : e?.type === "entity.parse.failed" ? "请求体不是合法 JSON" : String(e?.message ?? err);
+    if (status >= 500) console.warn("[http] 未处理错误:", msg);
+    if (!res.headersSent) res.status(status).json({ error: msg });
+    else res.destroy();
+  });
 
   return app;
 }

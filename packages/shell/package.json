@@ -1,6 +1,6 @@
 {
   "name": "@filesyncex/shell",
-  "version": "6.2.0",
+  "version": "6.4.0",
   "private": true,
   "license": "GPL-2.0-or-later",
   "type": "module",
@@ -20,6 +20,7 @@
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@yao-pkg/pkg": "^5.16.1",
+    "esbuild": "^0.21.5",
     "rcedit": "^4.0.1",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4"

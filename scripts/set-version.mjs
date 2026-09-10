@@ -1,15 +1,21 @@
 #!/usr/bin/env node
 /**
  * 一键统一版本号：把项目所有位置的版本号改为同一个新版本。
- * 用法：node scripts/set-version.mjs <新版本号>     例：node scripts/set-version.mjs 6.0.0-beta3
+ * 用法：pnpm run set-version <新版本号>     例：pnpm run set-version 6.3.0
+ *      （等价于 node scripts/set-version.mjs 6.3.0）
  *
- * 覆盖位置：
+ * 覆盖位置（**只有这 7 个文件需要改**）：
  *   - 根 + 5 个子包 package.json 的 "version"
- *   - server /api/health 返回的 version（HttpServer.ts）
- *   - server 启动 banner（index.ts）
- *   - web main.ts printMsg 默认版本
- *   - README 版本行、LICENSE 示例版本
- * 当前版本以根 package.json 为准，脚本自动检测并全文替换。
+ *   - README 顶部「版本」行
+ *
+ * 不需要额外步骤：
+ *   - 服务端版本号已改为**单一来源**（`packages/server/src/version.ts`）：打包时由 esbuild
+ *     `--define:__APP_VERSION__` 把根 package.json 的版本内联进 bundle，开发模式运行时向上查找
+ *     仓库根 package.json 读取 —— 所以 `/api/health`、启动 banner、网页控制台版本号都自动跟随；
+ *   - `pnpm-lock.yaml` 记录的是 `workspace:*` 链接而非版本号，改版本号**无需重新 install**；
+ *   - 产物名（release/filesyncex-<版本>.exe）与 exe 版本信息由打包脚本运行时读根 package.json 生成。
+ *
+ * 校验：`pnpm test`（其中「版本号唯一来源」用例会断言 APP_VERSION 与根 package.json 一致）。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -19,8 +25,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 
 if (args.length !== 1) {
-  console.error("用法：node scripts/set-version.mjs <新版本号>");
-  console.error("例：node scripts/set-version.mjs 6.0.0-beta3");
+  console.error("用法：pnpm run set-version <新版本号>（等价 node scripts/set-version.mjs <新版本号>）");
+  console.error("例：pnpm run set-version 6.3.0");
   process.exit(1);
 }
 const next = args[0].trim();
@@ -53,11 +59,7 @@ const files = [
   "packages/server/package.json",
   "packages/shell/package.json",
   "packages/web/package.json",
-  "packages/server/src/HttpServer.ts",
-  "packages/server/src/index.ts",
-  "packages/web/src/main.ts",
   "README.md",
-  "LICENSE.md",
 ];
 
 let changed = 0;

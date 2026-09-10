@@ -1,3 +1,5 @@
+import { authFetch } from "./auth.js";
+
 export class NiarApp {
     /** 冷笑话 API（旧版 ProjectConfig.jokeAPI，已内联） */
     private static readonly JOKE_API = "https://v2.jokeapi.dev/joke/Any";
@@ -52,7 +54,7 @@ export class NiarApp {
      */
     public static autostart(action: 0 | 1 = 1): void {
         const label = action === 1 ? "开启" : "取消";
-        fetch("/api/sys/autostart", {
+        authFetch("/api/sys/autostart", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action }),
@@ -74,7 +76,7 @@ export class NiarApp {
      * 1b. 查询当前 exe 开机自启状态。自动等待服务器完成并打印结果（不返回 Promise）。仅打包为 exe 后可用。
      */
     public static autostartStatus(): void {
-        fetch("/api/sys/autostart")
+        authFetch("/api/sys/autostart")
             .then((r) => r.json().catch(() => ({})) as Promise<Record<string, unknown>>)
             .then((d) => {
                 if (d.ok) {
@@ -118,7 +120,7 @@ export class NiarApp {
 
     /** 通用系统操作：POST 后自动打印结果（不返回 Promise） */
     private static sysAction(url: string, label: string): void {
-        fetch(url, { method: "POST" })
+        authFetch(url, { method: "POST" })
             .then((r) => r.json().catch(() => ({})) as Promise<Record<string, unknown>>)
             .then((d) => {
                 if (d.ok) {
@@ -132,10 +134,10 @@ export class NiarApp {
             });
     }
 
-    /** 通用：fetch 拿 blob → 触发浏览器下载；非 2xx 返回失败 */
+    /** 通用：fetch 拿 blob → 触发浏览器下载；非 2xx 返回失败（管理端点需令牌，走 authFetch） */
     private static async downloadBlob(url: string, fallbackName: string): Promise<Record<string, unknown>> {
         try {
-            const r = await fetch(url);
+            const r = await authFetch(url);
             if (!r.ok) {
                 let error = "下载失败";
                 try {

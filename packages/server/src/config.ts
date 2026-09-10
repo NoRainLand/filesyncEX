@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 export const ServerConfigSchema = z.object({
-  /** HTTP 端口（WebSocket 复用同端口，path /ws） */
-  httpPort: z.number().int().min(1).max(65535).default(4100),
+  /** HTTP 端口（WebSocket 复用同端口，path /ws）；0 = 交由系统分配空闲端口（测试用） */
+  httpPort: z.number().int().min(0).max(65535).default(4100),
   dataDir: z.string().default("./data"),
   /** 前端静态资源目录（构建后）。exe 打包时由 shell 注入实际路径 */
   webDir: z.string().default("../web/dist"),

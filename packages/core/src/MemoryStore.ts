@@ -12,6 +12,8 @@ export class MemoryStore implements Store {
   private files = new Map<string, FileMetaT>();
   private bySha = new Map<string, FileMetaT>();
   private fileRefs = new Map<string, number>();
+  /** 文件 key → 引用它的消息 id 集合（decrFileRef 幂等依据） */
+  private fileRefMsgs = new Map<string, Set<string>>();
 
   async init(): Promise<void> {}
 
@@ -38,6 +40,7 @@ export class MemoryStore implements Store {
     this.files.clear();
     this.bySha.clear();
     this.fileRefs.clear();
+    this.fileRefMsgs.clear();
   }
 
   async createUpload(s: UploadSession): Promise<void> {
@@ -46,6 +49,9 @@ export class MemoryStore implements Store {
   }
   async getUpload(uploadId: string): Promise<UploadSession | undefined> {
     return this.uploads.get(uploadId);
+  }
+  async listUploads(): Promise<UploadSession[]> {
+    return [...this.uploads.values()];
   }
   async addUploadChunk(uploadId: string, index: number): Promise<void> {
     this.chunks.get(uploadId)?.add(index);
@@ -58,10 +64,13 @@ export class MemoryStore implements Store {
     this.chunks.delete(uploadId);
   }
 
-  async saveFile(key: string, meta: FileMetaT): Promise<void> {
+  /** 登记物理文件元数据（不涉及引用计数）；已存在返回 false */
+  async createFile(key: string, meta: FileMetaT): Promise<boolean> {
+    if (this.files.has(key)) return false;
     this.files.set(key, meta);
-    this.fileRefs.set(key, 1); // 新文件首次引用 = 1
+    this.fileRefs.set(key, 0);
     if (meta.sha256) this.bySha.set(meta.sha256, meta);
+    return true;
   }
   async getFileBySha(sha: string): Promise<FileMetaT | undefined> {
     return this.bySha.get(sha);
@@ -69,19 +78,28 @@ export class MemoryStore implements Store {
   async getFile(key: string): Promise<FileMetaT | undefined> {
     return this.files.get(key);
   }
-  async incrFileRef(key: string): Promise<void> {
+  /** 登记「消息 msgId 引用了文件 key」；同一消息重复登记幂等（语义与 SqliteStore 一致） */
+  async addFileRef(key: string, msgId: string): Promise<void> {
+    const refsForFile = this.fileRefMsgs.get(key) ?? new Set<string>();
+    if (refsForFile.has(msgId)) return;
+    refsForFile.add(msgId);
+    this.fileRefMsgs.set(key, refsForFile);
     this.fileRefs.set(key, (this.fileRefs.get(key) ?? 0) + 1);
   }
-  async decrFileRef(key: string): Promise<number> {
-    const n = (this.fileRefs.get(key) ?? 0) - 1;
-    this.fileRefs.set(key, Math.max(0, n));
-    return Math.max(0, n);
+  async decrFileRef(key: string, msgId?: string): Promise<number> {
+    const refsForFile = this.fileRefMsgs.get(key);
+    const target = msgId ?? [...(refsForFile ?? [])][0];
+    if (refsForFile && target && refsForFile.delete(target)) {
+      this.fileRefs.set(key, Math.max(0, (this.fileRefs.get(key) ?? 0) - 1));
+    }
+    return this.fileRefs.get(key) ?? 0;
   }
   async removeFile(key: string): Promise<void> {
     const meta = this.files.get(key);
     if (meta?.sha256) this.bySha.delete(meta.sha256);
     this.files.delete(key);
     this.fileRefs.delete(key);
+    this.fileRefMsgs.delete(key);
   }
 
   async close(): Promise<void> {

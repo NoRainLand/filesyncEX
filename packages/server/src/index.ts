@@ -10,7 +10,8 @@ import { loadConfig, type ServerConfig } from "./config.js";
 import { createHttpApp } from "./HttpServer.js";
 import { SocketServer } from "./SocketServer.js";
 import { UploadService } from "./upload.js";
-import { lanAddress } from "./net.js";
+import { lanAddress, lanAddresses } from "./net.js";
+import { APP_VERSION } from "./version.js";
 
 export interface RunResult {
   httpPort: number;
@@ -18,6 +19,8 @@ export interface RunResult {
   httpUrl: string;
   wsUrl: string;
   engine: SyncEngine;
+  /** 上传服务（测试/维护可调用 sweep 做磁盘清理） */
+  uploads: UploadService;
   close: () => Promise<void>;
   /** 广播通知（异常/维护/关闭），前端弹不可关闭大窗 */
   broadcastNotice: (level: "info" | "warn" | "error" | "maintenance" | "shutdown", message: string) => void;
@@ -65,6 +68,12 @@ function acquireLock(dataDir: string): string | null {
   }
 }
 
+/** 原生模块 ABI 不匹配（NODE_MODULE_VERSION）——开发时最常见的失败，提示语要给出可执行的修复办法 */
+function isAbiMismatch(e: unknown): boolean {
+  const err = e as { code?: string; message?: string };
+  return err?.code === "ERR_DLOPEN_FAILED" || /NODE_MODULE_VERSION|compiled against a different Node\.js version/i.test(String(err?.message ?? ""));
+}
+
 async function createStore(cfg: ServerConfig): Promise<{ store: Store; backupDb?: (dest: string) => Promise<void> }> {
   if (cfg.store === "memory") {
     const s = new MemoryStore();
@@ -79,7 +88,26 @@ async function createStore(cfg: ServerConfig): Promise<{ store: Store; backupDb?
     const backupDb = async (dest: string): Promise<void> => { await db.backup(dest); };
     return { store: s, backupDb };
   } catch (e) {
-    console.warn("[store] better-sqlite3 初始化失败，降级为内存存储:", (e as Error).message);
+    const msg = String((e as Error).message);
+    // 原生模块与当前 Node ABI 不匹配：**不再静默降级内存存储**。
+    // 静默降级会让「数据重启即丢」被当成正常现象（且日志只一行 warn，很容易漏看），
+    // 这里直接报错退出，并给出修复办法；确实想用内存模式请显式设置 store:"memory"
+    // 或 FSEX_ALLOW_MEMORY_STORE=1。
+    if (isAbiMismatch(e) && process.env.FSEX_ALLOW_MEMORY_STORE !== "1") {
+      throw new Error(
+        [
+          "better-sqlite3 原生模块与当前 Node 版本 ABI 不匹配，无法使用本地数据库。",
+          `当前 Node：${process.version}（ABI ${process.versions.modules}）`,
+          `原因：${msg.split("\n")[0]}`,
+          "",
+          "修复办法（任选其一）：",
+          "  1) 用 Node 18/20 运行（仓库根有 .nvmrc：nvm use 18）；",
+          "  2) 重新编译原生模块：pnpm rebuild better-sqlite3；",
+          "  3) 想改用内存存储（数据不持久化）：设置环境变量 FSEX_ALLOW_MEMORY_STORE=1 或在 serverConfig.json 里写 {\"store\":\"memory\"}。",
+        ].join("\n")
+      );
+    }
+    console.warn("[store] better-sqlite3 初始化失败，降级为内存存储（数据不会持久化）:", msg);
     const s = new MemoryStore();
     await s.init();
     return { store: s };
@@ -108,8 +136,11 @@ function findFreePort(startPort: number, maxTries: number): Promise<number> {
         }
       });
       srv.once("listening", () => {
+        // port=0 时内核分配随机空闲端口，必须回读实际端口（测试用 0 表示「随便给一个」）
+        const addr = srv.address();
+        const actual = typeof addr === "object" && addr ? addr.port : port;
         srv.close();
-        resolve(port);
+        resolve(actual);
       });
       srv.listen(port);
     };
@@ -147,6 +178,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   }
 
   const uploads = new UploadService({ store, engine, uploadDir: cfg.uploadDir });
+  uploads.startSweeper(); // 启动时 + 每 6h 回收废弃分片会话目录 / 孤儿封面 / 组装临时文件
   // 系统操作（关闭/重置）：close 在下方定义，用占位引用，运行时端点调用时已就绪
   let shutdownImpl: (() => Promise<void>) | undefined;
   const systemOps = {
@@ -189,7 +221,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   const MAX_PORT_TRIES = 20;
   const requestedPort = cfg.httpPort;
   const httpPort = await findFreePort(requestedPort, MAX_PORT_TRIES);
-  if (httpPort !== requestedPort) {
+  if (httpPort !== requestedPort && requestedPort !== 0) {
     console.log(`  ⚠ 端口 ${requestedPort} 已被占用，已自动切换到端口 ${httpPort}`);
   }
   await new Promise<void>((resolve, reject) => {
@@ -199,14 +231,19 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   });
 
   const lan = lanAddress();
+  const lanAll = lanAddresses();
   const httpUrl = `http://${lan}:${httpPort}`;
   const wsUrl = `ws://${lan}:${httpPort}/ws`; // WS 复用 HTTP 端口
 
   if (opts.verbose !== false && !cfg.quiet) {
     console.log("");
-    console.log("  filesyncEX 6.2.0");
+    console.log(`  filesyncEX ${APP_VERSION}`);
     console.log("  ------------------------------");
     console.log(`  网页端   ${httpUrl}`);
+    // 多网卡机器（虚拟网卡/VPN）上首个地址未必可达，全部列出便于手动选择
+    if (lanAll.length > 1) {
+      for (const ip of lanAll.slice(1)) console.log(`           http://${ip}:${httpPort}`);
+    }
     console.log(`  WebSocket ${wsUrl}`);
     console.log(`  数据目录 ${cfg.dataDir}`);
     console.log("");
@@ -220,6 +257,7 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
     wsServer.broadcastNotice("shutdown", "服务器即将关闭，请稍后重新连接");
     await new Promise((r) => setTimeout(r, 500)); // 留时间让通知送达客户端
     wsServer.close();
+    uploads.stopSweeper();
     // httpServer.close() 会等待所有连接结束（含空闲 keep-alive，其 keepAliveTimeout 为 30s），
     // 若不强制关闭，关闭流程会挂起 ~20s 才退出，前端 WS 也迟迟不断开 → 连接状态不更新。closeAllConnections 立即释放。
     await new Promise<void>((r) => {
@@ -237,6 +275,6 @@ export async function run(opts: RunOptions = {}): Promise<RunResult> {
   };
   shutdownImpl = close; // 系统操作（关闭/重置）在服务器运行后引用优雅关闭
 
-  return { httpPort, wsPort: httpPort, httpUrl, wsUrl, engine, close, broadcastNotice: (level, message) => wsServer.broadcastNotice(level, message) };
+  return { httpPort, wsPort: httpPort, httpUrl, wsUrl, engine, uploads, close, broadcastNotice: (level, message) => wsServer.broadcastNotice(level, message) };
 }
 
