@@ -71,6 +71,8 @@ interface InitUploadInput {
   mime?: string;
   /** 文件特征值（前 1 MiB 的 SHA-256）：服务端据此 + 文件名 + 大小做秒传判定 */
   firstChunkSha256?: string;
+  /** 本机预生成的消息 id（服务端沿用，便于客户端认领占位卡） */
+  msgId?: string;
   device: import("@filesyncex/protocol").DeviceInfoT;
   uploadId?: string;
   coverKey?: string;
@@ -139,11 +141,13 @@ export async function apiUploadComplete(uploadId: string): Promise<UploadComplet
 }
 
 /** 小文件直接上传：一次 POST 整个文件，跳过分片（消除「上传前等待」） */
-export async function apiUploadDirect(file: File, device: import("@filesyncex/protocol").DeviceInfoT, coverKey?: string, fingerprint?: string): Promise<UploadCompleteResT> {
+export async function apiUploadDirect(file: File, device: import("@filesyncex/protocol").DeviceInfoT, coverKey?: string, fingerprint?: string, msgId?: string): Promise<UploadCompleteResT> {
   const q = new URLSearchParams({ name: file.name, mime: file.type || "", device: JSON.stringify(device) });
   if (coverKey) q.set("coverKey", coverKey);
   // 特征值由客户端算好传入（服务端也会从数据里独立算一遍并比对），用于秒传判定
   if (fingerprint) q.set("fp", fingerprint);
+  // 消息 id 由本机预生成：直传路径服务端不广播，靠它把 HTTP 响应与占位卡对上
+  if (msgId) q.set("msgId", msgId);
   const r = await fetch(`/api/upload/direct?${q.toString()}`, {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
@@ -195,7 +199,9 @@ export async function uploadFile(
   file: File,
   onProgress?: (sent: number, total: number) => void,
   coverKey?: string,
-  onPhase?: (phase: "preparing" | "uploading" | "finishing") => void
+  onPhase?: (phase: "preparing" | "uploading" | "finishing") => void,
+  /** 本机预先生成的消息 id：服务端沿用它与广播 id，界面才能把占位卡与真实消息对应起来 */
+  msgId?: string
 ): Promise<UploadCompleteResT> {
   const limits = await fetchLimits();
   if (limits.maxFileSize > 0 && file.size > limits.maxFileSize) {
@@ -209,7 +215,7 @@ export async function uploadFile(
   // 小文件直接上传：跳过整文件哈希与分片，消除「上传前等待」
   if (file.size <= limits.directUpload) {
     onProgress?.(file.size, file.size);
-    return await apiUploadDirect(file, getDevice(), coverKey, fp);
+    return await apiUploadDirect(file, getDevice(), coverKey, fp, msgId);
   }
 
   // 大文件：分片上传（服务端组装时流式算整文件 sha256 作为最终 key 与校验）
@@ -227,6 +233,7 @@ export async function uploadFile(
     size: file.size,
     mime: file.type || undefined,
     firstChunkSha256: fp,
+    msgId,
     device: getDevice(),
     uploadId: savedUploadId,
     coverKey,

@@ -96,6 +96,12 @@ export const UploadInitReq = z.object({
    * 前 1 MiB 是固定的，与分片大小（directUpload / chunkSize）无关，两条上传路径都能对上。
    */
   firstChunkSha256: z.string().optional(),
+  /**
+   * 本机预生成的消息 id（可选）。
+   * 服务端会沿用它作为广播/响应里的消息 id —— 客户端据此把「上传占位卡」与真实消息对应起来。
+   * 不传时服务端自行生成（旧客户端兼容）。
+   */
+  msgId: z.string().min(1).optional(),
   device: DeviceInfo, // 上传者设备身份（用于文件消息的 sender）
   /** 断点续传：客户端持久化的上次 uploadId，匹配 name/size 则复用会话并返回已传分片 */
   uploadId: z.string().optional(),

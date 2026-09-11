@@ -23,8 +23,12 @@ export interface UploadRec {
   phase?: "preparing" | "uploading" | "finishing" | "saved";
   /** 真实消息 id（WS 广播到达时据此把占位卡原地替换成真实消息） */
   realId?: string;
+  /** 本机预生成的消息 id：占位卡 id = `upload-<msgId>`，WS 广播与 HTTP 响应两条路径都靠它认领占位卡 */
+  msgId?: string;
   /** 正在「揭层」：真实消息已就位，只等缩略图解码完成再撤掉占位外观 */
   settling?: boolean;
+  /** 揭层时在等的那张缩略图 URL（"" = 无图可等）—— 只有它的 onload 才能收掉这条记录 */
+  thumbUrl?: string;
 }
 
 /**

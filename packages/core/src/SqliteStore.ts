@@ -41,6 +41,7 @@ interface UploadRow {
   size: number;
   mime: string | null;
   sha256: string | null;
+  msg_id: string | null;
   chunk_size: number;
   chunk_count: number;
   created_at: number;
@@ -55,6 +56,7 @@ function rowToSession(r: UploadRow): UploadSession {
     size: r.size,
     mime: r.mime ?? undefined,
     sha256: r.sha256 ?? undefined,
+    msgId: r.msg_id ?? undefined,
     chunkSize: r.chunk_size,
     chunkCount: r.chunk_count,
     createdAt: r.created_at,
@@ -90,6 +92,7 @@ export class SqliteStore implements Store {
         size INTEGER NOT NULL,
         mime TEXT,
         sha256 TEXT,
+        msg_id TEXT,
         chunk_size INTEGER NOT NULL,
         chunk_count INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
@@ -122,6 +125,8 @@ export class SqliteStore implements Store {
       "ALTER TABLE files ADD COLUMN name_size TEXT",
       "ALTER TABLE files ADD COLUMN size INTEGER",
       "CREATE INDEX IF NOT EXISTS idx_files_name_size ON files(name_size)",
+      // 客户端预生成的消息 id（上传会话跨重启保留，续传后仍能认领占位卡）
+      "ALTER TABLE uploads ADD COLUMN msg_id TEXT",
     ]) {
       try {
         this.db.exec(ddl);
@@ -184,9 +189,9 @@ export class SqliteStore implements Store {
   async createUpload(s: UploadSession): Promise<void> {
     this.db
       .prepare(
-        "INSERT OR REPLACE INTO uploads(upload_id,name,size,mime,sha256,chunk_size,chunk_count,created_at,device) VALUES (?,?,?,?,?,?,?,?,?)"
+        "INSERT OR REPLACE INTO uploads(upload_id,name,size,mime,sha256,msg_id,chunk_size,chunk_count,created_at,device) VALUES (?,?,?,?,?,?,?,?,?,?)"
       )
-      .run(s.uploadId, s.name, s.size, s.mime ?? null, s.sha256 ?? null, s.chunkSize, s.chunkCount, s.createdAt, s.device ? JSON.stringify(s.device) : null);
+      .run(s.uploadId, s.name, s.size, s.mime ?? null, s.sha256 ?? null, s.msgId ?? null, s.chunkSize, s.chunkCount, s.createdAt, s.device ? JSON.stringify(s.device) : null);
   }
   async getUpload(uploadId: string): Promise<UploadSession | undefined> {
     const r = this.db.prepare("SELECT * FROM uploads WHERE upload_id = ?").get(uploadId) as UploadRow | undefined;

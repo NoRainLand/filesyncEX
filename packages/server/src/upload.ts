@@ -166,7 +166,7 @@ export class UploadService {
     if (existing && existing.key) {
       // 同内容不同名：消息名用用户本次上传的名字，key/url/sha256/size 沿用旧文件
       const meta = { ...existing, name: req.name, mime: req.mime || existing.mime };
-      const msg = this.fileMessage(req.device, meta, randomUUID());
+      const msg = this.fileMessage(req.device, meta, await this.newMessageId(req.msgId));
       await this.engine.addMessage(msg);
       await this.store.addFileRef(existing.key, msg.id);
       return { ok: true, res: { uploadId, chunkSize, chunkCount, done: [], existed: true, file: existing, msg } as import("@filesyncex/protocol").UploadInitResT };
@@ -178,6 +178,7 @@ export class UploadService {
       size: req.size,
       mime: req.mime,
       sha256: req.sha256,
+      msgId: req.msgId,
       chunkSize,
       chunkCount,
       createdAt: Date.now(),
@@ -278,7 +279,7 @@ export class UploadService {
       const sender = s.device ?? this.engine.self;
       if (!sender) return { ok: true, res: { ok: true, msg: undefined } };
       await this.store.createFile(key, meta); // 建文件索引（已存在则保留首份元数据）
-      const msg = this.fileMessage(sender, meta, randomUUID());
+      const msg = this.fileMessage(sender, meta, await this.newMessageId(s.msgId));
       await this.engine.addMessage(msg);
       await this.store.addFileRef(key, msg.id); // 登记「该消息引用此文件」
       if (coverKey) await this.registerCover(coverKey, msg.id);
@@ -311,18 +312,19 @@ export class UploadService {
   }
 
   /** 小文件直接上传：整块落盘并广播（前端保证 ≤ 直传阈值，跳过哈希/分片） */
-  async direct(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer, coverKey?: string, fp?: string): Promise<{ ok: true; res: UploadCompleteRes } | { ok: false; error: string }> {
+  async direct(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer, coverKey?: string, fp?: string, msgId?: string): Promise<{ ok: true; res: UploadCompleteRes } | { ok: false; error: string }> {
     if (size > this.directLimit) return { ok: false, error: `文件过大，请用分片上传（直传上限 ${fmtBytes(this.directLimit)}）` };
     if (this.maxFileSize > 0 && size > this.maxFileSize) return { ok: false, error: this.overLimitError(size) };
     if (data.length !== size) return { ok: false, error: `文件大小不符：声明 ${size} 字节，实际 ${data.length} 字节` };
-    return this.finalize(name, size, mime, device, data, coverKey, fp);
+    return this.finalize(name, size, mime, device, data, coverKey, fp, msgId);
   }
 
   /**
    * 落盘最终文件 + 建索引 + 广播文件消息（小文件 direct 路径；分片路径由 complete 自行组装）
    * @param fp 客户端声明的特征值（前 1 MiB 的 SHA-256）；服务端会独立重算并比对，不一致以服务端为准
+   * @param msgId 客户端预生成的消息 id（可选，冲突时服务端自行生成）
    */
-  private async finalize(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer, coverKey?: string, fp?: string): Promise<{ ok: true; res: UploadCompleteRes }> {
+  private async finalize(name: string, size: number, mime: string | undefined, device: import("@filesyncex/protocol").DeviceInfoT | undefined, data: Buffer, coverKey?: string, fp?: string, msgId?: string): Promise<{ ok: true; res: UploadCompleteRes }> {
     const sha = createHash("sha256").update(data).digest("hex");
     // 落盘到 uploads/<sha>_<name>（key 即文件名）
     const safeName = (name || "unnamed").replace(/[\\/:*?"<>|]/g, "_");
@@ -355,11 +357,27 @@ export class UploadService {
     const sender = device ?? this.engine.self;
     if (!sender) return { ok: true, res: { ok: true, msg: undefined } };
     await this.store.createFile(key, meta); // 建文件索引（已存在则保留首份元数据）
-    const msg = this.fileMessage(sender, meta, randomUUID());
+    const msg = this.fileMessage(sender, meta, await this.newMessageId(msgId));
     await this.engine.addMessage(msg);
     await this.store.addFileRef(key, msg.id); // 登记「该消息引用此文件」——与消息一一对应，删消息不会误删共享文件
     if (coverKey) await this.registerCover(coverKey, msg.id);
     return { ok: true, res: { ok: true, msg } };
+  }
+
+  /**
+   * 定下这条文件消息的 id：优先沿用客户端预生成的 id，否则自行生成。
+   *
+   * 客户端预生成 id 是为了让「WS 广播」与「HTTP 响应」两条路径都能认领同一个上传占位卡
+   * （否则同一条消息会被客户端插两次）。但客户端给的 id 不能被无条件信任：
+   * 若该 id 在库里已存在，`saveMessage` 会覆盖那条消息 —— 因此冲突时退回自行生成。
+   */
+  private async newMessageId(preferred?: string): Promise<string> {
+    if (preferred) {
+      const clash = await this.store.getMessage(preferred);
+      if (!clash) return preferred;
+      console.warn("[upload] 客户端预生成的消息 id 已存在，改用服务端生成的 id:", preferred);
+    }
+    return randomUUID();
   }
 
   /** 构造文件类消息（发送者 = 上传者设备；id 由调用方给定并用于引用计数登记） */

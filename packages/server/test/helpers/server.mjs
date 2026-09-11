@@ -118,11 +118,12 @@ export const device = (id = "dev-a", name = "user_test") => ({
   platform: "other",
 });
 
-/** 直传一个小文件（≤ 8MiB 走 direct 路径）；fp = 客户端算的文件特征值（前 1 MiB 的 SHA-256） */
-export async function uploadDirect(s, name, data, mime = "application/octet-stream", coverKey, fp) {
+/** 直传一个小文件（≤ 8MiB 走 direct 路径）；fp = 特征值，msgId = 客户端预生成的消息 id */
+export async function uploadDirect(s, name, data, mime = "application/octet-stream", coverKey, fp, msgId) {
   const q = new URLSearchParams({ name, mime, device: JSON.stringify(device()) });
   if (coverKey) q.set("coverKey", coverKey);
   if (fp) q.set("fp", fp);
+  if (msgId) q.set("msgId", msgId);
   const r = await fetch(`${s.base}/api/upload/direct?${q.toString()}`, {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
@@ -131,13 +132,13 @@ export async function uploadDirect(s, name, data, mime = "application/octet-stre
   return { status: r.status, json: await r.json() };
 }
 
-/** 分片上传（init → chunk × N → complete 全链路） */
-export async function uploadChunked(s, name, data, mime = "application/octet-stream", sha256) {
+/** 分片上传（init → chunk × N → complete 全链路）；opts.msgId = 客户端预生成的消息 id */
+export async function uploadChunked(s, name, data, mime = "application/octet-stream", sha256, opts = {}) {
   const init = await (
     await fetch(`${s.base}/api/upload/init`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, size: data.length, mime, sha256, device: device() }),
+      body: JSON.stringify({ name, size: data.length, mime, sha256, msgId: opts.msgId, device: device() }),
     })
   ).json();
   for (let i = 0; i < init.chunkCount; i++) {

@@ -7,6 +7,8 @@ export interface UploadSession {
   size: number;
   mime?: string;
   sha256?: string;
+  /** 客户端预生成的消息 id：组装完成后沿用，便于客户端认领上传占位卡 */
+  msgId?: string;
   chunkSize: number;
   chunkCount: number;
   createdAt: number;

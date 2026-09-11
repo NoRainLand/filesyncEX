@@ -149,6 +149,43 @@ describe("上传链路与磁盘卫生", () => {
     expect(fp1 === fp2).toBe(false);
   });
 
+  it("客户端预生成 msgId → 分片路径沿用同一个 id（响应与广播同 id，客户端才不会插出两条）", async () => {
+    const msgId = "11111111-2222-4333-8444-555555555555";
+    const data = Buffer.from("pre-generated message id");
+    const ws = await openWs(s);
+    ws.send({ type: "hello", device: device() });
+    await sleep(150);
+    const res = await uploadChunked(s, "preid.bin", data, "application/octet-stream", undefined, { msgId });
+    expect(res.status).toBe(200);
+    expect(res.json.msg.id).toBe(msgId); // HTTP 响应里的 id
+    await sleep(300);
+    const adds = ws.frames.filter((f) => f.type === "add" && f.msg?.file?.name === "preid.bin");
+    expect(adds.length).toBe(1); // 只广播一次
+    expect(adds[0].msg.id).toBe(msgId); // 广播里的 id 与响应一致
+    ws.close();
+  });
+
+  it("客户端预生成 msgId → 直传路径同样沿用（直传只有响应，没有广播）", async () => {
+    const msgId = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+    const up = await uploadDirect(s, "preid-direct.bin", Buffer.from("direct with msg id"), "application/octet-stream", undefined, undefined, msgId);
+    expect(up.status).toBe(200);
+    expect(up.json.msg.id).toBe(msgId);
+  });
+
+  it("客户端预生成 msgId 与已有消息冲突 → 服务端另行生成，不覆盖历史消息", async () => {
+    const first = await uploadDirect(s, "clash-1.bin", Buffer.from("first message"), "application/octet-stream");
+    expect(first.status).toBe(200);
+    const existingId = first.json.msg.id;
+    const second = await uploadDirect(s, "clash-2.bin", Buffer.from("second message"), "application/octet-stream", undefined, undefined, existingId);
+    expect(second.status).toBe(200);
+    expect(second.json.msg.id === existingId).toBe(false); // 冲突时必须换 id
+    // 两条消息都还在（历史消息没被覆盖）
+    const msgs = await (await fetch(s.base + "/api/msgs")).json();
+    const names = msgs.filter((m) => m.file).map((m) => m.file.name);
+    expect(names.includes("clash-1.bin")).toBe(true);
+    expect(names.includes("clash-2.bin")).toBe(true);
+  });
+
   it("同名但大小不同 → 不命中秒传（避免张冠李戴）", async () => {
     const data = Buffer.from("size matters for dedupe");
     const fp = createHash("sha256").update(data.subarray(0, 1024 * 1024)).digest("hex");
@@ -163,8 +200,7 @@ describe("上传链路与磁盘卫生", () => {
     expect(dup.existed).toBe(false);
   });
 
-  it("直传路径也建秒传索引：同名同大小同特征值 → 复用物理文件；索引列格式与 nameSizeKey 一致", async () => {
-    const data = Buffer.from("direct dedupe payload");
+  it("直传路径也建秒传索引：同名同大小同特征值 → 复用物理文件；索引列格式与 nameSizeKey 一致", async () => {    const data = Buffer.from("direct dedupe payload");
     const fp = createHash("sha256").update(data.subarray(0, 1024 * 1024)).digest("hex");
     const a = await uploadDirect(s, "direct-dup.bin", data, "application/octet-stream", undefined, fp);
     expect(a.status).toBe(200);

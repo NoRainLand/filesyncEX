@@ -2033,3 +2033,104 @@ better-sqlite3  无此问题（Node 18 下路径）
 
 - `package.json` 版本在本次会话期间为 **6.5.0**（工作区改动，未提交），产物名与 `/api/health` 版本一致。
 - 临时验证脚本（`_dev/_e2e_swap.mjs`、`_dev/_e2e_fail.mjs`、`_dev/_shot_finishing.mjs`、`_dev/_server_boot.mjs` 的组装延时参数）都在 `_dev/`（已 gitignore），不进产物。
+
+---
+
+## [6.6.0] 修复「上传一个文件出现两条相同消息」的幽灵消息竞态（用户「重大bug，上传一个文件变成两条相同的消息，刷新后消失，疑似你生成的『幽灵消息』」）
+
+### 1. 复现（先复现再改）
+
+新增 `_dev/_e2e_ghost.mjs`（真实浏览器 + 真实服务端 + 真机局域网 HTTP，客户端与服务端各查一遍）：
+上传一个文件后客户端 `stateMsgCount` 由 1 变 3、`duplicateStateIds` 里出现**同一个 id 两次**，
+而服务端库里只有 1 条 —— 与用户描述完全一致（第二条只存在于内存，所以刷新后消失）。
+
+### 2. 根因：同一条消息经两条路径到达，且顺序不确定
+
+服务端 `complete()` 是**先 `addMessage`（触发 WS 广播）再返回 HTTP 响应**，两者都会把消息送到本机：
+
+- 响应先到：`finishUpload()` 就把占位卡落成真实消息，并把 `rec.key` 换成真实消息 id；
+- 广播后到：`onAdd` 只按 `realId === msg.id` 找占位卡（此时响应分支并没有为「广播先到」这种情况设过 `realId`），
+  找不到 → 当成新消息**再 append 一次**。
+
+旧占位卡 id 是 `upload-<时间戳>-<随机>`，**与真实消息 id 毫无关系**，所以客户端无法把两者对上。
+（上一轮改动引入的就地替换机制本身没问题，问题在于「响应先到」这条分支没有留下可对上的线索。）
+
+### 3. 修复：客户端预生成消息 id（单一认领入口）
+
+- 新增 `packages/web/src/msgid.ts`：`uploadMsgId()` —— `crypto.randomUUID` 优先，局域网 HTTP 非安全上下文下回退到随机 v4 形态。
+- `packages/web/src/app.ts`：
+  - 上传前生成 `msgId`，占位卡 id = `upload-<msgId>`，并把 `msgId` 一路传给 `uploadFile`；
+  - 新增 **`promote(msg)` 作为「真实消息并入消息列表」的唯一入口**：按 `u.realId === msg.id || u.key === "upload-" + msg.id` 认领占位卡，
+    认领到就原地换内容，认领不到才 append（并保留 `id 去重` 兜底）；`onAdd` 与 `finishUpload` 都只调它。
+- `packages/web/src/api.ts`：`uploadFile(..., msgId)`；分片 init 与直传 query 都带上 `msgId`。
+- 协议/服务端：
+  - `packages/protocol/src/schema.ts`：`UploadInitReq.msgId`（可选）；
+  - `packages/server/src/upload.ts`：新增 `newMessageId(preferred)` —— **优先沿用客户端 id，但与库里已有消息冲突时改用服务端生成的 id**
+    （否则 `saveMessage` 的 `INSERT OR REPLACE` 会覆盖历史消息）；`complete()` 存会话时落 `msgId`，秒传分支也走它；
+  - `packages/server/src/HttpServer.ts`：直传 `?msgId=`；
+  - `packages/core/src/Store.ts` + `SqliteStore`：`UploadSession.msgId` + `uploads.msg_id` 列（含 `ALTER TABLE` 旧库迁移），
+    续传后仍能认领占位卡。
+
+### 4. 验证
+
+`_dev/_e2e_ghost.mjs`（客户端 `stateMsgCount`/`duplicateStateIds` + 服务端 `/api/msgs` 双向核对）：
+
+| 场景 | 结果 |
+|---|---|
+| 分片上传（图片），**广播先到**（代理把 complete 响应延迟 1.5s） | 客户端 1 条文件消息，无重复 id，与服务端 id 一致 |
+| 分片上传（普通文件），广播先到 | 同上 |
+| 分片上传（图片），响应先到 | 同上 |
+| 直传路径（≤ 直传阈值） | 响应 id == 客户端预生成 id，只 1 条 |
+| 连传 3 次 | 每次 +1（2→3→4），无重复 id，刷新前后一致，且与服务端条数相同 |
+
+新增回归用例（`packages/server/test/upload.test.mjs`）：分片路径「响应 id == 广播 id 且只广播一次」、
+直传路径沿用预生成 id、**id 冲突不覆盖历史消息**。Node 25 与 Node 18 均 **79 通过 0 失败**；
+上一轮的「不闪烁 / 正在完成上传」几何回归四种类型仍 `gap=0 / jump=0`（占位与真实卡高：图片视频 351、音频 146、文件 121）。
+
+打包验收：`pnpm package` → `release/filesyncex-6.6.0.exe`（71.18 MB），`_dev/_accept.mjs` **16/16 通过**。
+
+---
+
+## [6.6.2] 修复「消息一直显示占位卡 / 卡在 0%」（用户「消息显示又不正常了…我在文件夹下面临时放了一个 testRes 文件夹，里边有真实的音频、视频、图片，你自己测试下」）
+
+### 1. 用真实文件复现
+
+新增 `_dev/_e2e_real.mjs`：直接上传 `testRes/` 下的真实文件（`7pm.wav` 38.6MB、一张 0.3MB 真实 JPG、`gode.zip` 213.2MB、`最忧郁的两人.mp4` 4.3MB），
+并在页面里打印**上传记录与消息列表的逐帧时间线**。四种文件**全部**卡在占位卡（0%、「正在上传…」），刷新后才正常；服务端其实都已正确落库。
+
+### 2. 根因：占位卡的 id 换得太晚，且「外观」被绑在 id 前缀上
+
+时间线（图片，最易命中）：
+
+```
+t=0     uploads=["upload-<id>|0|preparing"]   msgs=[...,"upload-<id>"]
+t=251   uploads=["upload-<id>|100|-|S"]       msgs=[...,"upload-<id>"]   ← 已揭层，但消息 id 没换
+t=3145  uploads=[]                             msgs=[...,"upload-<id>"]   ← 记录被收掉，id 仍是占位 id
+```
+
+- 占位卡 id 原本只由 `finishUpload()` 的 **340ms 定时器**换成真实 id；
+- 「揭层」是等真实缩略图 `onload`，**图片解码常常比 340ms 更快** → `markThumbReady()` 先把上传记录收掉；
+- 定时器再跑时找不到记录（`if (!this.uploads.includes(rec)) return;`）→ **消息永远带着 `upload-` 前缀的 id**；
+- `renderMsg` 只按「id 以 `upload-` 开头」判断占位卡（这是上一轮幽灵消息修复引入的耦合），
+  于是这条**已经拿到真实内容**的消息被当成占位卡渲染，而记录又不存在 → 退回 `pct=0 / phase=uploading` 的兜底外观。
+
+### 3. 修复
+
+- `packages/web/src/app.ts`：
+  1. `promote()` 认领占位卡时**同一帧内**完成「内容替换 + id 换成真实 id + `rec.key` 同步」；
+     「占位外观」只由显式的 `rec.settling` 控制，**不再依赖 id 前缀**，id 与内容不会再脱节。
+  2. `finishUpload(realId)` 不再用定时器赌时序：立即换 id，且只在「消息仍带占位 id」时收尾（广播已到就交给 `promote()`）。
+  3. `markThumbReady(url)` 改为**只收「等的就是这张图」的记录**（新增 `UploadRec.thumbUrl`）；
+     此前它把所有 `settling` 记录一起收掉，另一个上传的图片 `onload` 会误伤还在揭层的记录。
+- 顺手清掉定位期间加的临时调试代码（`window.__dbg` 埋点）。
+
+### 4. 验证
+
+- **真实文件**（`_dev/_e2e_real.mjs`，客户端 + 服务端双向核对）：四种文件全部落地为真实卡片
+  （`card audio` / `card image` / `card file` / `card video`），图片消息 id 在 **~250ms** 内即变为真实 id，
+  服务端消息列表与客户端一致，客户端控制台无 error/warning。
+- **几何回归**：`_dev/_e2e_swap.mjs` 四种类型仍 `gap=0 / jump=0`（占位与真实卡高：图片视频 351、音频 146、文件 121）。
+- **幽灵消息回归**：`_dev/_e2e_ghost.mjs` 连传多次无重复 id。
+- **服务端测试**：Node 25 / Node 18 均 **79 通过 0 失败**；web `tsc` 通过。
+- **打包验收**：`pnpm package` → `release/filesyncex-6.6.2.exe`（71.18 MB），`_dev/_accept.mjs` **16/16 通过**。
+- `docs/NOTES.md` 新增 §3.4（含时间线与教训：外观状态不要用 id 形态表达）。

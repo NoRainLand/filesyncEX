@@ -6,6 +6,7 @@ import type { DeviceInfoT, MsgDataT } from "@filesyncex/protocol";
 import { getDevice, saveDevice } from "./device.js";
 import { WsClient } from "./ws.js";
 import { uploadFile, FALLBACK_LIMITS, apiUploadCover, apiUploadMsgCover, fetchHealth, fmtLimitBytes, type UploadLimitsT } from "./api.js";
+import { uploadMsgId } from "./msgid.js";
 import type { Lang } from "./i18n.js";
 import { loadLang, saveLang, dict, dayLabel, fmtType } from "./i18n.js";
 import prismTheme from "./prism-theme.css?inline";
@@ -169,18 +170,7 @@ export class FilesyncApp extends LitElement {
         if (level === "maintenance") this.ws?.close();
       },
       onWelcome: (_s, msgs, peers) => { this.msgs = msgs; this.peers = peers; this.scrollToLatest(); },
-      onAdd: (msg) => {
-        if (this.msgs.some((m) => m.id === msg.id)) return;
-        // 本机刚上传完的文件：把「占位卡」原地换成真实消息（而不是删掉再插入），避免闪一下
-        const rec = this.uploads.find((u) => u.realId === msg.id);
-        if (rec) {
-          this.msgs = this.msgs.map((m) => (m.id === rec.key ? { ...msg, ts: m.ts, id: rec.key, sender: m.sender } : m));
-          this.settleUpload(rec, msg);
-        } else {
-          this.msgs = [...this.msgs, msg];
-          this.scrollToLatest();
-        }
-      },
+      onAdd: (msg) => { this.promote(msg); },
       onUpdate: (msg) => { this.msgs = this.msgs.map((m) => (m.id === msg.id ? msg : m)); },
       onDel: (id) => { this.msgs = this.msgs.filter((m) => m.id !== id); },
       onPeers: (peers) => { this.peers = peers; },
@@ -450,9 +440,12 @@ export class FilesyncApp extends LitElement {
   private async handleFiles(files: FileList | File[] | null): Promise<void> {
     if (!files) return;
     for (const file of Array.from(files as File[])) {
-      const key = `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      // 消息 id **本机预先生成**：占位卡 id = `upload-<msgId>`，服务端沿用 msgId 广播/返回，
+      // 于是「WS 广播」与「HTTP 响应」两条路径无论谁先到，都能认领同一个占位卡（见 promote()）。
+      const msgId = uploadMsgId();
+      const key = "upload-" + msgId;
       const kind = fileKind(file.name, file.type);
-      const rec: UploadRec = { key, name: file.name, pct: 0, size: file.size, kind, file };
+      const rec: UploadRec = { key, msgId, name: file.name, pct: 0, size: file.size, kind, file };
       this.uploads = [...this.uploads, rec];
       // 在消息列表插入「按类型尺寸的占位卡」（16:9 图片视频 / 播放条音频 / 图标行文件）；真实消息经 WS 广播后替换
       const placeholder: MsgDataT = {
@@ -477,10 +470,10 @@ export class FilesyncApp extends LitElement {
           },
           rec.coverKey,
           // 阶段提示：0% 时告知「正在准备/上传」，分片传完后告知「正在完成上传」，避免看起来卡死
-          (phase) => { rec.phase = phase; if (phase === "finishing") rec.pct = 100; this.uploads = [...this.uploads]; }
+          (phase) => { rec.phase = phase; if (phase === "finishing") rec.pct = 100; this.uploads = [...this.uploads]; },
+          msgId
         );
-        // 上传成功：**不删**占位卡 —— 记下真实消息 id，等 WS 广播到达时原地替换（避免「删掉再插入」闪一下）。
-        // 直传路径服务端不广播（res.msg 直接返回），这里立即就地落成真实消息。
+        // 上传成功：**不删**占位卡 —— 由 promote() 在广播/响应到达时原地换成真实消息（避免「删掉再插入」闪一下）
         this.finishUpload(rec, res.msg?.id, res.msg);
       } catch (e) {
         // 预期内的拒绝（如超过单文件上限）用 warn，真正的异常才用 error —— 避免污染控制台错误面板
@@ -508,42 +501,71 @@ export class FilesyncApp extends LitElement {
   private onDrop(e: DragEvent): void { e.preventDefault(); void this.handleFiles(e.dataTransfer?.files ?? null); }
 
   /**
+   * 把一条真实消息并入消息列表（**唯一入口**）。
+   *
+   * 本机上传的文件有两条到达路径，且顺序不确定：
+   *   ① WS 广播（服务端在 `complete` 里先广播再回 HTTP 响应）；
+   *   ② HTTP 响应的 `res.msg`。
+   * 谁先到都要收敛到「占位卡原地变成真实消息」这一个结果，否则就会**同一条消息插两次**（现象：上传一个文件出现两条相同消息，
+   * 刷新后只剩一条 —— 因为第二条只存在于内存）。
+   *
+   * 因此判定占位卡的依据取「真实消息 id」在两条路径上都能用：`realId === msg.id`（响应先到时会记下），
+   * 或占位卡 id 恰好是 `upload-<msg.id>`（上传前预先生成的 id，服务端会沿用）。
+   */
+  private promote(msg: MsgDataT): void {
+    const rec = this.uploads.find((u) => u.realId === msg.id || u.key === "upload-" + msg.id);
+    if (rec) {
+      // 认领到占位卡：**立刻**把消息 id 换成真实 id（同一帧内，消息列表与上传记录同步改），
+      // 再进入「揭层」状态（占位外观保留到缩略图解码完成）。
+      // 不能把换 id 留到定时器里做：占位卡可能先被收尾（记录被移除），那时再找就找不到了，
+      // 消息会永远带着 `upload-` 前缀的 id，渲染时又被当成占位卡 —— 表现为「消息卡在 0% / 占位」。
+      const placeholderKey = this.msgs.some((m) => m.id === rec.key) ? rec.key : null;
+      if (placeholderKey) this.msgs = this.msgs.map((m) => (m.id === placeholderKey ? { ...msg, ts: m.ts, sender: m.sender } : m));
+      else if (!this.msgs.some((m) => m.id === msg.id)) this.msgs = [...this.msgs, msg];
+      // 先记下身份再改 key：两条到达路径都靠 realId 认领，不能出现「key 已改但 realId 还没记」的窗口
+      rec.realId = msg.id;
+      rec.key = msg.id;
+      this.settleUpload(rec, msg);
+      return;
+    }
+    // 没有对应占位卡：直接追加（别的设备发的消息，或本机上传但占位卡已收尾）
+    if (!this.msgs.some((m) => m.id === msg.id)) this.msgs = [...this.msgs, msg];
+    this.scrollToLatest();
+  }
+
+  /**
    * 上传收尾：把占位卡原地换成真实消息。
    *
    * 关键点是**不要**「先删占位卡、等广播再插入」—— 那是两次独立渲染，中间会有一帧空档（表现为闪一下）。
-   * 这里保留占位元素（id 仍是 upload-<key>），只把内容换成真实消息，id 留到动画结束后再改，
-   * 于是整个切换只有一次重绘、没有空档。
+   * 这里同一帧内把消息换成真实内容、id 也换成真实 id，只是**暂时保留占位外观**（`settling`），
+   * 等缩略图解码完成后磨砂层淡出，于是整个切换只有一次重绘、没有空档。
    *
    * @param realId 真实消息 id；WS 广播尚未到达（或已到达）时都能正确收敛
    * @param msg    直传路径服务端不广播，直接把响应里的消息就地落成真实消息
    */
   private finishUpload(rec: UploadRec, realId: string | undefined, msg?: MsgDataT): void {
-    const key = rec.key; // 占位卡 id（先存下来，下面要把 rec.key 换成真实 id）
-    // 响应里带回真实消息（直传路径服务端不广播）→ 原地落成真实消息，不留第二次重绘
+    // 响应里带回真实消息（直传路径服务端不广播）→ 走统一入口原地落成真实消息；广播已先到时那里也已处理过
     if (msg) {
-      this.msgs = this.msgs.map((m) => (m.id === key ? { ...msg, ts: m.ts, sender: m.sender } : m));
-      rec.key = msg.id;
-      this.settleUpload(rec, msg);
+      this.promote(msg);
       return;
     }
     if (!realId) return; // 服务端没给出 id（极端情况）：留在「正在完成上传」，等广播接管
-    // WS 广播可能比 HTTP 响应先到：先把 id 记到记录上，广播到达时 onAdd 即可原地替换
-    rec.realId = realId;
+    rec.realId = realId; // 广播可能比响应先到；onAdd 会据此把占位卡原地替换
+    // 广播还没到：先把消息 id 换成真实 id（与上传记录同步改），再给它一点时间等广播；
+    // 只有「消息仍带着占位卡 id」时才由这里收尾 —— 广播到了就由 promote() 负责，避免重复处理。
+    const placeholderKey = rec.key;
+    if (!this.msgs.some((m) => m.id === placeholderKey)) return;
+    this.msgs = this.msgs.map((m) => (m.id === placeholderKey ? { ...m, id: realId, sender: this.self ?? m.sender } : m));
+    rec.key = realId;
+    const real = this.msgs.find((m) => m.id === realId);
+    if (real && this.uploads.includes(rec)) this.settleUpload(rec, real);
+    // WS 一直没把消息推回来：占位卡先停在「正在完成上传」，再给一句兜底文案，避免误以为失败
     window.setTimeout(() => {
-      // 广播已先到并完成了替换（该 id 已在消息列表里）→ 这里什么都不做
-      if (this.msgs.some((m) => m.id === realId)) return;
-      this.msgs = this.msgs.map((m) => (m.id === key ? { ...m, id: realId, sender: this.self ?? m.sender } : m));
-      rec.key = realId;
-      const real = this.msgs.find((m) => m.id === realId);
-      if (real) this.settleUpload(rec, real);
-      // WS 一直没把消息推回来：占位卡先停在「正在完成上传」，再给一句兜底文案，避免误以为失败
-      window.setTimeout(() => {
-        if (!this.uploads.includes(rec)) return;
-        rec.phase = "saved";
-        rec.settling = false;
-        this.uploads = [...this.uploads];
-      }, 12000);
-    }, 340);
+      if (!this.uploads.includes(rec)) return;
+      rec.phase = "saved";
+      rec.settling = false;
+      this.uploads = [...this.uploads];
+    }, 12000);
   }
 
   /** 记账：标记「不再展示占位外观」，然后等缩略图解码（或兜底超时）后从上传队列移除 */
@@ -555,18 +577,26 @@ export class FilesyncApp extends LitElement {
     const url = msg.kind === "image" ? (msg.file?.url ?? "") : msg.kind === "video" ? (msg.file?.cover ?? "") : "";
     if (!url) {
       // 音频/普通文件没有缩略图要等，直接揭层（渲染结构本来就与真实卡片一致）
+      rec.thumbUrl = "";
       setTimeout(() => this.markThumbReady(""), 340);
       return;
     }
+    rec.thumbUrl = url;
     // 兜底：图片解码失败 / 网速极慢时不能一直挂着占位卡
     window.setTimeout(() => this.markThumbReady(url), 3000);
   }
 
-  /** 缩略图解码完成（img onload/onerror，兜底定时器也会调用）→ 揭掉占位层并收掉已完成的上传记录 */
+  /**
+   * 缩略图解码完成（img onload/onerror，兜底定时器也会调用）→ 揭掉占位层并收掉对应的上传记录。
+   *
+   * 只收「等的就是这张图」的记录（`thumbUrl` 相同）或没有图可等的（`thumbUrl === ""`）——
+   * 否则另一个上传的图片 onload 可能把还在揭层的记录一起收掉，那条消息就会失去占位外观的依据。
+   */
   private markThumbReady(url: string): void {
     if (url && this.readyThumbs.has(url)) return;
     if (url) this.readyThumbs = new Set(this.readyThumbs).add(url);
-    if (this.uploads.some((u) => u.settling)) this.uploads = this.uploads.filter((u) => !u.settling);
+    const done = this.uploads.filter((u) => u.settling && (u.thumbUrl ?? "") === url);
+    if (done.length) this.uploads = this.uploads.filter((u) => !done.includes(u));
   }
 
   /** 视频首帧封面：本地取帧（ObjectURL + video + canvas）→ 上传到服务器 → 返回 coverKey；失败返回 undefined */

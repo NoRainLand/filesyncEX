@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| 版本 | `6.6.0` |
+| 版本 | `6.6.2` |
 | 语言 / 运行环境 | TypeScript；**开发请用 Node 18**（见[开发环境要求](#开发环境要求重要)），打包产物为 Windows x64 单文件 exe |
 | 包管理 | pnpm workspace（5 包 monorepo） |
 | 授权 | GPL-2.0-or-later |
@@ -333,7 +333,7 @@ pnpm --filter @filesyncex/server test security   # 只跑文件名含 security �
 ### 改版本号
 
 ```bash
-pnpm run set-version 6.6.0     # 例：6.6.0 → 6.6.0pnpm test                      # 可选：版本号唯一来源用例会校验一致性
+pnpm run set-version 6.6.2     # 例：6.6.2 → 6.6.2pnpm test                      # 可选：版本号唯一来源用例会校验一致性
 ```
 
 版本号是**单一来源**（根 `package.json`），脚本只改这 7 处：根 + 5 个子包 `package.json` 的 `version`、README 顶部版本行。
