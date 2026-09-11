@@ -4,7 +4,7 @@ import type { MsgDataT } from "@filesyncex/protocol";
 import type { Lang } from "../i18n.js";
 import { dayLabel, fmtType } from "../i18n.js";
 import { FALLBACK_LIMITS, type UploadLimitsT } from "../api.js";
-import { fmtTime, fmtSize, ellipsizeFileName, fileKind, waveBars } from "./helpers.js";
+import { fmtTime, fmtSize, fmtDur, ellipsizeFileName, fileKind, waveBars } from "./helpers.js";
 import { highlightCode } from "./prism.js";
 import { I_FILE, I_IMG, I_COPY, I_DOWN, I_PLAY, I_PAUSE, I_TRASH } from "./icons.js";
 import { LANG_LIST, langLabel } from "./lang.js";
@@ -203,13 +203,13 @@ export function renderMsg(app: AppCtx, m: MsgDataT): unknown {
       if (media) {
         phBody = html`<div class="ph-body">${blur}<span class="ph-icon-bg">${uk === "video" ? html`<span class="ph-vplay">▶</span>` : I_IMG}</span>${ring}</div>`;
       } else if (uk === "audio") {
-        phBody = html`<div class="ph-body audio">${blur}<div class="ph-ap"><span class="ph-play">${I_PLAY}</span><div class="ph-wave">${waveBars()}<i class="fill"></i><i class="ind"></i></div></div>${ring}</div>`;
+        phBody = html`<div class="ph-body audio">${blur}<div class="ph-ap"><span class="ph-play">${I_PLAY}</span><div class="ph-wave">${waveBars(undefined, f?.name ?? "")}<i class="fill"></i><i class="ind"></i></div></div>${ring}</div>`;
       } else {
         phBody = html`<div class="ph-body file">${blur}<span class="ph-ic">${I_FILE}</span>${ring}</div>`;
       }
       // 文件/音频卡没有信息行（卡高必须与真实卡一致），失败提示改为叠在主体底部的一行小字
       if (failed && !media) {
-        phBody = html`<div class="ph-body ${uk}">${blur}${uk === "audio" ? html`<div class="ph-ap"><span class="ph-play">${I_PLAY}</span><div class="ph-wave">${waveBars()}<i class="fill"></i><i class="ind"></i></div></div>` : html`<span class="ph-ic">${I_FILE}</span>`}${ring}<span class="ph-fail">${retryable ? app.t("resume_click") : app.t("upload_failed_ph")}</span></div>`;
+        phBody = html`<div class="ph-body ${uk}">${blur}${uk === "audio" ? html`<div class="ph-ap"><span class="ph-play">${I_PLAY}</span><div class="ph-wave">${waveBars(undefined, f?.name ?? "")}<i class="fill"></i><i class="ind"></i></div></div>` : html`<span class="ph-ic">${I_FILE}</span>`}${ring}<span class="ph-fail">${retryable ? app.t("resume_click") : app.t("upload_failed_ph")}</span></div>`;
       }
       // 信息行（同真实消息 .mm：文件名 + 大小；失败的大文件提示可点击续传）
       const mm = html`<div class="ph-mm"><span class="name ${retryable ? "retry" : ""}">${failed ? (retryable ? app.t("resume_click") : app.t("upload_failed_ph")) : f?.name ? ellipsizeFileName(f.name) : app.t("upload_ph")}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>`;
@@ -278,10 +278,10 @@ export function renderMsg(app: AppCtx, m: MsgDataT): unknown {
         content = html`<div class="card audio ${app.playingId === m.id ? "playing" : ""}" data-id="${m.id}">
             <div class="ap">
               <button class="play" @click=${() => { if (app.debounceKey("play-" + m.id, 400)) app.toggleAudio(m); }}>${app.playingId === m.id ? I_PAUSE : I_PLAY}</button>
-              <div class="wave" @click=${(e: MouseEvent) => app.seekAudio(m, e)}>${waveBars()}<i class="fill"></i><i class="ind"></i></div>
+              <div class="wave" @click=${(e: MouseEvent) => app.seekAudio(m, e)}>${waveBars(f?.peaks, f?.name ?? "")}<i class="fill"></i><i class="ind"></i></div>
               <audio src="${app.audioSrc(m) ?? ""}" preload="none"></audio>
             </div>
-            <div class="mm"><span class="name">${f?.name ? ellipsizeFileName(f.name) : app.t("audio_name")}</span><span class="size">${f ? fmtSize(f.size) : ""}</span></div>
+            <div class="mm"><span class="name">${f?.name ? ellipsizeFileName(f.name) : app.t("audio_name")}</span><span class="size">${f ? fmtSize(f.size) : ""}${f?.dur ? html` · ${fmtDur(f.dur)}` : ""}</span></div>
             <div class="ops">${downBtn}</div>${delBtn}
           </div>`;
         break;

@@ -6,7 +6,7 @@ import type { ServerConfig } from "./config.js";
 import type { UploadService } from "./upload.js";
 import { SyncEngine } from "@filesyncex/core";
 import { lanAddress, lanAddresses } from "./net.js";
-import { decodeToChannels, toWavBuffer } from "./wave.js";
+import { decodeToChannels, computePeaks, toWavBuffer } from "./wave.js";
 import { ZipWriter } from "./zip.js";
 import { adminToken, requireAdmin } from "./auth.js";
 import { APP_VERSION } from "./version.js";
@@ -33,6 +33,10 @@ function toBuffer(body: unknown): Buffer | null {
   if (ArrayBuffer.isView(body)) return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
   return null;
 }
+/* 波形峰值缓存：key → { peaks, dur }（给老消息兜底时算过一次就记住） */
+const PEAKS_CACHE_MAX = 64;
+const peaksCache = new Map<string, { peaks: number[]; dur: number }>();
+
 /** 写缓存，超出上限淘汰最久未用 */
 function streamCacheSet(key: string, buf: Buffer): void {
   streamCache.delete(key);
@@ -374,6 +378,26 @@ export function createHttpApp(cfg: ServerConfig, engine: SyncEngine, uploads: Up
     }
     res.setHeader("Content-Length", total);
     res.send(wav);
+  });
+
+  /* 音频波形峰值：给「上传时没算出峰值」的老消息补一次（并在算完后写回元数据，此后走广播/元数据即可）。
+     正常情况下上传流程已经算好并写进 file.peaks，这个接口只是兜底。 */
+  app.get("/api/peaks/:key", async (req, res) => {
+    const key = String(req.params.key);
+    const cached = peaksCache.get(key);
+    if (cached) return res.json(cached);
+    const p = uploads.filePath(key);
+    if (!p) return res.status(404).json({ error: "文件不存在" });
+    const decoded = await decodeToChannels(p);
+    if (!decoded?.channelData?.length) return res.status(415).json({ error: "不支持的音频格式" });
+    const { peaks, dur } = computePeaks(decoded);
+    const body = { peaks, dur };
+    peaksCache.set(key, body);
+    if (peaksCache.size > PEAKS_CACHE_MAX) {
+      const oldest = peaksCache.keys().next().value;
+      if (oldest !== undefined) peaksCache.delete(oldest);
+    }
+    res.json(body);
   });
 
   /* 静态资源：构建后的前端（pkg 打包时目录由 shell 注入） */

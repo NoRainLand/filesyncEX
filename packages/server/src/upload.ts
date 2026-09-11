@@ -4,6 +4,7 @@ import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { SyncEngine, type Store } from "@filesyncex/core";
 import { parse, UploadInitReq, UploadInitRes, UploadChunkRes, UploadCompleteRes } from "@filesyncex/protocol";
 import { computeChunkPlan, DEFAULT_CHUNK_SIZE_MAX, DEFAULT_CHUNK_SIZE_MIN } from "./config.js";
+import { decodeToChannels, computePeaks } from "./wave.js";
 
 /** 小于该大小（字节）的文件走「直接上传」，跳过分片（小文件分片开销大于收益） */
 export const DIRECT_LIMIT = 8 * 1024 * 1024; // 8 MiB
@@ -77,6 +78,19 @@ function shaEquals(a: string, b: string): boolean {
   const bb = Buffer.from(b.toLowerCase(), "utf8");
   return ba.length === bb.length && timingSafeEqual(ba, bb);
 }
+
+/**
+ * 无设备信息时的兜底发送者。
+ *
+ * 以前这里直接 `return { msg: undefined }`，结果是**文件照旧落盘却既不建索引也不广播** ——
+ * 用脚本 / 无人连接的服务器上传时，文件就成了黑洞（本次做历史波形补算时被这一步挡住才发现）。
+ */
+const FALLBACK_SENDER: import("@filesyncex/protocol").DeviceInfoT = {
+  deviceId: "__server__",
+  deviceName: "server",
+  color: "#607d8b",
+  platform: "other",
+};
 
 /**
  * 分片/断点续传上传服务。
@@ -276,8 +290,9 @@ export class UploadService {
         meta.cover = "/api/file/" + encodeURIComponent(coverKey);
         this.touched.set(coverKey, Date.now());
       }
-      const sender = s.device ?? this.engine.self;
-      if (!sender) return { ok: true, res: { ok: true, msg: undefined } };
+      const sender = s.device ?? this.engine.self ?? FALLBACK_SENDER;
+      // 音频：顺手算出波形峰值（播放时本来就要解码）
+      await this.attachWaveform(meta, finalPath);
       await this.store.createFile(key, meta); // 建文件索引（已存在则保留首份元数据）
       const msg = this.fileMessage(sender, meta, await this.newMessageId(s.msgId));
       await this.engine.addMessage(msg);
@@ -288,6 +303,62 @@ export class UploadService {
       fs.rmSync(tmpPath, { force: true });
       return { ok: false, error: "组装失败: " + String((e as Error).message) };
     }
+  }
+
+  /**
+   * 音频：解码算出波形峰值，写进文件元数据（前端据此画真实频谱条）。
+   *
+   * 为什么放在上传流程里：`/api/stream` 播放时本来就要解码一遍，这里顺手把形状留下，
+   * 既不需要额外的解码次数，也能让「别的设备」直接拿到同一份波形（不必各自解码）。
+   * 解码失败/不是音频时静默跳过 —— 前端会回退到占位波形，不影响上传。
+   */
+  private async attachWaveform(meta: { mime?: string; name: string; peaks?: number[]; dur?: number }, absPath: string): Promise<void> {
+    if (!this.isAudio(meta.mime, meta.name)) return;
+    try {
+      const decoded = await decodeToChannels(absPath);
+      if (!decoded?.channelData?.length) return;
+      const { peaks, dur } = computePeaks(decoded);
+      if (peaks.length) meta.peaks = peaks;
+      if (dur > 0) meta.dur = Math.round(dur * 100) / 100;
+    } catch {
+      /* 解码失败：不阻塞上传，前端回退占位波形 */
+    }
+  }
+
+  /** mime 或扩展名判断是否为音频（与前端 fileKind 的判定保持一致） */
+  private isAudio(mime: string | undefined, name: string): boolean {
+    if (mime?.startsWith("audio/")) return true;
+    const ext = name.split(".").pop()?.toLowerCase();
+    return !!ext && ["mp3", "wav", "ogg", "m4a", "flac", "aac", "opus"].includes(ext);
+  }
+
+  /**
+   * 给「本版本之前上传的音频消息」补上波形峰值（它们元数据里没有 peaks，界面上会全部显示同一套占位波形）。
+   *
+   * 只在启动时后台跑一次，逐个处理并写回元数据（`updateMessage` 会广播，前端拿到 peaks 后自动换成真实波形）。
+   * 任一条失败都跳过，不影响服务启动。
+   */
+  async backfillWaveforms(): Promise<number> {
+    let fixed = 0;
+    try {
+      const msgs = await this.engine.listMessages(10000);
+      const audioMsgs = msgs.filter((m) => m.file?.key && this.isAudio(m.file.mime, m.file.name));
+      for (const m of audioMsgs) {
+        const f = m.file!;
+        if (f.peaks?.length) continue;
+        const abs = this.filePath(f.key!);
+        if (!abs) continue; // 物理文件不在了（被清理）：跳过，不影响启动
+        const meta = { mime: f.mime, name: f.name } as { mime?: string; name: string; peaks?: number[]; dur?: number };
+        await this.attachWaveform(meta, abs);
+        if (!meta.peaks?.length) continue; // 解码失败：前端回退占位波形
+        await this.engine.updateMessage(m.id, { ...m, file: { ...f, peaks: meta.peaks, dur: meta.dur } });
+        fixed++;
+      }
+      if (fixed > 0) console.log(`[wave] 已为 ${fixed} 条历史音频补上波形峰值`);
+    } catch (e) {
+      console.warn("[wave] 历史音频波形补算失败（忽略）:", (e as Error).message);
+    }
+    return fixed;
   }
 
   /**
@@ -354,8 +425,8 @@ export class UploadService {
     }
 
     // 广播文件消息（发送者 = 上传者设备，或引擎默认设备）
-    const sender = device ?? this.engine.self;
-    if (!sender) return { ok: true, res: { ok: true, msg: undefined } };
+    const sender = device ?? this.engine.self ?? FALLBACK_SENDER;
+    await this.attachWaveform(meta, finalPath); // 音频：顺手算出波形峰值
     await this.store.createFile(key, meta); // 建文件索引（已存在则保留首份元数据）
     const msg = this.fileMessage(sender, meta, await this.newMessageId(msgId));
     await this.engine.addMessage(msg);

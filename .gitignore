@@ -44,4 +44,6 @@ _dev/
 # 系统 / 编辑器
 .DS_Store
 Thumbs.db
-testFiles
+
+# 测试文件夹
+TestRes

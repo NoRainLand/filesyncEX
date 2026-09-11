@@ -2134,3 +2134,43 @@ t=3145  uploads=[]                             msgs=[...,"upload-<id>"]   ← �
 - **服务端测试**：Node 25 / Node 18 均 **79 通过 0 失败**；web `tsc` 通过。
 - **打包验收**：`pnpm package` → `release/filesyncex-6.6.2.exe`（71.18 MB），`_dev/_accept.mjs` **16/16 通过**。
 - `docs/NOTES.md` 新增 §3.4（含时间线与教训：外观状态不要用 id 形态表达）。
+
+---
+
+## [6.6.2] 音频频谱图不再是「所有音频一个样」（用户「为什么现在的音频的频谱图都一样了？我在根目录下放了一个 TestRes 文件夹，里边有真实的音频文件」）
+
+### 1. 根因：频谱条本来就是写死的假图案
+
+`packages/web/src/ui/helpers.ts` 的 `waveBars()` 用 `Math.sin(i*12.9898)*43758.5453` 生成一段**固定伪随机**柱高，
+不读任何音频数据 —— 因此每条音频消息的频谱**必然一模一样**。它从一开始就是占位骨架，真实音乐文件多起来才暴露。
+
+### 2. 修复：画真实波形（振幅包络）
+
+- `packages/server/src/wave.ts`：新增 `PEAK_BUCKETS = 96` 与 `computePeaks(decoded, buckets)` ——
+  按下标均匀切 96 个时间桶，取每桶**跨声道绝对值峰值**，按最大值归一化到 0~100（静音段保底 4）；桶大时按步进抽样（≤2048 点/桶）。
+- `packages/server/src/upload.ts`：新增 `attachWaveform(meta, absPath)`，在音频落盘后调用一次，把 `peaks` / `dur` 写进文件元数据。
+  播放走 `/api/stream` 本来就要解码一遍，这里**不增加解码次数**（实测 55MB WAV：解码 ~200ms + 取峰值 7ms）。
+  另新增 `backfillWaveforms()`：启动时后台为**历史音频**补算波形并 `updateMessage`（会广播，前端自动换真实波形）。
+- `packages/protocol/src/schema.ts`：`FileMeta.peaks`（0~100 整数数组）、`FileMeta.dur`（秒）。
+- `packages/web/src/ui/helpers.ts`：`waveBars(peaks, seed)` —— 有真实峰值按它画；没有则回退到**按文件名做种子的确定性伪随机**
+  （仍假但每条不同且稳定）；新增 `fmtDur()`。
+- `packages/web/src/ui/messages.ts`：音频卡用 `waveBars(f?.peaks, f?.name)`，信息行显示时长（如 `1:57`）。
+- `packages/server/src/HttpServer.ts`：兜底接口 `GET /api/peaks/:key`（LRU 缓存 64 条）。
+- `packages/server/src/index.ts`：启动时 `void uploads.backfillWaveforms()`（后台跑，不阻塞启动）。
+
+### 3. 顺带修掉一个隐患
+
+`complete()` / `finalize()` 里「拿不到发送者设备就 `return { msg: undefined }`」会让文件**落盘但不建索引、不广播**
+（脚本上传或服务端无人连接时上传等于黑洞；本次做历史波形补算时正是被这一步挡住才发现）。
+改为回退 `FALLBACK_SENDER`（deviceId `__server__`）。
+
+### 4. 验证
+
+- `_dev/_e2e_wave.mjs`（上传 `TestRes/` 四条真实音频，页面 + 服务端双向核对）：
+  四条音频服务端都带 96 个峰值且时长正确（2:45 / 1:57 / 1:21 / 2:29），
+  页面柱子与元数据**逐项一致**，且**四条两两不同**（服务端 4 种 / 页面 4 种波形）。
+- `_dev/_e2e_backfill.mjs`：把音频消息的 peaks 抹掉 → 重启 → 自动补回 96 个峰值（日志 `[wave] 已为 1 条历史音频补上波形峰值`）。
+- 截图人工确认 `_dev/_shot_wave.png`：三条音频波形形状明显不同，时长显示正常。
+- 服务端测试 Node 25 / Node 18 均 **79 通过 0 失败**；四个包 `tsc` 全过；
+  `pnpm package` → `release/filesyncex-6.6.2.exe`（71.19 MB），`_dev/_accept.mjs` **16/16 通过**。
+- `docs/NOTES.md` 新增 §3.5。

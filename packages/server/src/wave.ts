@@ -126,8 +126,50 @@ function decodeWav(buf: Buffer): Decoded | null {
   return { channelData, sampleRate: fmt.sampleRate };
 }
 
-/** 转码流：把解码后的多声道 PCM 编码为 16-bit PCM WAV Buffer（浏览器原生可播） */
-export function toWavBuffer(decoded: Decoded): Buffer {
+/** 波形峰值条数（与前端 .card.audio .wave 的柱数一致；前端为移动端每 3 根显示 1 根） */
+export const PEAK_BUCKETS = 96;
+
+/**
+ * 从解码后的 PCM 算出波形峰值（0~100 整数数组）。播放本来就要解码（/api/stream），
+ * 所以这里不额外增加解码成本，只是顺手把形状留下来给前端画真实频谱。
+ *
+ * 说明：这是**振幅包络**（每个时间桶的峰值），不是 FFT 频谱。
+ * 形状按最大值归一化，因此音量很小的录音（比如你刚上传的这首）也能看清轮廓。
+ */
+export function computePeaks(decoded: Decoded, buckets = PEAK_BUCKETS): { peaks: number[]; dur: number } {
+  const { channelData, sampleRate } = decoded;
+  const ch = channelData.length;
+  const n = channelData[0]?.length ?? 0;
+  if (ch === 0 || n <= 0) return { peaks: [], dur: 0 };
+  const dur = sampleRate > 0 ? n / sampleRate : 0;
+
+  // 按下标均匀切桶（floor 边界），保证最后一段也落在某个桶里
+  const at = (b: number): number => Math.floor((b * n) / buckets);
+  const raw: number[] = [];
+  for (let b = 0; b < buckets; b++) {
+    const start = at(b);
+    const end = b === buckets - 1 ? n : Math.max(at(b + 1), start + 1);
+    let peak = 0;
+    // 采样步进：桶很大时不必逐样本扫（峰值足够代表形状，也避免大文件卡住事件循环）
+    const step = Math.max(1, Math.floor((end - start) / 2048));
+    for (let c = 0; c < ch; c++) {
+      const data = channelData[c]!;
+      for (let i = start; i < end; i += step) {
+        const v = Math.abs(data[i] ?? 0);
+        if (v > peak) peak = v;
+      }
+    }
+    raw.push(peak);
+  }
+
+  const max = raw.reduce((m, v) => (v > m ? v : m), 0);
+  if (max <= 0) return { peaks: raw.map(() => 0), dur };
+  // 归一化到 0~100，并留一个下限（静音段也画一条细线，视觉上像真实播放器）
+  const peaks = raw.map((v) => Math.max(4, Math.min(100, Math.round((v / max) * 100))));
+  return { peaks, dur };
+}
+
+/** 转码流：把解码后的多声道 PCM 编码为 16-bit PCM WAV Buffer（浏览器原生可播） */export function toWavBuffer(decoded: Decoded): Buffer {
   const { channelData, sampleRate } = decoded;
   const ch = channelData.length;
   const n = channelData[0]?.length ?? 0;

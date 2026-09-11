@@ -7,6 +7,14 @@ import { html } from "lit";
 /* ================= helpers ================= */
 
 const p2 = (n: number) => String(n).padStart(2, "0");
+/** 音频时长：mm:ss（超过 1 小时用 h:mm:ss） */
+function fmtDur(sec: number): string {
+  const s = Math.max(0, Math.round(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  return h > 0 ? `${h}:${p2(m)}:${p2(ss)}` : `${m}:${p2(ss)}`;
+}
 /** 消息时间：统一 YYYY/MM/DD HH:MM（年月日时分） */
 function fmtTime(ts: number): string {
   const d = new Date(ts);
@@ -48,22 +56,59 @@ function fileKind(name: string, mime?: string): "image" | "audio" | "video" | "f
   return "file";
 }
 
-/** 音频频谱条：模拟波形柱（中间密集高振幅、两侧渐低、相邻平滑）；移动端由 CSS 每 3 根显示 1 根（指示器方式）保证可见 */
-const waveBars = () => {
+/**
+ * 音频频谱条。
+ *
+ * - 有真实峰值（服务端上传时解码算出的 `file.peaks`，0~100）→ 按真实波形画条；
+ *   这是**唯一**能让不同音频看起来不同的来源（振幅包络，不是 FFT）。
+ * - 没有峰值（老消息 / 解码失败 / 还没算出来）→ 回退到「按文件名派生」的占位波形：
+ *   虽然是假的，但**每条消息各不相同且稳定**，不会出现「所有音频频谱一模一样」的观感。
+ *
+ * 移动端由 CSS 每 3 根只显示 1 根（指示器方式），因此条形数量在两种端上一致。
+ */
+const waveBars = (peaks?: readonly number[], seed = "") => {
   const N = 96;
-  const bars: unknown[] = [];
-  let prev = 0.4;
-  for (let i = 0; i < N; i++) {
-    const t = i / (N - 1);
-    const env = 0.12 + 0.88 * Math.exp(-Math.pow((t - 0.55) / 0.22, 2));
-    const noise = Math.abs(((Math.sin(i * 12.9898) * 43758.5453) % 1) - 0.5) * 0.9;
-    const smooth = 0.3 * noise + 0.7 * prev;
-    prev = smooth;
-    const h = Math.max(10, Math.min(100, env * (40 + smooth * 60)));
-    bars.push(html`<i class="bar" style="height:${h.toFixed(1)}%"></i>`);
-  }
-  return bars;
+  const heights = peaks?.length ? resamplePeaks(peaks, N) : placeholderPeaks(N, seed);
+  return heights.map((h) => html`<i class="bar" style="height:${h.toFixed(1)}%"></i>`);
 };
 
-export { fmtTime, fmtSize, ellipsizeFileName, fileNameMax, fileKind, waveBars };
+/** 把任意长度的峰值数组重采样成 n 根（取每段最大，保留波峰特征） */
+function resamplePeaks(peaks: readonly number[], n: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const start = Math.floor((i * peaks.length) / n);
+    const end = Math.max(start + 1, Math.floor(((i + 1) * peaks.length) / n));
+    let m = 0;
+    for (let k = start; k < end && k < peaks.length; k++) m = Math.max(m, peaks[k] ?? 0);
+    // 与服务端一致：留一条细线，静音段也不至于完全空白
+    out.push(Math.max(4, Math.min(100, m)));
+  }
+  return out;
+}
+
+/** 占位波形：用文件名做种子的确定性伪随机（同一条消息稳定，不同文件不同形状） */
+function placeholderPeaks(n: number, seed: string): number[] {
+  let s = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    s ^= seed.charCodeAt(i);
+    s = Math.imul(s, 16777619) >>> 0;
+  }
+  const rand = (): number => {
+    s = (Math.imul(s ^ (s >>> 15), 2246822507) + 1013904223) >>> 0;
+    return (s >>> 8) / 0x1000000;
+  };
+  const out: number[] = [];
+  let prev = 0.4;
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    // 中间略高的包络（像真实音乐的响度分布）+ 有种子的一阶平滑噪声
+    const env = 0.25 + 0.75 * Math.exp(-Math.pow((t - 0.5) / 0.3, 2));
+    const smooth = 0.35 * rand() + 0.65 * prev;
+    prev = smooth;
+    out.push(Math.max(8, Math.min(100, env * (35 + smooth * 65))));
+  }
+  return out;
+}
+
+export { fmtTime, fmtSize, fmtDur, ellipsizeFileName, fileNameMax, fileKind, waveBars };
 

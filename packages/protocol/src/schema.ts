@@ -46,6 +46,14 @@ export const FileMeta = z.object({
   sha256: z.string().optional(),
   /** 首片摘要（与 size 一起用于秒传快速判定；服务端落库时写入） */
   fp: z.string().optional(),
+  /**
+   * 音频波形峰值（0~100 的整数数组，按时间顺序）。
+   * 服务端上传后解码音频算出（本来就要解码：播放走 /api/stream 转码），前端据此画真实频谱条；
+   * 缺失时前端回退到占位波形（老消息兼容）。
+   */
+  peaks: z.array(z.number().int().min(0).max(100)).max(2000).optional(),
+  /** 音频时长（秒，用于波形定位与显示） */
+  dur: z.number().nonnegative().optional(),
 });
 export type FileMeta = z.infer<typeof FileMeta>;
 
